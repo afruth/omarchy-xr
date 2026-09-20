@@ -25,6 +25,7 @@ struct DesktopCapture::Impl {
     std::vector<std::unique_ptr<Output>> outputs;
     Output* selected = nullptr;
     bool ready = false;
+    unsigned interval = 33;
     std::string failure;
     using Clock = std::chrono::steady_clock;
     Clock::time_point requested{}, next{};
@@ -150,6 +151,7 @@ struct DesktopCapture::Impl {
 
 DesktopCapture::DesktopCapture() : impl(std::make_unique<Impl>()) {}
 DesktopCapture::~DesktopCapture() = default;
+void DesktopCapture::setFrameRate(unsigned fps) { impl->interval = 1000 / std::clamp(fps, 1u, 60u); }
 const std::string& DesktopCapture::error() const { return impl->failure; }
 bool DesktopCapture::connect() {
     auto& s = *impl;
@@ -197,7 +199,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
     if (!s.pending && now >= s.next) {
         s.pending = zwlr_screencopy_manager_v1_capture_output(s.manager, 1, s.selected->proxy);
         zwlr_screencopy_frame_v1_add_listener(s.pending, &Impl::frameListener, &s);
-        s.requested = now; s.next = now + std::chrono::milliseconds(33);
+        s.requested = now; s.next = now + std::chrono::milliseconds(s.interval);
         wl_display_flush(s.display);
     }
     return updated;

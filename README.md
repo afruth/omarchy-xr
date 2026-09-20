@@ -1,120 +1,134 @@
 # Omarchy XR
 
-An experimental spatial desktop for Omarchy / Hyprland and VITURE XR glasses.
+A spatial desktop experiment for Omarchy / Hyprland and VITURE XR glasses.
 
-**Current state:** a C++20 / SDL2 / OpenGL application with three panels in a 3D
-arc. The center panel can display a live Wayland output; the side panels remain
-synthetic. Mouse movement simulates head orientation. VITURE tracking, input
-routing, multiple simultaneous captures, and stereo output are not implemented.
-No Joy-Con integration is planned for the initial version.
+**Working now:** any number of independently captured panels, a native Omarchy
+Monitor Studio panel, per-monitor resolution, drag-and-drop 2D arrangement,
+saved layouts, row/grid presets, and a live 3D viewer with pan/zoom/fit controls.
+There is no fixed monitor-count limit; CPU, memory, GPU and compositor resources
+limit practical configurations. VITURE tracking, stereo output, and forwarding
+clicks/typing through the 3D panels are still pending.
 
-## Local development
+## Monitor Studio — native Omarchy UI
 
-On Omarchy / Arch, dependencies are `gcc`, `make`, `pkgconf`, `sdl2-compat`, and
-`libglvnd`, and `wayland`, with a working OpenGL driver. Install missing packages with:
+Studio is a Quickshell/QML **panel plugin hosted by `omarchy-shell`**, using the
+real `qs.Ui` buttons and number fields and `qs.Commons` theme tokens. It does not
+start a second shell. A Python helper manages outputs outside the UI thread; the
+C++ renderer runs separately. Requires the Lua/Quickshell generation of Omarchy.
+
+```sh
+make
+make install-studio
+omarchy-shell shell rescanPlugins
+omarchy plugin enable afruth.omarchy-xr
+make studio
+```
+
+You can also launch **XR Monitor Studio** from the application launcher after
+installation. The installer copies only this project's plugin files and binary
+into your user configuration; it never edits `/usr/share/omarchy`.
+
+1. Choose a monitor count, or use **+ Add / Remove selected**.
+2. Select a rectangle and edit its width/height or X/Y position. Drag to reposition
+   in 20-pixel increments. Scroll to zoom; drag empty space to pan. Row/Grid and
+   Fit help arrange large layouts. Resolutions range from 320×200 to 8192×8192,
+   subject to actual compositor/GPU support. X/Y are in desktop pixels.
+3. **Apply layout** creates/resizes/removes app-owned virtual outputs. Overlapping
+   layouts are rejected. All virtual outputs use scale 1 and 60 Hz; capture fps is
+   independently configurable from 1–60. Layout changes stop an existing viewer.
+4. **Open terminal here** launches a terminal on the selected monitor. Run apps
+   from those terminals, or place windows using your usual Hyprland controls.
+5. **Open live viewer** shows every monitor as a live panel on a common plane.
+6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
+   Existing applications are left running and Hyprland relocates their workspaces.
+
+Closing the Studio window hides the editor and leaves monitors running. Reopen it
+to stop them. The helper cleans up on orderly shutdown; a journal permits stale
+outputs to be removed on its next start after a crash. It only manages its uniquely
+named `OMXR-…` outputs. It will not remove unrelated monitors.
+
+Layout coordinates map to the panel plane and to the relative arrangement of
+Hyprland outputs. The output group is offset to the right of existing displays so
+it does not overlap your physical desktop. Keep Studio and the viewer on your
+physical display to avoid capturing the viewer itself.
+
+Save writes a layout without applying it. Apply also saves. State, the renderer
+layout and viewer log live under `$XDG_STATE_HOME/omarchy-xr` (default
+`~/.local/state/omarchy-xr`). Runtime monitor rules are not written to Hyprland's
+configuration. If applying a layout fails, newly created outputs are removed;
+existing app-owned outputs may already have been resized. Correct the layout and
+apply again, or use Stop to clean up.
+
+For development, reinstall after changes. Some Quickshell versions cache plugin
+files despite rescan; if old code remains loaded, use `omarchy restart shell`
+when the session is unlocked, then reopen Studio. This briefly restarts the bar
+and panels but leaves applications running.
+
+## Build and development
+
+Omarchy/Arch dependencies: `gcc make pkgconf sdl2-compat libglvnd wayland`.
+Studio additionally uses the already installed `quickshell`, `python`, `hyprctl`,
+Omarchy shell UI components, and `foot` for the terminal button.
 
 ```sh
 omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland
+make                 # optimized build with debug symbols and warnings
+make run             # synthetic preview without creating monitors
+make check           # pixel conversion, lifecycle and CLI tests
+make smoke           # ten rendered frames; requires a graphical session
+python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 ```
 
-On Ubuntu: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev libwayland-dev libwayland-bin`.
+Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
+libwayland-dev libwayland-bin python3`. The Studio UI requires Omarchy itself.
+VS Code build/run/check tasks are included. Build artifacts stay in `build/`.
 
-```sh
-make              # debug build with warnings
-make run          # launch the preview
-make check        # pixel-conversion and CLI checks (no display required)
-make smoke        # render ten frames and exit; requires a graphical session
-```
+## Viewer controls and direct capture
 
-Right-drag to look around, **R** to recenter, **Esc** to exit. The preview runs on
-your normal monitor and does not change Hyprland configuration. VS Code build,
-run, and check tasks are included. Generated files stay in `build/`.
-
-The first renderer intentionally uses OpenGL 2.1 compatibility functionality to
-keep the initial build small. GPU texture import and stereo rendering will need
-a modern shader-based rendering path.
-
-## Live capture
-
-Run inside the Hyprland session:
+- Right-drag: look around; middle-drag: pan across the panel plane.
+- Mouse wheel: zoom; **F**: fit every panel; **R**: recenter; **Esc**: exit.
+- Clicking panels does not yet control their applications.
 
 ```sh
 ./build/omarchy-xr --list-outputs
-./build/omarchy-xr --capture XR-1
+./build/omarchy-xr --capture XR-1 --capture XR-2 --capture XR-3 --fps 20
+./build/omarchy-xr --layout /path/to/layout.tsv --fps 20
 ```
 
-Replace `XR-1` with an output listed by the first command. To create an independent
-virtual monitor without editing your saved configuration:
+Repeated `--capture` arguments arrange outputs in a row. A TSV layout specifies
+one output per line as `NAME X Y WIDTH HEIGHT` (whitespace separated). Output
+names must be unique. A missing output at startup is an error. If a source fails
+while viewing, that panel turns red and other captures continue; automatic
+reconnection is not yet implemented.
 
-```sh
-hyprctl output create headless XR-1
-hyprctl monitors all
-./build/omarchy-xr --capture XR-1
-```
+Add `--smoke-test` to require ten frames from **each** output within fifteen
+seconds and check OpenGL errors. The integration test exercises landscape and
+portrait outputs, different resolutions, resizing, removal, and cleanup.
 
-`hyprctl monitors all` shows the new monitor's active workspace. To put an app on
-that workspace, use the current Lua-based Hyprland syntax below, replacing `1`
-with the actual workspace number:
+## Performance and limitations
 
-```sh
-hyprctl eval 'hl.exec_cmd("foot", { workspace = "1 silent" })'
-```
+Capture currently uses wlr-screencopy shared-memory buffers and RGBA texture
+uploads, with one capture connection per output. The Studio workload indicator
+estimates bytes per second for just **one** full-frame copy; actual traffic and
+memory usage are higher. Lower capture fps/resolution as monitor count grows.
+This is not zero-copy; capture conversion runs on the rendering thread and can
+limit responsiveness at high loads. No arbitrary monitor count is advertised as
+smooth. GPU buffer import, buffer reuse, and smarter scheduling are future work.
 
-Keep the viewer on a **different output** from the captured desktop. Capturing
-the viewer's own output causes a recursive mirror; output selection is explicit
-and automatic feedback prevention is not yet implemented. The virtual desktop
-may initially show only wallpaper until an application is opened on it.
+The renderer uses OpenGL compatibility functionality. It is monoscopic and its
+projection is not an optical calibration. Glasses require working USB-C video;
+USB device detection alone is insufficient. The preview works on a normal screen.
+Pro 2 tracking is rotational only (3DoF).
 
-After closing the viewer, remove the monitor you created:
+## SDK and licensing
 
-```sh
-hyprctl output remove XR-1
-```
+Obtain the current Linux SDK from [VITURE](https://www.viture.com/developer).
+No vendor SDK binaries are bundled; keep local SDK files in ignored `vendor/`
+and review redistribution terms before packaging them.
 
-The viewer does not create, delete, or rearrange outputs itself. Manage any open
-applications before removing a monitor. It captures the cursor and preserves
-source aspect ratio. Clicking the panel does **not** yet interact with the source.
-Capture uses `wlr-screencopy` version 1 and shared-memory buffers, with a target
-maximum of about 30 captures/second. It is not zero-copy and is not a general
-GNOME/KDE capture backend. A selected output disconnect or capture failure ends
-the viewer with an explanatory error. There is no automatic reconnection yet.
+Original code is MIT. The vendored [wlr-screencopy protocol](https://github.com/swaywm/wlr-protocols/blob/master/unstable/wlr-screencopy-unstable-v1.xml)
+retains its MIT notice; other dependencies retain their licenses. This project
+is not affiliated with VITURE or Omarchy.
 
-To verify actual capture, not just rendering:
-
-```sh
-./build/omarchy-xr --capture XR-1 --smoke-test
-```
-
-This requires ten captured frames and checks OpenGL errors, with a ten-second
-overall deadline. The separate capture connection keeps frame waiting out of the
-render loop. `make check` tests padded rows, channel order, inverted frames, and
-opaque alpha. CI currently covers those tests and synthetic rendering; live
-Hyprland capture is a local integration test.
-
-The vendored protocol XML comes from
-[wlr-protocols](https://github.com/swaywm/wlr-protocols/blob/master/unstable/wlr-screencopy-unstable-v1.xml)
-and retains its embedded MIT notice. `wayland-scanner` generates bindings locally.
-
-## Target experience
-
-Three live virtual monitors arranged around the user, with rotational head
-tracking, keyboard/mouse interaction, recentering, and saved panel placement.
-Pro 2 offers 3DoF tracking; physical head translation is not tracked.
-
-See [architecture and milestones](docs/architecture.md).
-
-## Hardware and SDK
-
-The glasses need a functioning DisplayPort-over-USB-C connection for video. USB
-device detection alone is insufficient. SDK development and the mock preview can
-be investigated separately from video output.
-
-Obtain the current Linux SDK from [VITURE's developer portal](https://www.viture.com/developer).
-SDK binaries are not included. Review vendor licensing before redistribution;
-keep local SDK files under ignored `vendor/`. SDK loading and device permissions
-will be implemented in the tracking milestone.
-
-## License
-
-MIT for original project code. Third-party dependencies and the VITURE SDK retain
-their respective licenses. This project is not affiliated with VITURE or Omarchy.
+See [architecture and milestones](docs/architecture.md) and the
+[Omarchy plugin development guide](https://plugins.omarchy.org/develop.html).

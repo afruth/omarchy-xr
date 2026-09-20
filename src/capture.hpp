@@ -17,6 +17,7 @@ public:
     DesktopCapture(const DesktopCapture&) = delete;
     DesktopCapture& operator=(const DesktopCapture&) = delete;
     bool connect();
+    void setFrameRate(unsigned fps);
     std::vector<std::string> outputs() const;
     bool select(const std::string& name);
     // Nonblocking. Returns true only when a new frame is available.

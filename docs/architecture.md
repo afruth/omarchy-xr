@@ -1,54 +1,69 @@
-# Architecture and development milestones
+# Architecture
 
-## Proposed data flow
+## Components
 
-Hyprland headless outputs -> capture backend -> GPU textures -> spatial renderer
--> glasses display. A VITURE pose source supplies camera orientation. An input
-router maps mouse interaction to the selected output and application.
+- `studio/MonitorStudio.qml`: native Omarchy shell panel, `qs.Ui` controls and
+  theme tokens, interactive 2D canvas. Plugin ID: `afruth.omarchy-xr`.
+- `studio/backend.py`: JSON-lines worker. Owns virtual monitor lifecycle, saved
+  layouts, recovery journal, and renderer child process. Uses argument arrays
+  for subprocess calls and validates all geometry and identities before Lua calls.
+- `src/main.cpp`: independent C++ viewer. One capture source and texture per panel,
+  common 2D plane in a 3D scene, camera look/pan/zoom and fit-all.
+- `src/capture.cpp`: asynchronous wlr-screencopy, shared-memory buffers, separate
+  Wayland connections; nonblocking frame polling and per-source failures.
+- `src/pixels.hpp`: stride/format/inversion conversion with deterministic tests.
+- `src/layout.hpp`: renderer layout format and validation.
 
-Keep tracking, capture, rendering, and input routing separate as these components
-are introduced. Start with one process. Add a tracking service only if measured
-latency or device ownership requirements justify it.
+## Lifecycle
 
-## Milestones
+Studio edits a draft. Save persists the draft; Apply validates non-overlapping
+rectangles, creates or updates owned monitors, verifies actual dimensions,
+removes obsolete outputs, then writes the renderer layout. Physical outputs are
+never reconfigured. An existing viewer stops before apply to release its captures.
+Monitor identifiers remain stable during an editor session.
 
-1. **Development preview (implemented):** build locally, render three synthetic
-   panels, mouse-controlled camera, recenter, CLI and rendering smoke checks.
-2. **Tracking proof:** verify Pro 2 with the current official Linux SDK; log
-   timestamps and orientation, establish coordinate conventions, apply relative
-   orientation with a recenter reference, handle device loss. Use quaternions for
-   SDK poses rather than the preview's simplified Euler camera.
-3. **One live desktop (baseline implemented):** explicitly select a Wayland output,
-   capture via wlr-screencopy shared memory, convert to RGBA and upload to the center
-   panel. Tested on an independently created Hyprland headless output. Creation
-   and app placement remain manual; latency profiling and GPU import are pending.
-4. **Three interactive desktops:** independent live outputs, panel hit testing,
-   pointer coordinate conversion and keyboard focus. Explicitly avoid capturing
-   the renderer's own output. Restore windows and remove owned outputs on exit.
-5. **Glasses presentation:** enumerate real display modes, verify stereo support,
-   implement per-eye projection if supported, profile frame pacing and drift.
-6. **Daily use:** saved layout, hotkeys, reconnect handling, packaging, documented
-   SDK acquisition and licensing.
+The editor is a kept-loaded plugin: hiding it does not stop the workspace.
+Explicit Stop removes owned outputs; normal helper termination also cleans up.
+A lock prevents concurrent helpers, and an output journal enables crash recovery.
+Monitor creation intent is recorded before the create request. A failed Apply
+removes newly created outputs but may leave changes to existing outputs; the UI
+reports the error and permits a retry or cleanup. This is not a transactional
+compositor API.
 
-## Early decisions to validate
+The original layout position is used in the viewer. For Hyprland, positions are
+normalized and shifted to the right of all unowned outputs. All virtual outputs
+use scale 1; 60 Hz output refresh and user-configurable capture fps are separate.
+Resolution and count are subject to compositor/GPU/resource limits. No physical
+room-scale position is inferred from the glasses.
 
-- Virtual monitors provide simultaneous live content. Inactive workspaces alone
-  are not assumed to provide capturable frames.
-- Prefer GPU buffer import where supported; establish a correct baseline before
-  optimizing. Multi-GPU copies may matter on hybrid Intel/NVIDIA laptops.
-- Keep viewing orientation independent from pointer movement and desktop focus.
-- Do not assume unrestricted global input injection on Wayland. Prototype focus
-  and input routing with supported compositor interfaces.
-- Rotational tracking does not establish a persistent room-space anchor. Provide
-  recentering and evaluate yaw drift; do not promise 6DoF on Pro 2.
-- The preview is monoscopic and its projection is not an optical calibration.
+## Verification
 
-## References
+`make check` runs pixel tests and backend tests with an injected Hyprland runner.
+`tests/live_studio.py` tests real mixed-resolution output creation, capture,
+resize, removal and cleanup under Hyprland. The renderer smoke test requires
+frames from every selected source. Native panel loading, theme integration,
+Apply/Stop, and five-panel capture are also checked in the running Omarchy shell.
+CI can run unit tests and synthetic rendering; it does not provide Omarchy.
 
-- [VITURE SDK](https://www.viture.com/en-SG/developer/glasses-sdk/glasses)
-- [Hyprland headless outputs](https://wiki.hypr.land/configuring/core/advanced-configuration/using-hyprctl/)
-- [Breezy Desktop](https://github.com/wheaney/breezy-desktop)
-- [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver)
+## Next milestones
 
-Existing projects are research references; their code has not been copied here.
-The wlr-screencopy protocol XML is vendored separately with its copyright notice.
+1. VITURE SDK pose source: device lifecycle, quaternions, coordinate conventions,
+   recentering, drift and disconnect handling.
+2. Panel interaction: ray/plane hit testing, pointer coordinates and keyboard
+   focus using supported compositor APIs.
+3. Efficient capture: reuse buffers, GPU imports where supported, profile latency
+   and hybrid-GPU transfers; prioritize visible panels.
+4. Presentation: stereo modes after hardware verification, per-eye projection,
+   optical calibration and comfortable panel sizing.
+
+## UI rationale
+
+Omarchy's accepted shell-extension mechanism is a manifest-based QML plugin in
+its existing Quickshell process. Shared `qs.Ui` and `qs.Commons` supply native
+controls, styling and live theme updates. The Python worker and C++ renderer
+stay out of the shell's UI thread. No GTK interface or second shell is launched.
+
+References: [Omarchy plugin guide](https://plugins.omarchy.org/develop.html),
+[official shell reference](https://github.com/basecamp/omarchy/blob/quattro/shell/README.md),
+[VITURE SDK](https://www.viture.com/en-SG/developer/glasses-sdk/glasses),
+[Hyprland output controls](https://wiki.hypr.land/configuring/core/advanced-configuration/using-hyprctl/).
