@@ -1,3 +1,4 @@
+#include "capture.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
 
@@ -27,7 +28,7 @@ void rectangle(float x, float y, float w, float h, float z) {
     glEnd();
 }
 
-void panel(int index) {
+void panel(int index, GLuint texture, float aspect) {
     glPushMatrix();
     glRotatef(static_cast<float>(index) * 43.f, 0, 1, 0);
     glTranslatef(0, 0, -3.3f);
@@ -36,15 +37,27 @@ void panel(int index) {
     rectangle(-1.15f, -.67f, 2.3f, 1.34f, 0);
     glColor3f(.065f, .085f, .12f);
     rectangle(-1.12f, -.64f, 2.24f, 1.20f, .005f);
-    // Synthetic content, deliberately not presented as captured desktops.
-    for (int row = 0; row < 8; ++row) {
+    if (index == 0 && texture) {
+        const float w = std::min(2.24f, 1.20f * aspect);
+        const float h = w / aspect;
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glColor3f(1, 1, 1);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 1); glVertex3f(-w/2, -h/2, .015f);
+        glTexCoord2f(1, 1); glVertex3f(w/2, -h/2, .015f);
+        glTexCoord2f(1, 0); glVertex3f(w/2, h/2, .015f);
+        glTexCoord2f(0, 0); glVertex3f(-w/2, h/2, .015f);
+        glEnd();
+        glDisable(GL_TEXTURE_2D);
+    } else for (int row = 0; row < 8; ++row) {
         glColor3f(.16f + .015f * row, .22f, .3f);
         rectangle(-1.f, .36f - row * .115f, 1.1f + .13f * (row % 4), .045f, .01f);
     }
     glPopMatrix();
 }
 
-int preview(bool smoke) {
+int preview(bool smoke, DesktopCapture* capture, const std::string& output) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::cerr << "SDL initialization: " << SDL_GetError() << '\n';
         return 1;
@@ -62,6 +75,10 @@ int preview(bool smoke) {
         SDL_Quit();
         return 1;
     }
+    if (capture) {
+        const std::string title = "Omarchy XR | Live: " + output + " | Right-drag: look | R: recenter | Esc: exit";
+        SDL_SetWindowTitle(window, title.c_str());
+    }
     SDL_GLContext context = SDL_GL_CreateContext(window);
     if (!context) {
         std::cerr << "OpenGL context: " << SDL_GetError() << '\n';
@@ -70,7 +87,23 @@ int preview(bool smoke) {
     }
     SDL_GL_SetSwapInterval(1);
     std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n"
-              << "Preview only: no desktop capture or VITURE tracking yet.\n";
+              << (capture ? "Live capture on center panel; side panels are placeholders.\n"
+                          : "Preview only: no desktop capture or VITURE tracking yet.\n");
+    GLuint texture = 0;
+    CapturedFrame captured;
+    unsigned textureWidth = 0, textureHeight = 0;
+    int capturedFrames = 0;
+    const auto started = SDL_GetTicks64();
+    if (capture) {
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        std::cout << "Keep this window on a different output from " << output
+                  << " to avoid recursive capture.\n";
+    }
     glEnable(GL_DEPTH_TEST);
     PreviewCamera camera;
     bool running = true;
@@ -87,6 +120,26 @@ int preview(bool smoke) {
             if (event.type == SDL_MOUSEMOTION && (event.motion.state & SDL_BUTTON_RMASK))
                 camera.look(event.motion.xrel, event.motion.yrel);
         }
+        if (capture) {
+            if (capture->update(captured)) {
+                glBindTexture(GL_TEXTURE_2D, texture);
+                if (textureWidth != captured.width || textureHeight != captured.height) {
+                    textureWidth = captured.width; textureHeight = captured.height;
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<int>(textureWidth),
+                        static_cast<int>(textureHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, captured.rgba.data());
+                } else {
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<int>(textureWidth),
+                        static_cast<int>(textureHeight), GL_RGBA, GL_UNSIGNED_BYTE, captured.rgba.data());
+                }
+                ++capturedFrames;
+            }
+            if (!capture->error().empty()) {
+                std::cerr << capture->error() << '\n'; result = 1; break;
+            }
+            if (smoke && SDL_GetTicks64() - started > 10000) {
+                std::cerr << "Live capture smoke test timed out\n"; result = 1; break;
+            }
+        }
         int width = 0, height = 0;
         SDL_GL_GetDrawableSize(window, &width, &height);
         if (width <= 0 || height <= 0) { SDL_Delay(16); continue; }
@@ -100,7 +153,7 @@ int preview(bool smoke) {
         glMatrixMode(GL_MODELVIEW); glLoadIdentity();
         glRotatef(camera.pitch, 1, 0, 0);
         glRotatef(camera.yaw, 0, 1, 0);
-        for (int i = -1; i <= 1; ++i) panel(i);
+        for (int i = -1; i <= 1; ++i) panel(i, textureWidth ? texture : 0, textureHeight ? float(textureWidth) / textureHeight : 1.f);
         if (smoke) {
             glFinish();
             if (glGetError() != GL_NO_ERROR) {
@@ -109,9 +162,12 @@ int preview(bool smoke) {
             }
         }
         SDL_GL_SwapWindow(window);
-        if (smoke && ++frames >= 10) running = false;
+        if (smoke && ++frames >= 10 && (!capture || capturedFrames >= 10)) running = false;
         SDL_Delay(1);
     }
+    if (smoke && (frames < 10 || (capture && capturedFrames < 10))) result = 1;
+    if (capture) std::cout << "Captured " << capturedFrames << " frames (" << textureWidth << 'x' << textureHeight << ")\n";
+    if (texture) glDeleteTextures(1, &texture);
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -120,17 +176,39 @@ int preview(bool smoke) {
 } // namespace
 
 int main(int argc, char** argv) {
-    bool smoke = false;
+    bool smoke = false, listOutputs = false;
+    std::string output;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         if (arg == "--help") {
-            std::cout << "Usage: omarchy-xr [--help|--version|--smoke-test]\n"
+            std::cout << "Usage: omarchy-xr [--help|--version|--smoke-test] [--list-outputs|--capture OUTPUT]\n"
                       << "3D preview: right-drag to look, R to recenter, Esc to exit.\n";
             return 0;
         }
         if (arg == "--version") { std::cout << "omarchy-xr 0.1.0-dev\n"; return 0; }
         if (arg == "--smoke-test") smoke = true;
+        else if (arg == "--list-outputs") listOutputs = true;
+        else if (arg == "--capture") {
+            if (i + 1 >= argc || std::string_view(argv[i + 1]).empty() ||
+                std::string_view(argv[i + 1]).starts_with("--")) {
+                std::cerr << "--capture requires an output name; use --list-outputs\n"; return 2;
+            }
+            output = argv[++i];
+        }
         else { std::cerr << "Unknown option: " << arg << '\n'; return 2; }
     }
-    return preview(smoke);
+    if (listOutputs && (!output.empty() || smoke)) {
+        std::cerr << "--list-outputs cannot be combined with capture or smoke testing\n"; return 2;
+    }
+    std::unique_ptr<DesktopCapture> capture;
+    if (listOutputs || !output.empty()) {
+        capture = std::make_unique<DesktopCapture>();
+        if (!capture->connect()) { std::cerr << capture->error() << '\n'; return 1; }
+        if (listOutputs) {
+            for (const auto& name : capture->outputs()) std::cout << name << '\n';
+            return 0;
+        }
+        if (!capture->select(output)) { std::cerr << capture->error() << '\n'; return 1; }
+    }
+    return preview(smoke, capture.get(), output);
 }

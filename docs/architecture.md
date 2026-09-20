@@ -18,9 +18,10 @@ latency or device ownership requirements justify it.
    timestamps and orientation, establish coordinate conventions, apply relative
    orientation with a recenter reference, handle device loss. Use quaternions for
    SDK poses rather than the preview's simplified Euler camera.
-3. **One live desktop:** create one Hyprland headless output, verify capture on the
-   installed compositor, show live frames on a panel, and measure latency. Check
-   available Wayland capture protocols / portal behavior before selecting an API.
+3. **One live desktop (baseline implemented):** explicitly select a Wayland output,
+   capture via wlr-screencopy shared memory, convert to RGBA and upload to the center
+   panel. Tested on an independently created Hyprland headless output. Creation
+   and app placement remain manual; latency profiling and GPU import are pending.
 4. **Three interactive desktops:** independent live outputs, panel hit testing,
    pointer coordinate conversion and keyboard focus. Explicitly avoid capturing
    the renderer's own output. Restore windows and remove owned outputs on exit.
@@ -50,3 +51,4 @@ latency or device ownership requirements justify it.
 - [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver)
 
 Existing projects are research references; their code has not been copied here.
+The wlr-screencopy protocol XML is vendored separately with its copyright notice.
