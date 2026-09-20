@@ -10,13 +10,13 @@ root=Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="omarchy-xr-test-") as temp:
     manager=Manager(temp,root/"build/omarchy-xr")
     try:
-        layout={"version":1,"fps":15,"monitors":[
+        layout={"version":1,"fps":15,"curvature":70,"monitors":[
             {"id":"a","width":1280,"height":720,"x":0,"y":0},
-            {"id":"b","width":800,"height":1280,"x":1280,"y":0},
+            {"id":"b","curvature":80,"width":800,"height":1280,"x":1280,"y":0},
             {"id":"c","width":1024,"height":768,"x":0,"y":720},
             {"id":"d","width":640,"height":480,"x":2080,"y":0}]}
         manager.apply(layout)
-        subprocess.run([manager.renderer,"--layout",str(Path(temp)/"viewer.tsv"),"--fps","15","--smoke-test"],check=True,timeout=25)
+        subprocess.run([manager.renderer,"--layout",str(Path(temp)/"viewer.tsv"),"--fps","15","--workspace-curvature","70","--smoke-test"],check=True,timeout=25)
         layout["monitors"]=layout["monitors"][:2]
         layout["monitors"][0]["width"]=960
         layout["monitors"][1]["x"]=960

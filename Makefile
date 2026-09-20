@@ -18,7 +18,7 @@ build/wlr-screencopy-protocol.c: protocols/wlr-screencopy-unstable-v1.xml
 build/wlr-screencopy-protocol.o: build/wlr-screencopy-protocol.c
 	$(CC) $(shell pkg-config --cflags wayland-client) -c $< -o $@
 
-build/omarchy-xr: src/main.cpp src/layout.hpp src/capture.cpp src/capture.hpp src/pixels.hpp build/wlr-screencopy-client.h build/wlr-screencopy-protocol.o
+build/omarchy-xr: src/main.cpp src/layout.hpp src/curvature.hpp src/capture.cpp src/capture.hpp src/pixels.hpp build/wlr-screencopy-client.h build/wlr-screencopy-protocol.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) src/main.cpp src/capture.cpp build/wlr-screencopy-protocol.o -o $@ $(LDFLAGS) $(LDLIBS)
 
 run: all
@@ -28,7 +28,12 @@ build/test-pixels: tests/pixels.cpp src/pixels.hpp
 	mkdir -p build
 	$(CXX) $(CXXFLAGS) -Isrc $< -o $@
 
-check: all build/test-pixels
+build/test-curvature: tests/curvature.cpp src/curvature.hpp src/layout.hpp
+	mkdir -p build
+	$(CXX) $(CXXFLAGS) -Isrc $< -o $@
+
+check: all build/test-pixels build/test-curvature
+	./build/test-curvature
 	python3 -m unittest discover -s tests -p 'test_*.py'
 	./build/test-pixels
 	./build/omarchy-xr --help

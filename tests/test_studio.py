@@ -33,6 +33,33 @@ class LayoutTests(unittest.TestCase):
     def test_no_three_monitor_limit(self):
         layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%10)*640,"y":(i//10)*480} for i in range(100)]
         validate(layout)
+    def test_curvature(self):
+        for value in (-1, 101, float("nan"), float("inf"), "20", True):
+            for scope in ("workspace", "monitor"):
+                layout=default_layout()
+                target=layout if scope=="workspace" else layout["monitors"][0]
+                target["curvature"]=value
+                with self.assertRaises(ValueError):validate(layout)
+        with tempfile.TemporaryDirectory() as temp:
+            manager=Manager(temp,"/unused",FakeHypr())
+            try:
+                layout=default_layout();layout["curvature"]=65
+                layout["monitors"][1]["curvature"]=80
+                manager.apply(layout)
+                self.assertEqual(manager.load(),layout)
+                # A presentation-only apply must not issue output or Lua changes.
+                original=manager.runner
+                def read_only(*args):
+                    self.assertEqual(args,("-j","monitors"))
+                    return original(*args)
+                manager.runner=read_only
+                layout["curvature"]=90
+                manager.apply(layout)
+                manager.runner=original
+                lines=(Path(temp)/"viewer.tsv").read_text().splitlines()
+                self.assertEqual([line.split()[-1] for line in lines],["0","80","0"])
+            finally:manager.cleanup();manager.lock.close()
+
     def test_lifecycle(self):
         with tempfile.TemporaryDirectory() as temp:
             fake=FakeHypr(); manager=Manager(temp,"/unused",fake)

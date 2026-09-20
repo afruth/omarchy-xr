@@ -15,6 +15,7 @@ Item {
     property bool dirty: false
     property int selected: 0
     property int fps: 30
+    property int curvature: 0
     property int activeCount: 0
     property bool viewing: false
     property string status: "Loading saved layout…"
@@ -33,7 +34,7 @@ Item {
     function send(action) {
         if (busy || !backend.running) return
         busy = true; error = false
-        backend.write(JSON.stringify({action:action, layout:{version:1, fps:fps, monitors:monitors}, id:current.id}) + "\n")
+        backend.write(JSON.stringify({action:action, layout:{version:1, fps:fps, curvature:curvature, monitors:monitors}, id:current.id}) + "\n")
     }
     function changed() { dirty = true; canvas.requestPaint() }
     function edit(key, value) {
@@ -97,7 +98,7 @@ Item {
                     root.busy=false; root.error=!response.ok
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
                     if (response.layout) {
-                        root.monitors=response.layout.monitors; root.fps=response.layout.fps
+                        root.monitors=response.layout.monitors; root.fps=response.layout.fps; root.curvature=response.layout.curvature || 0
                         root.loaded=true; root.dirty=false; root.status="Arrange your monitors, then Apply."
                         Qt.callLater(root.fit)
                     }
@@ -131,10 +132,10 @@ Item {
             QQC.ScrollView {
                 id: scroll
                 anchors.fill: parent; anchors.margins: Style.space(20)
-                contentWidth: availableWidth
+                contentWidth: Math.max(availableWidth, 780)
                 ColumnLayout {
-                width: scroll.availableWidth
-                height: Math.max(scroll.availableHeight, 640)
+                width: scroll.contentWidth
+                height: Math.max(scroll.availableHeight, 740)
                 spacing: Style.space(12)
                 RowLayout {
                     Layout.fillWidth: true
@@ -156,6 +157,11 @@ Item {
                     Action { text:"Row"; onClicked:root.arrange(false) }
                     Action { text:"Grid"; onClicked:root.arrange(true) }
                     Action { text:"Fit"; onClicked:root.fit() }
+                }
+                RowLayout {
+                    enabled:root.loaded && !root.busy
+                    Ui.NumberField { label:"Workspace curvature (%)"; from:0; to:100; stepSize:5; value:root.curvature; fieldWidth:190; onModified:function(value){root.curvature=value;root.changed()} }
+                    Label { Layout.fillWidth:true; wrapMode:Text.WordWrap; text:"0 = flat arrangement. Higher values wrap monitor positions around your viewing origin. Surfaces stay flat unless curved individually."; color:Color.muted }
                 }
                 RowLayout {
                     Layout.fillWidth:true; Layout.fillHeight:true; spacing:Style.space(16)
@@ -200,6 +206,7 @@ Item {
                         Ui.NumberField { label:"Height (pixels)"; from:200; to:8192; stepSize:80; value:root.current.height; fieldWidth:190; onModified:function(value){root.edit("height",value)} }
                         Ui.NumberField { label:"X position"; from:-100000; to:100000; stepSize:20; value:root.current.x; fieldWidth:190; onModified:function(value){root.edit("x",value)} }
                         Ui.NumberField { label:"Y position"; from:-100000; to:100000; stepSize:20; value:root.current.y; fieldWidth:190; onModified:function(value){root.edit("y",value)} }
+                        Ui.NumberField { label:"Surface curvature (%)"; from:0; to:100; stepSize:5; value:root.current.curvature || 0; fieldWidth:190; onModified:function(value){root.edit("curvature",value)} }
                         Action { text:"Open terminal here"; enabled:root.activeCount>0 && !root.dirty; onClicked:root.send("terminal") }
                     }
                 }

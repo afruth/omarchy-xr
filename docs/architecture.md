@@ -67,3 +67,19 @@ References: [Omarchy plugin guide](https://plugins.omarchy.org/develop.html),
 [official shell reference](https://github.com/basecamp/omarchy/blob/quattro/shell/README.md),
 [VITURE SDK](https://www.viture.com/en-SG/developer/glasses-sdk/glasses),
 [Hyprland output controls](https://wiki.hypr.land/configuring/core/advanced-configuration/using-hyprctl/).
+
+## Curvature geometry
+
+`src/curvature.hpp` contains pure, renderer-independent geometry. For centered
+horizontal arc distance x and inverse radius k, panel centers map to
+`(sin(k*x)/k, y, -distance + (1-cos(k*x))/k)` and yaw is `-k*x`.
+Zero and near-zero cases use stable limits. Workspace bending transforms only
+panel poses; individual surface bending tessellates in local coordinates with
+its own inverse radius, then applies the pose. The common reference is the
+neutral camera origin. Looking rotates the view; it never rotates the anchor.
+
+The shared surface function draws textures, borders and placeholder artwork,
+with approximately one degree per segment (8–180 segments for curved patches).
+Tests cover flat limits, rigid tangent planes, curvature independence, translated
+camera origins, continuity, sweep bounds, legacy layout parsing, validation,
+persistence and presentation-only applies that do not mutate compositor outputs.

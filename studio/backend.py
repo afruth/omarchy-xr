@@ -15,7 +15,7 @@ import uuid
 
 
 def default_layout():
-    return {"version": 1, "fps": 30, "monitors": [
+    return {"version": 1, "fps": 30, "curvature": 0, "monitors": [
         {"id": str(i + 1), "width": 1920, "height": 1080, "x": i * 1920, "y": 0}
         for i in range(3)]}
 
@@ -28,6 +28,10 @@ def validate(layout):
     monitors = layout.get("monitors")
     if not isinstance(monitors, list) or not monitors:
         raise ValueError("Add at least one monitor")
+    def curvature(value):
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
+            raise ValueError("Curvature must be 0–100 percent")
+    curvature(layout.get("curvature", 0))
     seen = set()
     for m in monitors:
         if not isinstance(m, dict) or (not isinstance(m.get("id"), str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", m["id"])):
@@ -35,6 +39,7 @@ def validate(layout):
         if m["id"] in seen:
             raise ValueError("Duplicate monitor identity")
         seen.add(m["id"])
+        curvature(m.get("curvature", 0))
         for key in ("width", "height", "x", "y"):
             if type(m.get(key)) is not int:
                 raise ValueError(f"{key} must be a whole number")
@@ -134,9 +139,28 @@ class Manager:
         self.remove(list(self.owned))
         self.applied = None
 
+    def persist_applied(self, layout):
+        self.applied = json.loads(json.dumps(layout))
+        self.save(layout)
+        content = "".join(f'{self.prefix}{m["id"]}\t{m["x"]}\t{m["y"]}\t{m["width"]}\t{m["height"]}\t{m.get("curvature", 0)}\n' for m in layout["monitors"])
+        target = self.directory / "viewer.tsv"
+        temp = target.with_suffix(".tmp")
+        temp.write_text(content)
+        temp.replace(target)
+
     def apply(self, layout):
         validate(layout)
+        was_viewing = self.viewer is not None and self.viewer.poll() is None
         self.stop_viewer()
+        geometry = lambda config: [{key: m[key] for key in ("id", "width", "height", "x", "y")} for m in config["monitors"]]
+        if self.applied and geometry(self.applied) == geometry(layout):
+            present = {m["name"] for m in self.monitors()}
+            if all(self.prefix + m["id"] in present for m in layout["monitors"]):
+                # Presentation settings never reconfigure the compositor's outputs.
+                self.persist_applied(layout)
+                if was_viewing:
+                    self.start()
+                return
         new = []
         existing = self.monitors()
         other = [m for m in existing if m["name"] not in self.owned]
@@ -169,13 +193,7 @@ class Manager:
             else:
                 raise RuntimeError("Hyprland did not apply the requested resolutions")
             self.remove(self.owned - desired)
-            self.applied = json.loads(json.dumps(layout))
-            self.save(layout)
-            content = "".join(f'{self.prefix}{m["id"]}\t{m["x"]}\t{m["y"]}\t{m["width"]}\t{m["height"]}\n' for m in layout["monitors"])
-            target = self.directory / "viewer.tsv"
-            temp = target.with_suffix(".tmp")
-            temp.write_text(content)
-            temp.replace(target)
+            self.persist_applied(layout)
         except Exception:
             self.remove(new)
             # Existing monitors can have changed; avoid claiming the old layout is active.
@@ -189,7 +207,7 @@ class Manager:
             raise RuntimeError("Renderer not installed. Run make install-studio")
         self.stop_viewer()
         self.log = (self.directory / "viewer.log").open("w")
-        self.viewer = subprocess.Popen([self.renderer, "--layout", str(self.directory / "viewer.tsv"), "--fps", str(self.applied["fps"])], stdout=self.log, stderr=self.log)
+        self.viewer = subprocess.Popen([self.renderer, "--layout", str(self.directory / "viewer.tsv"), "--fps", str(self.applied["fps"]), "--workspace-curvature", str(self.applied.get("curvature", 0))], stdout=self.log, stderr=self.log)
         time.sleep(.25)
         if self.viewer.poll() is not None:
             raise RuntimeError("Viewer could not start. See " + str(self.directory / "viewer.log"))

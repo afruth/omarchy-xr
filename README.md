@@ -64,6 +64,46 @@ files despite rescan; if old code remains loaded, use `omarchy restart shell`
 when the session is unlocked, then reopen Studio. This briefly restarts the bar
 and panels but leaves applications running.
 
+## Curvature
+
+Studio provides two independent 0–100% controls, both defaulting to zero:
+
+- **Workspace curvature** wraps panel centers horizontally around the neutral
+  viewing origin and rotates their tangent planes along the arc. Monitors keep
+  flat surfaces when their individual curvature is zero.
+- **Surface curvature** in the selected monitor's inspector bends that monitor's
+  actual mesh into a concave horizontal cylinder. Other monitors are unaffected.
+
+The 2D editor remains an unwrapped layout map. These are presentation settings;
+resolutions and the compositor's flat desktop coordinates do not change. Apply
+curvature changes to update the presentation. If a viewer is running, it restarts
+with the new shape. Save alone only persists the draft.
+
+The neutral camera sits at the origin, with the workspace centered ahead of it.
+Workspace radius at 100% is the viewing distance, increased if necessary to keep
+its total sweep within 300°. Lower percentages increase the radius continuously;
+0 is exactly flat. Each monitor's surface radius uses its center's distance to
+that same origin; its sweep is capped at 160° to prevent folding. Bending preserves
+horizontal arc length and the panel's center/tangent. Height remains unchanged.
+
+Head/mouse rotation changes the view, not the workspace anchor. Middle-drag pans
+the viewing camera relative to the neutral anchor. Wheel zoom changes the viewing
+distance and recalculates reference radii. F fits/recenters the workspace; R resets
+look and pan. Extreme layouts can still have overlapping panel edges in 3D even
+when the unwrapped desktop rectangles do not overlap.
+
+For a synthetic preview:
+
+```sh
+./build/omarchy-xr --workspace-curvature 80 --surface-curvature 50
+```
+
+`--surface-curvature` applies uniformly to direct `--capture` arguments or the
+synthetic preview. TSV layouts carry independent curvature as an optional sixth
+column (`NAME X Y WIDTH HEIGHT CURVATURE`); existing five-column files stay flat.
+`--workspace-curvature` applies to the whole scene with either input format.
+Saved JSON profiles without curvature fields also load as zero.
+
 ## Build and development
 
 Omarchy/Arch dependencies: `gcc make pkgconf sdl2-compat libglvnd wayland`.
