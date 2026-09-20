@@ -83,3 +83,21 @@ with approximately one degree per segment (8–180 segments for curved patches).
 Tests cover flat limits, rigid tangent planes, curvature independence, translated
 camera origins, continuity, sweep bounds, legacy layout parsing, validation,
 persistence and presentation-only applies that do not mutate compositor outputs.
+
+## Gutter enforcement
+
+A positive integer workspace spacing is enforced in two domains. The backend
+normalizes drafts by resolving expanded-rectangle collisions, validates the
+result, and publishes the same adjusted layout to Hyprland and the viewer. Legacy
+profiles acquire a 24-pixel gutter; output sizes are unchanged.
+
+`src/spacing.hpp` analytically bounds each transformed cylindrical patch using
+endpoints and trigonometric extrema, including all draw-depth layers. Pairwise
+AABB distance is a conservative lower bound on surface separation. Fit and zoom
+increase camera distance until every pair satisfies spacing/900 scene units (with
+0.009-pixel floating-point tolerance, well below the 1-pixel minimum). This changes
+camera-relative curvature radii while preserving the requested percentages. The
+check is repeated when distance changes; panning/looking leave geometry fixed.
+Tests sample the analytic bounds densely and exercise mixed widths/heights and
+independent curvatures at spacing 1, 24 and 200 pixels, plus profile migration,
+validation and normalization idempotence.

@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"studio"))
-from backend import Manager, default_layout, validate
+from backend import Manager, default_layout, validate, add_gutters
 
 class FakeHypr:
     def __init__(self):
@@ -31,8 +31,27 @@ class LayoutTests(unittest.TestCase):
             layout=default_layout();change(layout)
             with self.assertRaises(ValueError):validate(layout)
     def test_no_three_monitor_limit(self):
-        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%10)*640,"y":(i//10)*480} for i in range(100)]
+        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%10)*664,"y":(i//10)*504} for i in range(100)]
         validate(layout)
+    def test_spacing(self):
+        for gap in (0,-1,True,1.5,float("nan"),8193):
+            layout=default_layout();layout["spacing"]=gap
+            with self.assertRaises(ValueError):add_gutters(layout)
+        for gap in (1,24,200):
+            layout=default_layout();layout["spacing"]=gap
+            layout["monitors"][1]["x"]=500
+            adjusted=add_gutters(layout)
+            validate(adjusted)
+            self.assertEqual(add_gutters(adjusted),adjusted)
+            self.assertEqual(layout["monitors"][1]["x"],500)
+        legacy=default_layout();del legacy["spacing"]
+        for i,m in enumerate(legacy["monitors"]):m["x"]=i*1920
+        upgraded=add_gutters(legacy)
+        self.assertEqual(upgraded["spacing"],24)
+        self.assertEqual(upgraded["monitors"][1]["x"],1944)
+        # Invalid explicit layouts are rejected by validation, before Hyprland.
+        with self.assertRaises(ValueError):validate(legacy)
+
     def test_curvature(self):
         for value in (-1, 101, float("nan"), float("inf"), "20", True):
             for scope in ("workspace", "monitor"):

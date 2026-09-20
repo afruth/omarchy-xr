@@ -34,7 +34,7 @@ into your user configuration; it never edits `/usr/share/omarchy`.
    Fit help arrange large layouts. Resolutions range from 320×200 to 8192×8192,
    subject to actual compositor/GPU support. X/Y are in desktop pixels.
 3. **Apply layout** creates/resizes/removes app-owned virtual outputs. Overlapping
-   layouts are rejected. All virtual outputs use scale 1 and 60 Hz; capture fps is
+   layouts are moved apart on Apply to preserve the selected gutter. All virtual outputs use scale 1 and 60 Hz; capture fps is
    independently configurable from 1–60. Layout changes stop an existing viewer.
 4. **Open terminal here** launches a terminal on the selected monitor. Run apps
    from those terminals, or place windows using your usual Hyprland controls.
@@ -64,6 +64,33 @@ files despite rescan; if old code remains loaded, use `omarchy restart shell`
 when the session is unlocked, then reopen Studio. This briefly restarts the bar
 and panels but leaves applications running.
 
+## Spacing / gutter
+
+**Spacing (pixels)** is a workspace setting, defaults to **24**, and accepts only
+whole numbers from **1 to 8192**. Zero and negative values are rejected by both
+the UI and backend. Row/Grid and adding monitors include the gutter. Applying or
+saving a manually edited draft moves conflicting rectangles right or down by the
+smallest available correction, preserving screen sizes and list order. The editor
+shows the resulting positions. Existing larger gaps are retained.
+
+Old saved layouts without spacing migrate to 24 pixels when loaded. The migration
+is saved on the next Save/Apply. Hyprland receives separated flat output rectangles;
+curvature exists only in the viewer, not in the compositor's monitor geometry.
+
+In 3D, spacing is a minimum world-space separation expressed in layout pixels
+(900 pixels per scene unit), not a constant number of pixels on the physical
+screen. The renderer computes analytic bounds of each curved surface, including
+its border/depth layers. If those bounds are too close, it increases viewing
+distance until the gutter is safe; zoom-in is subject to the same check. Bounds
+are conservative, so the actual visible gap may be larger. Curvature percentages
+remain unchanged; their distance-based radii increase as the camera backs off.
+A layout that cannot satisfy the guard within the supported viewing distance is
+rejected with an explanatory error rather than rendered with intersecting panels.
+
+Direct renderer usage accepts `--spacing 24`; use layouts with at least that
+flat gutter. The borders are drawn inside monitor dimensions so they cannot fill
+small gaps. Capture resolutions do not shrink to create spacing.
+
 ## Curvature
 
 Studio provides two independent 0–100% controls, both defaulting to zero:
@@ -89,8 +116,8 @@ horizontal arc length and the panel's center/tangent. Height remains unchanged.
 Head/mouse rotation changes the view, not the workspace anchor. Middle-drag pans
 the viewing camera relative to the neutral anchor. Wheel zoom changes the viewing
 distance and recalculates reference radii. F fits/recenters the workspace; R resets
-look and pan. Extreme layouts can still have overlapping panel edges in 3D even
-when the unwrapped desktop rectangles do not overlap.
+look and pan. Curvature-aware separation also limits how close you can zoom; panel surfaces
+and borders stay apart.
 
 For a synthetic preview:
 

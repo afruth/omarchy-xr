@@ -1,5 +1,6 @@
 #include "curvature.hpp"
 #include "layout.hpp"
+#include "spacing.hpp"
 #include <cassert>
 #include <iostream>
 #include <unistd.h>
@@ -27,6 +28,21 @@ int main() {
     auto wide=pose(500,0,100,1000,.3f,100,100);
     assert(std::abs(wide.yaw)<=5*pi/6+.001f);
     assert(wide.surfaceBend*100<=8*pi/9+.001f);
+    for(float workspace:{0.f,50.f,100.f}) for(float curve:{0.f,60.f,100.f}) for(float gap:{1.f,24.f,200.f}) {
+        std::vector<PanelLayout> panels{{"a",0,0,1920,1080,curve},{"b",1920+gap,0,800,1280,100-curve},{"c",0,1280+gap,1920,1080,curve}};
+        const float span=2720+gap,cx=span/2,cy=(2360+gap)/2;
+        const float d=safeDistance(panels,cx,cy,span/900,.3f,workspace,gap);
+        assert(separated(panels,cx,cy,span/900,d,workspace,gap));
+    }
+    // Validate analytic bounds against dense points on strongly bent patches.
+    for(float yaw:{-2.f,-.5f,0.f,1.f,2.f}) {
+        Pose p{{2,1,-3},yaw,1.2f};auto box=bounds(p,2,1);
+        for(int i=0;i<=1000;i++) for(float offset:{0.f,.01f}) {
+            auto v=vertex(p,-1+2.f*i/1000,0,offset);
+            assert(v.x>=box.low.x-1e-5&&v.x<=box.high.x+1e-5);
+            assert(v.z>=box.low.z-1e-5&&v.z<=box.high.z+1e-5);
+        }
+    }
     char path[]="/tmp/omarchy-xr-layout-XXXXXX";
     int fd=mkstemp(path);assert(fd>=0);close(fd);
     { std::ofstream file(path);file<<"A 0 0 1920 1080\nB 1920 0 1920 1080 75\n"; }

@@ -15,12 +15,40 @@ import uuid
 
 
 def default_layout():
-    return {"version": 1, "fps": 30, "curvature": 0, "monitors": [
-        {"id": str(i + 1), "width": 1920, "height": 1080, "x": i * 1920, "y": 0}
+    return {"version": 1, "fps": 30, "curvature": 0, "spacing": 24, "monitors": [
+        {"id": str(i + 1), "width": 1920, "height": 1080, "x": i * 1944, "y": 0}
         for i in range(3)]}
 
 
-def validate(layout):
+def add_gutters(layout):
+    """Resolve the draft without shrinking screens; preserve order and nearby rows."""
+    result = json.loads(json.dumps(layout))
+    gap = result.setdefault("spacing", 24)
+    if type(gap) is not int or not 1 <= gap <= 8192:
+        raise ValueError("Spacing must be a whole number from 1 to 8192 pixels")
+    # Validate scalar fields first, before doing geometry arithmetic.
+    validate(result, check_gaps=False)
+    placed = []
+    for m in result["monitors"]:
+        for _ in range(len(placed) * 2 + 1):
+            collision = next((p for p in placed if
+                m["x"] < p["x"] + p["width"] + gap and p["x"] < m["x"] + m["width"] + gap and
+                m["y"] < p["y"] + p["height"] + gap and p["y"] < m["y"] + m["height"] + gap), None)
+            if collision is None:
+                break
+            right = collision["x"] + collision["width"] + gap - m["x"]
+            down = collision["y"] + collision["height"] + gap - m["y"]
+            if right <= down:
+                m["x"] += right
+            else:
+                m["y"] += down
+        else:
+            raise ValueError("Could not resolve this layout. Use Row or Grid")
+        placed.append(m)
+    return validate(result)
+
+
+def validate(layout, check_gaps=True):
     if not isinstance(layout, dict) or layout.get("version") != 1:
         raise ValueError("Unsupported layout version")
     if type(layout.get("fps")) is not int or not 1 <= layout["fps"] <= 60:
@@ -47,12 +75,17 @@ def validate(layout):
             raise ValueError("Resolution must be 320–8192 wide and 200–8192 high")
         if abs(m["x"]) > 100000 or abs(m["y"]) > 100000:
             raise ValueError("Positions must be within ±100,000 pixels")
+    gap = layout.get("spacing", 24)
+    if type(gap) is not int or not 1 <= gap <= 8192:
+        raise ValueError("Spacing must be a whole number from 1 to 8192 pixels")
+    if not check_gaps:
+        return layout
     # A sweep avoids quadratic comparisons for normal rows of monitors.
     active = []
     for m in sorted(monitors, key=lambda item: item["x"]):
-        active = [p for p in active if p["x"] + p["width"] > m["x"]]
-        if any(m["y"] < p["y"] + p["height"] and p["y"] < m["y"] + m["height"] for p in active):
-            raise ValueError("Monitors overlap. Drag them apart or choose Row / Grid")
+        active = [p for p in active if p["x"] + p["width"] + gap > m["x"]]
+        if any(m["y"] < p["y"] + p["height"] + gap and p["y"] < m["y"] + m["height"] + gap for p in active):
+            raise ValueError("Monitor gutter is too small. Apply to separate monitors or choose Row / Grid")
         active.append(m)
     return layout
 
@@ -100,10 +133,10 @@ class Manager:
         atomic_json(self.journal, sorted(self.owned))
 
     def load(self):
-        return validate(json.loads(self.profile.read_text())) if self.profile.exists() else default_layout()
+        return add_gutters(json.loads(self.profile.read_text())) if self.profile.exists() else default_layout()
 
     def save(self, layout):
-        validate(layout)
+        layout = add_gutters(layout)
         atomic_json(self.profile, layout)
 
     def stop_viewer(self):
@@ -149,7 +182,7 @@ class Manager:
         temp.replace(target)
 
     def apply(self, layout):
-        validate(layout)
+        layout = add_gutters(layout)
         was_viewing = self.viewer is not None and self.viewer.poll() is None
         self.stop_viewer()
         geometry = lambda config: [{key: m[key] for key in ("id", "width", "height", "x", "y")} for m in config["monitors"]]
@@ -207,7 +240,7 @@ class Manager:
             raise RuntimeError("Renderer not installed. Run make install-studio")
         self.stop_viewer()
         self.log = (self.directory / "viewer.log").open("w")
-        self.viewer = subprocess.Popen([self.renderer, "--layout", str(self.directory / "viewer.tsv"), "--fps", str(self.applied["fps"]), "--workspace-curvature", str(self.applied.get("curvature", 0))], stdout=self.log, stderr=self.log)
+        self.viewer = subprocess.Popen([self.renderer, "--layout", str(self.directory / "viewer.tsv"), "--fps", str(self.applied["fps"]), "--workspace-curvature", str(self.applied.get("curvature", 0)), "--spacing", str(self.applied["spacing"])], stdout=self.log, stderr=self.log)
         time.sleep(.25)
         if self.viewer.poll() is not None:
             raise RuntimeError("Viewer could not start. See " + str(self.directory / "viewer.log"))
@@ -234,9 +267,9 @@ def serve(manager):
             if action == "load":
                 response = {"layout": manager.load()}
             elif action == "save":
-                manager.save(request["layout"]); response = {"message": "Layout saved"}
+                manager.save(request["layout"]); response = {"layout": manager.load(), "message": "Layout saved"}
             elif action == "apply":
-                manager.apply(request["layout"]); response = {"message": "Virtual monitors ready. Open a terminal on a selected monitor to get started."}
+                manager.apply(request["layout"]); response = {"layout": manager.applied, "message": "Virtual monitors ready. Open a terminal on a selected monitor to get started."}
             elif action == "start":
                 manager.start(); response = {"message": "Live viewer opened"}
             elif action == "stop":

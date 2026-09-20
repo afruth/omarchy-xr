@@ -1,6 +1,7 @@
 #include "capture.hpp"
 #include "layout.hpp"
 #include "curvature.hpp"
+#include "spacing.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <algorithm>
@@ -39,12 +40,12 @@ void drawPanel(const Panel& panel, size_t index, float cx, float cy, float span,
     const auto pose=spatial::pose((p.x+p.width/2-cx)*unit,-(p.y+p.height/2-cy)*unit,w,span,distance,workspace,p.curvature);
     const float colors[3][3]{{.35f,.65f,.95f},{.4f,.85f,.65f},{.8f,.55f,.95f}};
     if (panel.failed) glColor3f(.9f,.25f,.25f); else glColor3fv(colors[index%3]);
-    surface(pose,-w/2-.02f,-h/2-.02f,w+.04f,h+.04f,0);
+    surface(pose,-w/2,-h/2,w,h,0);
     glColor3f(.065f,.085f,.12f);
-    surface(pose,-w/2,-h/2,w,h,.005f);
+    surface(pose,-w/2+.02f,-h/2+.02f,w-.04f,h-.04f,.005f);
     if (panel.width && !panel.failed) {
-        float tw=w,th=tw*panel.height/panel.width;
-        if (th>h) { th=h;tw=th*panel.width/panel.height; }
+        float tw=w-.04f,th=tw*panel.height/panel.width;
+        if (th>h-.04f) { th=h-.04f;tw=th*panel.width/panel.height; }
         glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,panel.texture);glColor3f(1,1,1);
         surface(pose,-tw/2,-th/2,tw,th,.01f);
         glDisable(GL_TEXTURE_2D);
@@ -55,7 +56,7 @@ void drawPanel(const Panel& panel, size_t index, float cx, float cy, float span,
         }
     }
 }
-int preview(std::vector<Panel>& panels, bool smoke, float workspace) {
+int preview(std::vector<Panel>& panels, bool smoke, float workspace, float spacing) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::cerr << SDL_GetError() << '\n'; return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,1);
@@ -82,11 +83,14 @@ int preview(std::vector<Panel>& panels, bool smoke, float workspace) {
     }
     const float cx=(left+right)/2, cy=(top+bottom)/2;
     float yaw=0,pitch=0,panX=0,panY=0,distance=5;
+    std::vector<PanelLayout> geometry;
+    for(const auto& p:panels) geometry.push_back(p.layout);
+    auto safe = [&](float d) {return spatial::safeDistance(geometry,cx,cy,(right-left)/900.f,d,workspace,spacing);};
     auto fit = [&] {
         int w,h; SDL_GL_GetDrawableSize(window,&w,&h);
         const float aspect=float(std::max(w,1))/std::max(h,1);
         distance=std::max((bottom-top)/900.f,(right-left)/900.f/aspect)/2/std::tan(65.f*pi/360.f)*1.12f;
-        distance=std::max(distance,1.f); panX=panY=yaw=pitch=0;
+        distance=safe(std::max(distance,1.f)); panX=panY=yaw=pitch=0;
     };
     fit();
     glEnable(GL_DEPTH_TEST);
@@ -101,7 +105,7 @@ int preview(std::vector<Panel>& panels, bool smoke, float workspace) {
                 if (event.key.keysym.sym==SDLK_r) yaw=pitch=panX=panY=0;
                 if (event.key.keysym.sym==SDLK_f) fit();
             }
-            if (event.type==SDL_MOUSEWHEEL) distance=std::clamp(distance*std::pow(.9f,float(event.wheel.y)),.3f,10000.f);
+            if (event.type==SDL_MOUSEWHEEL) distance=safe(std::clamp(distance*std::pow(.9f,float(event.wheel.y)),.3f,10000.f));
             if (event.type==SDL_MOUSEMOTION) {
                 if (event.motion.state&SDL_BUTTON_RMASK) { yaw+=event.motion.xrel*.15f; pitch=std::clamp(pitch+event.motion.yrel*.15f,-80.f,80.f); }
                 if (event.motion.state&SDL_BUTTON_MMASK) { panX+=event.motion.xrel*distance*.0015f; panY-=event.motion.yrel*distance*.0015f; }
@@ -151,12 +155,12 @@ int preview(std::vector<Panel>& panels, bool smoke, float workspace) {
 }
 int main(int argc,char** argv) {
     try {
-        bool smoke=false,list=false; int fps=30; float workspace=0,surfaceCurve=0;
+        bool smoke=false,list=false; int fps=30; float workspace=0,surfaceCurve=0; int spacing=24;
         std::vector<PanelLayout> layouts; std::string path;
         for (int i=1;i<argc;++i) {
             const std::string arg=argv[i];
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
-            if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs] [--fps 1..60] [--workspace-curvature 0..100] [--surface-curvature 0..100] [--smoke-test]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit; R: recenter; Esc: exit\n"; return 0; }
+            if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs] [--spacing 1..8192] [--fps 1..60] [--workspace-curvature 0..100] [--surface-curvature 0..100] [--smoke-test]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit; R: recenter; Esc: exit\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.2.0-dev\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;
@@ -167,6 +171,7 @@ int main(int argc,char** argv) {
                 if(end!=text.size() || !std::isfinite(c) || c<0 || c>100) throw std::runtime_error("Curvature must be 0..100");
                 if(arg=="--workspace-curvature") workspace=c;else surfaceCurve=c;
             }
+            else if(arg=="--spacing") {auto text=value();size_t end=0;spacing=std::stoi(text,&end);if(end!=text.size() || spacing<1 || spacing>8192) throw std::runtime_error("Spacing must be 1..8192 pixels");}
             else if (arg=="--fps") { auto text=value(); size_t end=0; fps=std::stoi(text,&end); if (end!=text.size() || fps<1 || fps>60) throw std::runtime_error("FPS must be 1..60"); }
             else throw std::runtime_error("Unknown option: "+arg);
         }
@@ -175,6 +180,7 @@ int main(int argc,char** argv) {
         if (!path.empty()) layouts=readLayout(path);
         bool live=!layouts.empty();
         if (!live) for (int i=0;i<3;++i) layouts.push_back({"",float(i)*2000,0,1920,1080});
+        if(path.empty()) for(size_t i=0;i<layouts.size();++i) layouts[i].x=float(i)*(1920+spacing);
         std::unordered_set<std::string> names;
         std::vector<Panel> panels;
         for (auto& layout:layouts) {
@@ -187,6 +193,6 @@ int main(int argc,char** argv) {
             }
             panels.push_back(std::move(p));
         }
-        return preview(panels,smoke,workspace);
+        return preview(panels,smoke,workspace,spacing);
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

@@ -16,6 +16,7 @@ Item {
     property int selected: 0
     property int fps: 30
     property int curvature: 0
+    property int spacing: 24
     property int activeCount: 0
     property bool viewing: false
     property string status: "Loading saved layout…"
@@ -34,7 +35,7 @@ Item {
     function send(action) {
         if (busy || !backend.running) return
         busy = true; error = false
-        backend.write(JSON.stringify({action:action, layout:{version:1, fps:fps, curvature:curvature, monitors:monitors}, id:current.id}) + "\n")
+        backend.write(JSON.stringify({action:action, layout:{version:1, fps:fps, curvature:curvature, spacing:spacing, monitors:monitors}, id:current.id}) + "\n")
     }
     function changed() { dirty = true; canvas.requestPaint() }
     function edit(key, value) {
@@ -46,10 +47,10 @@ Item {
     function setCount(count) {
         var copy = JSON.parse(JSON.stringify(monitors))
         while (copy.length > count) copy.pop()
-        var nextX = copy.reduce(function(n,m) { return Math.max(n,m.x+m.width) },0)
+        var nextX = copy.reduce(function(n,m) { return Math.max(n,m.x+m.width+root.spacing) },0)
         while (copy.length < count) {
             copy.push({id:Date.now().toString(36)+"_"+copy.length, width:1920,height:1080,x:nextX,y:0})
-            nextX += 1920
+            nextX += 1920 + spacing
         }
         monitors = copy; selected = Math.max(0,Math.min(selected,copy.length-1)); changed(); fit()
     }
@@ -58,8 +59,8 @@ Item {
         var cols = grid ? Math.ceil(Math.sqrt(copy.length)) : copy.length
         var x=0,y=0,rowHeight=0
         for (var i=0;i<copy.length;i++) {
-            if (i && i%cols===0) { x=0; y+=rowHeight; rowHeight=0 }
-            copy[i].x=x; copy[i].y=y; x+=copy[i].width; rowHeight=Math.max(rowHeight,copy[i].height)
+            if (i && i%cols===0) { x=0; y+=rowHeight+spacing; rowHeight=0 }
+            copy[i].x=x; copy[i].y=y; x+=copy[i].width+spacing; rowHeight=Math.max(rowHeight,copy[i].height)
         }
         monitors=copy; changed(); fit()
     }
@@ -98,8 +99,8 @@ Item {
                     root.busy=false; root.error=!response.ok
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
                     if (response.layout) {
-                        root.monitors=response.layout.monitors; root.fps=response.layout.fps; root.curvature=response.layout.curvature || 0
-                        root.loaded=true; root.dirty=false; root.status="Arrange your monitors, then Apply."
+                        root.monitors=response.layout.monitors; root.fps=response.layout.fps; root.curvature=response.layout.curvature || 0; root.spacing=response.layout.spacing || 24
+                        root.loaded=true; root.dirty=response.message === "Layout saved"; root.status="Arrange your monitors, then Apply."
                         Qt.callLater(root.fit)
                     }
                     if (response.message) {
@@ -161,6 +162,7 @@ Item {
                 RowLayout {
                     enabled:root.loaded && !root.busy
                     Ui.NumberField { label:"Workspace curvature (%)"; from:0; to:100; stepSize:5; value:root.curvature; fieldWidth:190; onModified:function(value){root.curvature=value;root.changed()} }
+                    Ui.NumberField { label:"Spacing (pixels)"; from:1; to:8192; value:root.spacing; fieldWidth:150; onModified:function(value){root.spacing=value;root.changed()} }
                     Label { Layout.fillWidth:true; wrapMode:Text.WordWrap; text:"0 = flat arrangement. Higher values wrap monitor positions around your viewing origin. Surfaces stay flat unless curved individually."; color:Color.muted }
                 }
                 RowLayout {
