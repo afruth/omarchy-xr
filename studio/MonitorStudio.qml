@@ -21,6 +21,11 @@ Item {
     property bool viewing: false
     property var glasses: ({})
     property bool confirmRecovery: false
+    property string feedback: ""
+    property bool feedbackError: false
+    property string pendingAction: ""
+    function notify(message, failed) { feedback=message; feedbackError=!!failed }
+    function requestRecovery() { confirmRecovery=true }
     property string status: "Loading saved layout…"
     property bool error: false
     property real viewScale: 0.1
@@ -30,14 +35,19 @@ Item {
     readonly property var current: monitors.length ? monitors[Math.min(selected, monitors.length - 1)] : ({width:1920,height:1080,x:0,y:0})
     readonly property real totalPixels: monitors.reduce(function(sum, m) { return sum + m.width * m.height }, 0)
     function open(payload) { window.visible = true; if (!backend.running) backend.running = true }
-    function snapshot() { return JSON.stringify({monitors:monitors, status:status, error:error, busy:busy, active:activeCount, loaded:loaded, glasses:glasses}) }
+    function snapshot() { return JSON.stringify({monitors:monitors, status:status, error:error, busy:busy, active:activeCount, loaded:loaded, glasses:glasses, feedback:feedback, confirmation:confirmRecovery}) }
     function close() { closingFromHost = true; window.visible = false; closingFromHost = false }
     function hide() { if (shell) shell.hide("afruth.omarchy-xr"); else close() }
     function localPath(url) { return decodeURIComponent(String(url).replace(/^file:\/\//, "")) }
     function send(action) {
         if (busy || !backend.running) return
-        busy = true; error = false
-        backend.write(JSON.stringify({action:action, layout:{version:1, fps:fps, curvature:curvature, spacing:spacing, monitors:monitors}, id:current.id}) + "\n")
+        busy = true; pendingAction=action
+        if (action !== "status") {
+            error=false
+            notify(action === "check" ? "Checking glasses connection…" :
+                action === "reinitialize" ? "Starting recovery — watch for the administrator prompt…" : "Working…")
+        }
+        backend.write(JSON.stringify({action:action === "check" ? "status" : action, layout:{version:1, fps:fps, curvature:curvature, spacing:spacing, monitors:monitors}, id:current.id}) + "\n")
     }
     function changed() { dirty = true; canvas.requestPaint() }
     function edit(key, value) {
@@ -98,8 +108,21 @@ Item {
             onRead: function(line) {
                 try {
                     var response=JSON.parse(line)
-                    root.busy=false; root.error=!response.ok
+                    root.busy=false
+                    if (root.pendingAction !== "status" || !response.ok) root.error=!response.ok
+                    var oldRecovery=root.glasses.recoveryMessage || ""
                     if (response.glasses) root.glasses=response.glasses
+                    if (!response.ok) root.notify(response.message || "Action failed", true)
+                    else if (root.pendingAction === "check") {
+                        root.notify("Checked at " + new Date().toLocaleTimeString() + ": "
+                            + (root.glasses.usb ? "USB detected" : "USB not detected") + " · "
+                            + (root.glasses.detectionError || (root.glasses.displays.length
+                                ? "Video on " + root.glasses.displays.join(", ") : "No VITURE video output")))
+                    } else if (response.message) root.notify(response.message)
+                    if (response.ok && root.glasses.recoveryMessage && root.glasses.recoveryMessage !== oldRecovery)
+                        root.notify(root.glasses.recoveryMessage)
+                    if (root.pendingAction === "load" && response.ok) root.feedback=""
+                    root.pendingAction=""
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
                     if (response.layout) {
                         root.monitors=response.layout.monitors; root.fps=response.layout.fps; root.curvature=response.layout.curvature || 0; root.spacing=response.layout.spacing || 24
@@ -110,11 +133,11 @@ Item {
                         root.status=response.message
                         if (response.ok && response.message.indexOf("ready")>=0) root.dirty=false
                     }
-                } catch(e) { root.busy=false; root.error=true; root.status="Could not read backend response: "+e }
+                } catch(e) { root.busy=false; root.error=true; root.status="Could not read backend response: "+e;root.notify(root.status,true) }
             }
         }
         stderr: SplitParser { onRead: function(line) { console.warn("XR Studio: "+line) } }
-        onExited: function(code) { root.busy=false; root.loaded=false; root.error=true; root.status="Monitor manager stopped ("+code+"). Reopen the panel to retry." }
+        onExited: function(code) { root.busy=false; root.loaded=false; root.error=true; root.status="Monitor manager stopped ("+code+"). Reopen the panel to retry.";root.notify(root.status,true) }
     }
     Timer { interval:3000; repeat:true; running:window.visible && root.loaded; onTriggered: if (!root.busy) root.send("status") }
     component Label: Text { color:Color.foreground; font.family:Style.font.family; font.pixelSize:Style.font.body; textFormat:Text.PlainText }
@@ -130,12 +153,58 @@ Item {
         minimumSize: Qt.size(780,600)
         onVisibleChanged: if (!visible && !root.closingFromHost && root.shell) root.shell.hide("afruth.omarchy-xr")
         FocusScope {
+            id: frame
             anchors.fill: parent
             focus: true
             Keys.onEscapePressed: root.hide()
+            Rectangle {
+                id: feedbackBanner
+                anchors.top:parent.top; anchors.left:parent.left; anchors.right:parent.right
+                anchors.margins:Style.space(20)
+                height:root.feedback ? feedbackLabel.implicitHeight + Style.space(24) : 0
+                visible:!!root.feedback
+                color:Color.background
+                border.color:root.feedbackError ? Color.urgent : Color.accent
+                Label {
+                    id:feedbackLabel
+                    anchors.left:parent.left; anchors.right:parent.right; anchors.verticalCenter:parent.verticalCenter
+                    anchors.margins:Style.space(12)
+                    wrapMode:Text.WordWrap
+                    text:root.feedback
+                    color:root.feedbackError ? Color.urgent : Color.foreground
+                    Accessible.role:Accessible.StaticText
+                    Accessible.name:text
+                }
+            }
+            QQC.Popup {
+                id: recoveryDialog
+                parent:frame
+                x:(frame.width-width)/2; y:(frame.height-height)/2
+                width:Math.min(500,frame.width-40)
+                padding:Style.space(20)
+                modal:true; focus:true
+                visible:root.confirmRecovery
+                closePolicy:QQC.Popup.CloseOnEscape
+                onClosed:root.confirmRecovery=false
+                background:Rectangle { color:Color.background; border.color:Color.accent }
+                contentItem:ColumnLayout {
+                    spacing:Style.space(16)
+                    Label { text:"Reinitialize glasses connection?"; font.bold:true; Layout.fillWidth:true; wrapMode:Text.WordWrap }
+                    Label {
+                        text:"This restarts the USB-C controller. Other USB-C devices may briefly disconnect. An administrator prompt will appear."
+                        Layout.fillWidth:true; wrapMode:Text.WordWrap
+                    }
+                    RowLayout {
+                        Action { text:"Cancel"; onClicked:{root.confirmRecovery=false;root.notify("Reinitialization cancelled. No changes made.")} }
+                        Action { text:"Reinitialize"; enabled:!root.busy && !!root.glasses.canReset; onClicked:{root.confirmRecovery=false;root.send("reinitialize")} }
+                    }
+                }
+            }
             QQC.ScrollView {
                 id: scroll
-                anchors.fill: parent; anchors.margins: Style.space(20)
+                anchors.top:feedbackBanner.bottom
+                anchors.left:parent.left; anchors.right:parent.right; anchors.bottom:parent.bottom
+                anchors.margins: Style.space(20)
                 contentWidth: Math.max(availableWidth, 780)
                 ColumnLayout {
                 width: scroll.contentWidth
@@ -161,11 +230,11 @@ Item {
                                 + " · " + (root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length
                                     ? "Video on " + root.glasses.displays.join(", ") : "No VITURE video output"))
                         }
-                        Action { text:"Check connection"; enabled:root.loaded && !root.busy; onClicked:root.send("status") }
+                        Action { text:"Check connection"; enabled:root.loaded && !root.busy; onClicked:root.send("check") }
                         Action {
                             text:root.glasses.recovering ? "Reinitializing…" : "Reinitialize USB-C…"
                             enabled:root.loaded && !root.busy && !!root.glasses.canReset
-                            onClicked:root.confirmRecovery=true
+                            onClicked:root.requestRecovery()
                         }
                     }
                     Label {
@@ -178,18 +247,7 @@ Item {
                         text:"Automatic recovery needs one supported USB-C controller and pkexec. Try unplugging and reconnecting the glasses."
                         Layout.fillWidth:true; wrapMode:Text.WordWrap; color:Color.muted
                     }
-                    ColumnLayout {
-                        visible:root.confirmRecovery
-                        Layout.fillWidth:true
-                        Label {
-                            text:"Restart the USB-C controller? Other USB-C devices may briefly disconnect. An administrator prompt will appear."
-                            Layout.fillWidth:true; wrapMode:Text.WordWrap
-                        }
-                        RowLayout {
-                            Action { text:"Reinitialize"; enabled:!root.busy && !!root.glasses.canReset; onClicked:{root.confirmRecovery=false;root.send("reinitialize")} }
-                            Action { text:"Cancel"; onClicked:root.confirmRecovery=false }
-                        }
-                    }
+
                 }
                 RowLayout {
                     enabled:root.loaded && !root.busy
