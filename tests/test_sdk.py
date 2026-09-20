@@ -27,6 +27,7 @@ class SessionTests(unittest.TestCase):
         function("get_device_type", 1)
         function("is_product_id_valid", 1)
         function("get_display_mode", 0x31)
+        function("get_brightness_level", 4)
         with patch("sdk_worker.C.CDLL", return_value=library):
             session = Session("/fake/libglasses.so")
         return session, library, calls
@@ -58,6 +59,16 @@ class SessionTests(unittest.TestCase):
         session.connect(0x1301)
         self.assertTrue(session.communication)
         self.assertIn("Unsupported", session.tracking_error)
+        session.close()
+
+    def test_display_query_failure_does_not_disable_tracking(self):
+        session, library, calls = self.make_session()
+        library.xr_device_provider_get_display_mode.side_effect = lambda *args: -7
+        session.connect(0x1301)
+        self.assertTrue(session.communication)
+        self.assertTrue(session.imu)
+        self.assertIsNone(session.mode)
+        self.assertIn("rejected", session.state()["displayError"])
         session.close()
 
     def test_reapply_readback_mismatch(self):

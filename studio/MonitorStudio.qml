@@ -123,7 +123,7 @@ Item {
                     if (response.ok && root.glasses.recoveryMessage && root.glasses.recoveryMessage !== oldRecovery)
                         root.notify(root.glasses.recoveryMessage)
                     if (response.ok && root.glasses.sdk && root.glasses.sdk.message !== oldSDK)
-                        root.notify(root.glasses.sdk.message, root.glasses.sdk.error)
+                        { root.notify(root.glasses.sdk.message, root.glasses.sdk.error); root.status=root.glasses.sdk.message }
                     if (root.pendingAction === "load" && response.ok) root.feedback=""
                     root.pendingAction=""
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
@@ -273,8 +273,8 @@ Item {
                         }
                     }
                     Label {
-                        visible:!!(root.glasses.sdk || {}).trackingError
-                        text:(root.glasses.sdk || {}).trackingError || ""
+                        visible:!!((root.glasses.sdk || {}).trackingError || (root.glasses.sdk || {}).displayError)
+                        text:[(root.glasses.sdk || {}).trackingError, (root.glasses.sdk || {}).displayError].filter(function(x){return !!x}).join(" · ")
                         Layout.fillWidth:true; wrapMode:Text.WordWrap; color:Color.urgent
                     }
                     Label {

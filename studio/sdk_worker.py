@@ -20,6 +20,7 @@ class Session:
         self.mode = None
         self.communication = False
         self.tracking_error = ""
+        self.display_error = ""
         self.callback = POSE(self.on_pose)
         signatures = {
             "is_product_id_valid": ([C.c_int], C.c_int),
@@ -34,6 +35,7 @@ class Session:
             "open_imu": ([C.c_void_p, C.c_uint8, C.c_uint8], C.c_int),
             "close_imu": ([C.c_void_p, C.c_uint8], C.c_int),
             "get_display_mode": ([C.c_void_p], C.c_int),
+            "get_brightness_level": ([C.c_void_p], C.c_int),
             "set_display_mode": ([C.c_void_p, C.c_int], C.c_int),
         }
         for name, (args, result) in signatures.items():
@@ -73,8 +75,12 @@ class Session:
             self.check("start", self.handle)
             self.started = True
             # An acknowledged device query, not just a successfully allocated handle.
-            self.mode = self.check("get_display_mode", self.handle)
+            self.check("get_brightness_level", self.handle)
             self.communication = True
+            try:
+                self.mode = self.check("get_display_mode", self.handle)
+            except RuntimeError as exc:
+                self.display_error = str(exc)
             try:
                 self.check("open_imu", self.handle, 1, 2)  # pose, 120 Hz
                 self.imu = True
@@ -94,6 +100,7 @@ class Session:
         if actual != mode:
             raise RuntimeError("Display mode readback did not match")
         self.mode = actual
+        self.display_error = ""
 
     def close(self):
         if self.handle:
@@ -111,11 +118,12 @@ class Session:
         self.last_pose = self.samples = 0
         self.mode = None
         self.tracking_error = ""
+        self.display_error = ""
 
     def state(self):
         return {"communication": self.communication,
                 "tracking": bool(self.last_pose and time.monotonic() - self.last_pose < 2),
-                "samples": self.samples, "displayMode": self.mode, "trackingError": self.tracking_error}
+                "samples": self.samples, "displayMode": self.mode, "trackingError": self.tracking_error, "displayError": self.display_error}
 
 
 def main():
@@ -136,9 +144,14 @@ def main():
         message = "SDK connected; waiting for tracking samples. Video is checked separately."
         sequence += 1
         last_query = time.monotonic()
+        reported_tracking = False
         while True:
+            if session.state()["tracking"] and not reported_tracking:
+                message = "SDK connected and receiving head tracking. Video is checked separately."
+                sequence += 1
+                reported_tracking = True
             if time.monotonic() - last_query >= 5:
-                session.mode = session.check("get_display_mode", session.handle)
+                session.check("get_brightness_level", session.handle)
                 last_query = time.monotonic()
             publish()
             readable, _, _ = select.select([sys.stdin], [], [], 1)

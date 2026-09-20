@@ -253,8 +253,8 @@ After installing those rules, reload them with
 `sudo udevadm control --reload-rules` in a terminal, then reconnect the cable.
 The SDK itself runs as your normal user.
 
-**Connect glasses / Reconnect glasses** opens a fresh SDK session, queries the
-current display mode to verify communication, and requests 120 Hz pose samples.
+**Connect glasses / Reconnect glasses** opens a fresh SDK session, queries brightness to verify communication, reads the display mode when supported,
+and requests 120 Hz pose samples. A rejected display-mode query does not disable tracking.
 Tracking status requires a valid sample within two seconds; it does not merely
 report that streaming was requested. **Retry display mode** reapplies the mode
 reported by the glasses and checks the readback. This may interrupt the glasses'
@@ -268,4 +268,7 @@ it back in. Recovery never automatically escalates to a USB-C controller reset.
 The panel shows USB, SDK communication, recent tracking samples, and video
 separately. Logs are in `~/.local/state/omarchy-xr/sdk.log`.
 This change verifies tracking reception; the renderer remains mouse-controlled.
-Real SDK/hardware validation is pending installation of the vendor library.
+Validated with the Linux x86_64 SDK and attached Pro 2: SDK communication and
+pose samples work as a normal user with the udev rules installed. On this device,
+the firmware rejects the display-mode query (-7), so display-mode recovery is
+unavailable; the missing video connection remains unresolved.
