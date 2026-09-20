@@ -221,4 +221,51 @@ A successful controller reset does not guarantee video: firmware, cables,
 and DisplayPort negotiation can still prevent a connection. The UI keeps
 checking actual USB and video status; try reconnecting the cable or a full
 shutdown if video stays absent. This recovers the OS connection, not a VITURE
-SDK session (tracking integration is still pending).
+SDK session. Use the SDK connection controls below for that.
+
+
+### SDK connection (Pro 2 / Gen1 / Gen2)
+
+Obtain the current **VITURE XR Glasses SDK**, **Linux (x86_64)**, from
+https://www.viture.com/developer. The download form emails a link after
+submission. Extract the archive and install its library directory locally:
+
+```sh
+python3 scripts/install-sdk.py /path/to/linux/library-directory
+```
+
+That directory must contain `libglasses.so`; sibling shared libraries are copied
+alongside it to `~/.local/share/omarchy-xr/sdk/`. Vendor binaries remain outside
+the repository. For development, `VITURE_SDK_LIBRARY` can select another absolute
+library path (set it in the backend's environment). The adapter follows the
+[current C API](https://www.viture.com/en-SG/developer/glasses-sdk/glasses);
+older `libviture_one_sdk.so` packages are not compatible.
+
+Linux USB access may need the official udev rules in
+`/etc/udev/rules.d/70-viture.rules`:
+
+```udev
+SUBSYSTEM=="usb", ACTION=="add", ATTRS{idVendor}=="35ca", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNEL=="hidraw[0-9]*", ATTRS{idVendor}=="35ca", MODE="0660", TAG+="uaccess"
+```
+
+After installing those rules, reload them with
+`sudo udevadm control --reload-rules` in a terminal, then reconnect the cable.
+The SDK itself runs as your normal user.
+
+**Connect glasses / Reconnect glasses** opens a fresh SDK session, queries the
+current display mode to verify communication, and requests 120 Hz pose samples.
+Tracking status requires a valid sample within two seconds; it does not merely
+report that streaming was requested. **Retry display mode** reapplies the mode
+reported by the glasses and checks the readback. This may interrupt the glasses'
+video briefly and does not guarantee restoration of DisplayPort negotiation.
+**Disconnect SDK** closes the SDK session without resetting USB-C or removing
+virtual monitors.
+
+The SDK runs in a separate process with timeout/crash handling. Unplugging marks
+it disconnected on the next status poll; reconnect with the button after plugging
+it back in. Recovery never automatically escalates to a USB-C controller reset.
+The panel shows USB, SDK communication, recent tracking samples, and video
+separately. Logs are in `~/.local/state/omarchy-xr/sdk.log`.
+This change verifies tracking reception; the renderer remains mouse-controlled.
+Real SDK/hardware validation is pending installation of the vendor library.

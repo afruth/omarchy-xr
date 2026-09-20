@@ -111,6 +111,7 @@ Item {
                     root.busy=false
                     if (root.pendingAction !== "status" || !response.ok) root.error=!response.ok
                     var oldRecovery=root.glasses.recoveryMessage || ""
+                    var oldSDK=(root.glasses.sdk || {}).message || ""
                     if (response.glasses) root.glasses=response.glasses
                     if (!response.ok) root.notify(response.message || "Action failed", true)
                     else if (root.pendingAction === "check") {
@@ -121,6 +122,8 @@ Item {
                     } else if (response.message) root.notify(response.message)
                     if (response.ok && root.glasses.recoveryMessage && root.glasses.recoveryMessage !== oldRecovery)
                         root.notify(root.glasses.recoveryMessage)
+                    if (response.ok && root.glasses.sdk && root.glasses.sdk.message !== oldSDK)
+                        root.notify(root.glasses.sdk.message, root.glasses.sdk.error)
                     if (root.pendingAction === "load" && response.ok) root.feedback=""
                     root.pendingAction=""
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
@@ -236,6 +239,43 @@ Item {
                             enabled:root.loaded && !root.busy && !!root.glasses.canReset
                             onClicked:root.requestRecovery()
                         }
+                    }
+                    ColumnLayout {
+                        id:sdkControls
+                        Layout.fillWidth:true
+                        readonly property var sdk:root.glasses.sdk || ({})
+                        Label {
+                            Layout.fillWidth:true; wrapMode:Text.WordWrap
+                            text:"SDK: " + (!sdkControls.sdk.available ? "not installed" : sdkControls.sdk.communication ? "communicating" : "disconnected")
+                                + " · Tracking: " + (sdkControls.sdk.tracking ? "receiving (" + sdkControls.sdk.samples + " samples)" : "no recent samples")
+                                + (sdkControls.sdk.displayMode !== undefined && sdkControls.sdk.displayMode !== null ? " · Mode: 0x" + sdkControls.sdk.displayMode.toString(16) : "")
+                        }
+                        RowLayout {
+                        Action {
+                            text:"Get SDK"; visible:!sdkControls.sdk.available
+                            onClicked:Qt.openUrlExternally("https://www.viture.com/developer")
+                        }
+                        Action {
+                            text:sdkControls.sdk.busy ? "Connecting / working…" : sdkControls.sdk.communication ? "Reconnect glasses" : "Connect glasses"
+                            enabled:root.loaded && !root.busy && !sdkControls.sdk.busy && !root.glasses.recovering
+                            onClicked:root.send("sdk_connect")
+                        }
+                        Action {
+                            text:"Retry display mode"
+                            enabled:root.loaded && !root.busy && !!sdkControls.sdk.communication && !sdkControls.sdk.busy && !root.glasses.recovering
+                            onClicked:root.send("sdk_restore")
+                        }
+                        Action {
+                            text:"Disconnect SDK"
+                            enabled:root.loaded && !root.busy && (!!sdkControls.sdk.communication || !!sdkControls.sdk.busy)
+                            onClicked:root.send("sdk_disconnect")
+                        }
+                        }
+                    }
+                    Label {
+                        visible:!!(root.glasses.sdk || {}).trackingError
+                        text:(root.glasses.sdk || {}).trackingError || ""
+                        Layout.fillWidth:true; wrapMode:Text.WordWrap; color:Color.urgent
                     }
                     Label {
                         visible:!!root.glasses.recoveryMessage

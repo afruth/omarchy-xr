@@ -14,6 +14,7 @@ import time
 import uuid
 
 from glasses import Recovery, detect
+from sdk import SDK
 
 
 def default_layout():
@@ -120,6 +121,7 @@ class Manager:
         self.prefix = "OMXR-" + uuid.uuid4().hex[:8] + "-"
         self.applied = None
         self.recovery = Recovery()
+        self.sdk = SDK(self.directory)
         self.viewer = None
         self.log = None
         if self.journal.exists():
@@ -265,6 +267,7 @@ class Manager:
             glasses = detect([])
             glasses["detectionError"] = "Display status unavailable"
         glasses.update(self.recovery.status())
+        glasses["sdk"] = self.sdk.status()
         return {"active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "glasses": glasses}
 
@@ -287,7 +290,15 @@ def serve(manager):
             elif action == "terminal":
                 manager.terminal(request["id"]); response = {"message": "Terminal opened on selected monitor"}
             elif action == "reinitialize":
-                manager.recovery.start(); response = {}
+                manager.sdk.disconnect(); manager.recovery.start(); response = {}
+            elif action == "sdk_connect":
+                if manager.recovery.status()["recovering"]:
+                    raise RuntimeError("Wait for USB-C recovery to finish")
+                manager.sdk.connect(); response = {}
+            elif action == "sdk_disconnect":
+                manager.sdk.disconnect(); response = {"message": "SDK disconnected"}
+            elif action == "sdk_restore":
+                manager.sdk.restore(); response = {}
             elif action == "status":
                 response = {}
             else:
@@ -312,6 +323,7 @@ def main():
         serve(manager)
     finally:
         if manager:
+            manager.sdk.disconnect()
             manager.cleanup()
 
 

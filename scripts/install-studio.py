@@ -11,7 +11,7 @@ if not (root / "build/omarchy-xr").is_file():
 target = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home()/".config"))) / "omarchy/plugins/afruth.omarchy-xr"
 if target.exists() and (not (target/"manifest.json").exists() or json.loads((target/"manifest.json").read_text()).get("id") != "afruth.omarchy-xr"):
     raise SystemExit("Refusing to overwrite an unrelated plugin directory")
-for file in ("manifest.json", "LICENSE", "studio/MonitorStudio.qml", "studio/backend.py", "studio/glasses.py"):
+for file in ("manifest.json", "LICENSE", "studio/MonitorStudio.qml", "studio/backend.py", "studio/glasses.py", "studio/sdk.py", "studio/sdk_worker.py"):
     destination = target / file
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(root/file, destination)
