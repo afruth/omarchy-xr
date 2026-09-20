@@ -199,3 +199,25 @@ is not affiliated with VITURE or Omarchy.
 
 See [architecture and milestones](docs/architecture.md) and the
 [Omarchy plugin development guide](https://plugins.omarchy.org/develop.html).
+
+### Reconnecting glasses
+
+Monitor Studio checks the glasses connection every three seconds while open.
+The connection row reports USB detection separately from an active display
+identified as VITURE by Hyprland. **Check connection** refreshes this status
+without changing your displays. An unidentified display is not assumed to be
+the glasses.
+
+If reconnecting the cable does not restore video, choose **Reinitialize USB-C…**
+and confirm. This requests administrator authorization through polkit and
+unbinds/rebinds the supported UCSI ACPI controller. Other devices using USB-C
+may briefly disconnect. Recovery is available only when exactly one supported
+controller is found and `pkexec` is installed. It runs asynchronously and
+does not delete the virtual monitor layout. Cancelling authorization leaves
+the controller untouched.
+
+A successful controller reset does not guarantee video: firmware, cables,
+and DisplayPort negotiation can still prevent a connection. The UI keeps
+checking actual USB and video status; try reconnecting the cable or a full
+shutdown if video stays absent. This recovers the OS connection, not a VITURE
+SDK session (tracking integration is still pending).

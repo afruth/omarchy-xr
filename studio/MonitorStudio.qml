@@ -19,6 +19,8 @@ Item {
     property int spacing: 24
     property int activeCount: 0
     property bool viewing: false
+    property var glasses: ({})
+    property bool confirmRecovery: false
     property string status: "Loading saved layout…"
     property bool error: false
     property real viewScale: 0.1
@@ -28,7 +30,7 @@ Item {
     readonly property var current: monitors.length ? monitors[Math.min(selected, monitors.length - 1)] : ({width:1920,height:1080,x:0,y:0})
     readonly property real totalPixels: monitors.reduce(function(sum, m) { return sum + m.width * m.height }, 0)
     function open(payload) { window.visible = true; if (!backend.running) backend.running = true }
-    function snapshot() { return JSON.stringify({monitors:monitors, status:status, error:error, busy:busy, active:activeCount, loaded:loaded}) }
+    function snapshot() { return JSON.stringify({monitors:monitors, status:status, error:error, busy:busy, active:activeCount, loaded:loaded, glasses:glasses}) }
     function close() { closingFromHost = true; window.visible = false; closingFromHost = false }
     function hide() { if (shell) shell.hide("afruth.omarchy-xr"); else close() }
     function localPath(url) { return decodeURIComponent(String(url).replace(/^file:\/\//, "")) }
@@ -89,7 +91,7 @@ Item {
 
     Process {
         id: backend
-        command: ["python3", root.localPath(Qt.resolvedUrl("backend.py")), "--renderer", root.localPath(Qt.resolvedUrl("../bin/omarchy-xr"))]
+        command: ["python3", "-B", root.localPath(Qt.resolvedUrl("backend.py")), "--renderer", root.localPath(Qt.resolvedUrl("../bin/omarchy-xr"))]
         stdinEnabled: true
         onStarted: { root.busy=false; root.send("load") }
         stdout: SplitParser {
@@ -97,6 +99,7 @@ Item {
                 try {
                     var response=JSON.parse(line)
                     root.busy=false; root.error=!response.ok
+                    if (response.glasses) root.glasses=response.glasses
                     root.activeCount=response.active || 0; root.viewing=!!response.viewing
                     if (response.layout) {
                         root.monitors=response.layout.monitors; root.fps=response.layout.fps; root.curvature=response.layout.curvature || 0; root.spacing=response.layout.spacing || 24
@@ -136,7 +139,7 @@ Item {
                 contentWidth: Math.max(availableWidth, 780)
                 ColumnLayout {
                 width: scroll.contentWidth
-                height: Math.max(scroll.availableHeight, 740)
+                height: Math.max(scroll.availableHeight, 850)
                 spacing: Style.space(12)
                 RowLayout {
                     Layout.fillWidth: true
@@ -147,6 +150,46 @@ Item {
                     Item { Layout.fillWidth:true }
                     Label { text:root.activeCount+" active"+(root.viewing ? " · viewer open" : "") }
                     Action { text:"Close"; onClicked:root.hide() }
+                }
+                ColumnLayout {
+                    Layout.fillWidth:true
+                    RowLayout {
+                        Layout.fillWidth:true
+                        Label {
+                            Layout.fillWidth:true; wrapMode:Text.WordWrap
+                            text:"Glasses: " + (root.glasses.usb ? "USB detected" : "USB not detected")
+                                + " · " + (root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length
+                                    ? "Video on " + root.glasses.displays.join(", ") : "No VITURE video output"))
+                        }
+                        Action { text:"Check connection"; enabled:root.loaded && !root.busy; onClicked:root.send("status") }
+                        Action {
+                            text:root.glasses.recovering ? "Reinitializing…" : "Reinitialize USB-C…"
+                            enabled:root.loaded && !root.busy && !!root.glasses.canReset
+                            onClicked:root.confirmRecovery=true
+                        }
+                    }
+                    Label {
+                        visible:!!root.glasses.recoveryMessage
+                        text:root.glasses.recoveryMessage || ""
+                        Layout.fillWidth:true; wrapMode:Text.WordWrap; color:Color.muted
+                    }
+                    Label {
+                        visible:root.loaded && !root.glasses.canReset && !root.glasses.recovering
+                        text:"Automatic recovery needs one supported USB-C controller and pkexec. Try unplugging and reconnecting the glasses."
+                        Layout.fillWidth:true; wrapMode:Text.WordWrap; color:Color.muted
+                    }
+                    ColumnLayout {
+                        visible:root.confirmRecovery
+                        Layout.fillWidth:true
+                        Label {
+                            text:"Restart the USB-C controller? Other USB-C devices may briefly disconnect. An administrator prompt will appear."
+                            Layout.fillWidth:true; wrapMode:Text.WordWrap
+                        }
+                        RowLayout {
+                            Action { text:"Reinitialize"; enabled:!root.busy && !!root.glasses.canReset; onClicked:{root.confirmRecovery=false;root.send("reinitialize")} }
+                            Action { text:"Cancel"; onClicked:root.confirmRecovery=false }
+                        }
+                    }
                 }
                 RowLayout {
                     enabled:root.loaded && !root.busy

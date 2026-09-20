@@ -13,6 +13,8 @@ import sys
 import time
 import uuid
 
+from glasses import Recovery, detect
+
 
 def default_layout():
     return {"version": 1, "fps": 30, "curvature": 0, "spacing": 24, "monitors": [
@@ -117,6 +119,7 @@ class Manager:
         self.owned = set()
         self.prefix = "OMXR-" + uuid.uuid4().hex[:8] + "-"
         self.applied = None
+        self.recovery = Recovery()
         self.viewer = None
         self.log = None
         if self.journal.exists():
@@ -256,7 +259,14 @@ class Manager:
         self.runner("eval", f'hl.exec_cmd("foot", {{workspace="{workspace} silent"}})')
 
     def status(self):
-        return {"active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None}
+        try:
+            glasses = detect(self.monitors())
+        except Exception:
+            glasses = detect([])
+            glasses["detectionError"] = "Display status unavailable"
+        glasses.update(self.recovery.status())
+        return {"active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
+                "glasses": glasses}
 
 
 def serve(manager):
@@ -276,6 +286,8 @@ def serve(manager):
                 manager.cleanup(); response = {"message": "Viewer stopped and virtual monitors removed"}
             elif action == "terminal":
                 manager.terminal(request["id"]); response = {"message": "Terminal opened on selected monitor"}
+            elif action == "reinitialize":
+                manager.recovery.start(); response = {}
             elif action == "status":
                 response = {}
             else:
