@@ -5,10 +5,13 @@
 #include <cassert>
 #include <iostream>
 int main(){
-    assert(DesktopCapture::nextRetryMs(0)==500);
-    assert(DesktopCapture::nextRetryMs(500)==1000);
-    assert(DesktopCapture::nextRetryMs(2500)==5000);
-    assert(DesktopCapture::nextRetryMs(5000)==5000);
+    int retry=DesktopCapture::nextRetryMs(0);
+    assert(retry==500);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==1000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==2000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==4000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==5000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==5000);
     auto same=scalePasses(3840,2160,3840,2160);
     assert(same.size()==1 && same[0].width==3840 && same[0].height==2160);
     auto half=scalePasses(3840,2160,1920,1080);
