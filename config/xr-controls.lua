@@ -7,6 +7,10 @@ local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) 
 local path = runtime_root .. "/pose.sock.controls"
 local CONTROLS_VERSION = 2
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
+if omarchy_xr_controls.hover_timer then
+    omarchy_xr_controls.hover_timer:set_enabled(false)
+    omarchy_xr_controls.hover_timer=nil
+end
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
 local active = false
 local lastTap, tapBlockedUntil=nil,0
@@ -238,7 +242,7 @@ function setHoverTimer(enabled)
     if enabled then
         if not hoverTimer then hoverTimer=hl.timer(updatePointer,{timeout=33,type="repeat"}) end
     elseif hoverTimer then
-        if hoverTimer.stop then hoverTimer:stop() end
+        hoverTimer:set_enabled(false)
         hoverTimer=nil
     end
     omarchy_xr_controls.hover_timer=hoverTimer

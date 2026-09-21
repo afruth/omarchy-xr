@@ -19,3 +19,9 @@ inline std::vector<ScalePass> scalePasses(unsigned sourceWidth, unsigned sourceH
         passes.push_back({destWidth, destHeight});
     return passes;
 }
+
+// -1 writes the panel texture. 0 and 1 alternate scratch images so a pass never reads the image it reallocates.
+inline int scalePassScratch(unsigned index, unsigned count) {
+    if (count == 0 || index + 1 >= count) return -1;
+    return static_cast<int>(index % 2);
+}

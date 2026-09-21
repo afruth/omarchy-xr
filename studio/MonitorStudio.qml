@@ -340,6 +340,7 @@ Item {
                     var response = JSON.parse(line);
                     if (response.graphicsLimits) root.graphicsLimits=response.graphicsLimits;
                     var replyAction = requests.finish(response.requestId);
+                    if (!root.busy) root.backendSlow = false;
                     if (!replyAction) return;
                     if (response.environment) {
                         root.environmentSettings=response.environment.settings;
@@ -406,6 +407,7 @@ Item {
                     }
                 } catch (e) {
                     requests.reset();
+                    root.backendSlow = false;
                     root.error = true;
                     root.status = "Could not read backend response: " + e;
                     root.notify(root.status, true);
@@ -419,6 +421,7 @@ Item {
         }
         onExited: function (code) {
             requests.reset();
+            root.backendSlow = false;
             root.loaded = false;
             root.error = true;
             root.status = "Monitor manager stopped (" + code + "). Reopen the panel to retry.";
@@ -429,14 +432,13 @@ Item {
         interval: root.opened ? 3000 : 10000
         repeat: true
         running: root.loaded && (root.opened || root.viewing)
+        onTriggered: if (!root.busy) root.send("status")
     }
     Timer {
         interval: 1000
         repeat: true
         running: root.busy
         onTriggered: if (root.busySinceMs > 0 && Date.now() - root.busySinceMs > 20000) root.backendSlow = true
-        onTriggered: if (!root.busy)
-            root.send("status")
     }
     component Label: Text {
         color: Color.foreground

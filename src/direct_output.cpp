@@ -59,7 +59,7 @@ struct DirectOutput::Impl {
     }
     ~Impl(){
         if(fd>=0 && crtc)drmModeSetCrtc(fd,crtc,0,0,0,nullptr,0,nullptr);
-        if(egl!=EGL_NO_DISPLAY){eglMakeCurrent(egl,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(egl,context);if(eglSurface!=EGL_NO_SURFACE)eglDestroySurface(egl,eglSurface);eglTerminate(egl);}
+        if(egl!=EGL_NO_DISPLAY){if(context!=EGL_NO_CONTEXT && eglGetCurrentContext()==context)eglMakeCurrent(egl,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(egl,context);if(eglSurface!=EGL_NO_SURFACE)eglDestroySurface(egl,eglSurface);eglTerminate(egl);}
         if(front && surface)gbm_surface_release_buffer(surface,front);
         for(auto [bo,id]:framebuffers){(void)bo;drmModeRmFB(fd,id);}
         if(surface)gbm_surface_destroy(surface);

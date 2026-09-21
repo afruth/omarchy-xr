@@ -330,7 +330,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     GpuTimers gpuTimers;gpuTimers.probe();
     unsigned missedBaseline=output?output->missedVblanks():0;
     unsigned seenMisses=missedBaseline;
-    double fallbackUntil=0, workP99=0, gpuP99=5, workMax=0, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=latchMarginMs(0, gpuP99);
+    double workP99=0, gpuP99=5, workMax=0, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=latchMarginMs(0, gpuP99);
     MissPenalty missPenalty;
     // Optional, live-reloaded stabilisation settings; see tracking::Prediction.
     const std::string trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
@@ -365,10 +365,17 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         const double deadline=monotonicSeconds()+10;
         while(monotonicSeconds()<deadline && !interrupted){
             try{
+                glBindFramebuffer(GL_FRAMEBUFFER,0);
+                for(auto& p:panels){
+                    if(p.texture)glDeleteTextures(1,&p.texture);
+                    p.texture=0; p.frame.texture=0; p.cpuWidth=p.cpuHeight=0; p.capture.reset();
+                }
+                spectator.reset();
+                environment.release();
+                gpuTimers.reset();
                 output=std::make_unique<DirectOutput>(display,stereo);
                 if(!output->pump()) throw std::runtime_error("Replacement lease is not active");
                 for(auto& p:panels){
-                    p.texture=0; p.cpuWidth=0; p.capture.reset();
                     p.retryAt=monotonicSeconds(); p.retryMs=500; p.captureStatus="reconnecting after lease";
                     glGenTextures(1,&p.texture); glBindTexture(GL_TEXTURE_2D,p.texture);
                     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
@@ -376,6 +383,9 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
                 }
+                gpuTimers.probe();
+                seenMisses=output->missedVblanks();
+                missedBaseline=seenMisses;
                 return true;
             }catch(const std::exception& error){
                 std::cerr<<error.what()<<'\n';
@@ -414,8 +424,8 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     while (running && !interrupted) {
         const double frameStarted=monotonicSeconds();
         if(!ensureLease()) break;
-        // Direct mode samples the pose at the end of the idle time. A missed vblank returns to sampling immediately for one second.
-        const bool earlyPose=!output || monotonicSeconds()<fallbackUntil || !output->hasVblank();
+        // Direct mode samples the pose at the latch deadline. With no direct output or no vblank timestamp yet, sample at the start of the frame.
+        const bool earlyPose=!output || !output->hasVblank();
         if(!earlyPose){
             lastMarginMs=latchMarginMs(workP99, gpuP99)+missPenalty.value(monotonicSeconds());
             const auto hz=output->refreshHz();
@@ -712,7 +722,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         const double now=monotonicSeconds(); lastFrameMs=(now-frameStarted)*1000; frameTimes.push_back(lastFrameMs);
         if(output){
             const unsigned missedNow=output->missedVblanks();
-            if(missedNow>seenMisses){ missPenalty.miss(now,missedNow-seenMisses); fallbackUntil=now+1; seenMisses=missedNow; }
+            if(missedNow>seenMisses){ missPenalty.miss(now,missedNow-seenMisses); seenMisses=missedNow; }
         }
         if(now-reportTime>=5){
             std::sort(workTimes.begin(),workTimes.end());std::sort(frameTimes.begin(),frameTimes.end());

@@ -46,6 +46,22 @@ public:
         available = slots[0].capture && slots[0].scene;
     }
 
+    void reset() {
+        if (deleteQueries) {
+            for (auto& slot : slots) {
+                if (slot.capture) deleteQueries(1, &slot.capture);
+                if (slot.scene) deleteQueries(1, &slot.scene);
+                slot = {};
+            }
+        } else {
+            for (auto& slot : slots) slot = {};
+        }
+        probed = false;
+        available = false;
+        active = -1;
+        drain();
+    }
+
     bool begin(Kind kind) {
         if (!available) return false;
         if (active < 0) {

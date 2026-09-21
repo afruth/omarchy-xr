@@ -12,10 +12,10 @@
 #include <time.h>
 #include <unistd.h>
 
-// Mailboxes sit beside the pose socket. The renderer also mirrors them to
-// OMARCHY_XR_MIRROR_STATE for one release so an older installed adapter still
-// sees the heartbeat. Hyprland writes cumulative motion, so coalescing never
-// drops swipe distance.
+// Mailboxes sit beside the pose socket. Hover and the heartbeat are also
+// mirrored to OMARCHY_XR_MIRROR_STATE temporarily, until the Lua adapter
+// installed by make install-controls reads the runtime path. Hyprland writes
+// cumulative motion, so coalescing never drops swipe distance.
 class LiveControls {
     std::string path, mirror, session;
     std::string controlsSeen, panSeen;

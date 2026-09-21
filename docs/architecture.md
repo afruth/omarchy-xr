@@ -294,7 +294,9 @@ The default is `tracking-v1 20 2 20 5`. A lower horizon, higher speeds or more s
 steadier image; the opposite gives less lag. `0` for the horizon disables prediction. Removing the
 file restores the defaults, and an invalid line is ignored with a message in `viewer.log`.
 
-A missed vblank returns to early sampling for one second and adds 1 ms to the latch margin
-(`MissPenalty`, at most 6 ms, draining at 1 ms per 20 s). The scene GPU timer that feeds the margin
-includes the spectator render, because it queues ahead of the stereo scene. `pose.sock.stats`
-reports `predictionMs`, `predictionCapMs`, `latchMarginMs` and `latchPenaltyMs`.
+Each missed vblank adds 1 ms of latch margin (`MissPenalty`, at most 6 ms, draining at 1 ms per
+20 s), so the pose stays on the late latch and the margin converges. The pose is sampled at the
+start of the frame when there is no direct output, or when the lease has not reported a vblank
+timestamp yet. The scene GPU timer that feeds the margin includes the spectator render, because it
+queues ahead of the stereo scene. `pose.sock.stats` reports `predictionMs`, `predictionCapMs`,
+`latchMarginMs` and `latchPenaltyMs`.

@@ -11,8 +11,8 @@
 #include "linux-dmabuf-client.h"
 #include "capture_scale.hpp"
 
-// Two compositor destinations plus a private scaled texture. The source the
-// viewer is showing is not handed back for the next copy.
+// Two compositor destinations, the panel texture, and two scratch images.
+// The source the viewer is showing is not handed back for the next copy.
 struct GpuCapture {
     struct Slot {
         gbm_bo* bo=nullptr;
@@ -28,8 +28,8 @@ struct GpuCapture {
     Slot slots[2]{};
     int shownSlot=-1,captureSlot=-1;
     bool direct=false,invertY=false;
-    GLuint texture=0,scratch=0,scratchFbo=0,writeFbo=0;
-    unsigned scaledWidth=0,scaledHeight=0,scratchWidth=0,scratchHeight=0;
+    GLuint texture=0,scratch[2]{},scratchFbo[2]{},writeFbo=0;
+    unsigned scaledWidth=0,scaledHeight=0,scratchWidth[2]{},scratchHeight[2]{};
     ~GpuCapture(){clear();if(device)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
     void destroySlot(Slot& slot){
         if(slot.buffer)wl_buffer_destroy(slot.buffer);
@@ -49,10 +49,13 @@ struct GpuCapture {
     void clear(){
         clearSource();
         if(texture)glDeleteTextures(1,&texture);
-        if(scratch)glDeleteTextures(1,&scratch);
-        if(scratchFbo)glDeleteFramebuffers(1,&scratchFbo);
+        if(scratch[0])glDeleteTextures(1,&scratch[0]);
+        if(scratch[1])glDeleteTextures(1,&scratch[1]);
+        if(scratchFbo[0])glDeleteFramebuffers(1,&scratchFbo[0]);
+        if(scratchFbo[1])glDeleteFramebuffers(1,&scratchFbo[1]);
         if(writeFbo)glDeleteFramebuffers(1,&writeFbo);
-        texture=scratch=scratchFbo=writeFbo=0;scaledWidth=scaledHeight=scratchWidth=scratchHeight=0;
+        texture=scratch[0]=scratch[1]=scratchFbo[0]=scratchFbo[1]=writeFbo=0;
+        scaledWidth=scaledHeight=scratchWidth[0]=scratchWidth[1]=scratchHeight[0]=scratchHeight[1]=0;
     }
     bool retained() const { return shownSlot>=0 && slots[shownSlot].nativeTexture; }
     bool createFailed=false;
@@ -153,12 +156,12 @@ struct GpuCapture {
         auto passes=scalePasses(sw,sh,w,h);
         GLuint srcFbo=slots[source].readFbo;unsigned cw=sw,ch=sh;bool flip=inverted;
         for(size_t i=0;i<passes.size();++i){
-            const bool last=i+1==passes.size();
-            GLuint& dest=last?texture:scratch;
-            unsigned& destW=last?scaledWidth:scratchWidth;
-            unsigned& destH=last?scaledHeight:scratchHeight;
+            const int scratchIndex=scalePassScratch(static_cast<unsigned>(i),static_cast<unsigned>(passes.size()));
+            GLuint& dest=scratchIndex<0?texture:scratch[scratchIndex];
+            unsigned& destW=scratchIndex<0?scaledWidth:scratchWidth[scratchIndex];
+            unsigned& destH=scratchIndex<0?scaledHeight:scratchHeight[scratchIndex];
             ensureTexture(dest,destW,destH,passes[i].width,passes[i].height);
-            GLuint& destFbo=last?writeFbo:scratchFbo;
+            GLuint& destFbo=scratchIndex<0?writeFbo:scratchFbo[scratchIndex];
             blit(srcFbo,cw,ch,destFbo,dest,passes[i].width,passes[i].height,flip);
             flip=false;srcFbo=destFbo;cw=passes[i].width;ch=passes[i].height;
         }

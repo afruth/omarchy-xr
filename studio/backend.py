@@ -616,6 +616,7 @@ class Manager:
         self.presenting = present
         self.rotate_viewer_log()
         env = os.environ.copy()
+        # Temporary mirror for a Lua adapter that has not been reinstalled yet.
         env["OMARCHY_XR_MIRROR_STATE"] = str(self.directory / "pose.sock.controls")
         self.viewer = subprocess.Popen(args, stdout=self.log, stderr=self.log, env=env, preexec_fn=die_with_parent)
         threading.Thread(target=self._watch_viewer, args=(self.viewer,), daemon=True).start()

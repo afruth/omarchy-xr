@@ -15,6 +15,22 @@ int main(){
     assert(half.size()==1 && half[0].width==1920 && half[0].height==1080);
     auto quarter=scalePasses(3840,2160,960,540);
     assert(quarter.size()==2 && quarter[0].width==1920 && quarter[0].height==1080 && quarter[1].width==960 && quarter[1].height==540);
+    auto deep=scalePasses(1920,1080,240,135);
+    assert(deep.size()==3 && deep[0].width==960 && deep[0].height==540 && deep[1].width==480 && deep[1].height==270 && deep[2].width==240 && deep[2].height==135);
+    auto deeper=scalePasses(3840,2160,240,135);
+    assert(deeper.size()==4);
+    auto targetsDiffer=[&](const std::vector<ScalePass>& passes){
+        assert(!passes.empty());
+        int previous=-2;
+        for(unsigned i=0;i<passes.size();++i){
+            const int target=scalePassScratch(i,static_cast<unsigned>(passes.size()));
+            assert(target!=previous);
+            assert(i+1u==passes.size()?target==-1:target==int(i%2));
+            previous=target;
+        }
+    };
+    assert(scalePassScratch(0,1)==-1);
+    targetsDiffer(same);targetsDiffer(half);targetsDiffer(quarter);targetsDiffer(deep);targetsDiffer(deeper);
     PanelLayout p{"test",0,0,1800,900,0};
     auto plan=[&](float x,float z){return adaptive::project(p,{{x,0,z},0,0},{},{},800,600,60,0);};
     assert(plan(0,-4).visible);
