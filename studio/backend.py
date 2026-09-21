@@ -401,9 +401,14 @@ class Manager:
         other = [m for m in existing if m["name"] not in self.owned]
         # Preserve the desktop origin while its built-in panel is temporarily off.
         other += [m for m in self.laptop.saved() if m["name"] not in {o["name"] for o in other}]
-        if not other:
-            raise RuntimeError("Keep at least one existing display for the editor and viewer")
-        base_x = max(self.output_rect(m)[2] for m in other) + 100
+        if other:
+            base_x = max(self.output_rect(m)[2] for m in other) + 100
+        else:
+            leftover = [m for m in existing if m["name"] in self.owned]
+            if not leftover:
+                raise RuntimeError("Keep at least one existing display for the editor and viewer")
+            # Keep the current virtual-desktop origin when no physical leftover remains.
+            base_x = min(m["x"] for m in leftover)
         min_x = min(m["x"] for m in layout["monitors"])
         min_y = min(m["y"] for m in layout["monitors"])
         desired = {self.prefix + m["id"] for m in layout["monitors"]}

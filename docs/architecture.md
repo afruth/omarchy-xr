@@ -31,7 +31,11 @@ reports the error and permits a retry or cleanup. This is not a transactional
 compositor API.
 
 The original layout position is used in the viewer. For Hyprland, positions are
-normalized and shifted to the right of all unowned outputs. All virtual outputs
+normalized and shifted to the right of all unowned outputs. A saved built-in
+laptop panel keeps that origin while the panel is off. If no unowned display
+remains, Apply keeps the current owned virtual-desktop origin instead of
+refusing the layout switch. Apply still fails when the compositor has no
+existing display at all. All virtual outputs
 use scale 1; output refresh is max(60, requested capture fps), with capture capped at 120 fps.
 Resolution and count are subject to compositor/GPU/resource limits. No physical
 room-scale position is inferred from the glasses.

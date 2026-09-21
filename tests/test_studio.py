@@ -454,6 +454,28 @@ class LayoutTests(unittest.TestCase):
                 self.assertEqual(len([line for line in (Path(temp)/"viewer.tsv").read_text().splitlines() if not line.startswith("#")]),2)
                 manager.cleanup();self.assertEqual(list(fake.outputs),["eDP-1"])
             finally:manager.lock.close()
+    def test_layout_switch_without_leftover_physical_display(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr(); manager=Manager(temp,"/unused",fake)
+            manager.graphics_limits={"maxWidth":8192,"maxHeight":8192}
+            try:
+                layout=default_layout();manager.apply(layout)
+                origin=fake.outputs[manager.prefix+"1"]["x"]
+                del fake.outputs["eDP-1"]
+                # Setup switch with no leftover physical display and no laptop journal.
+                manager.use_setup("builtin:two-fhd")
+                self.assertEqual(len(manager.owned),2)
+                self.assertEqual(fake.outputs[manager.prefix+"1"]["x"],origin)
+                self.assertNotIn("eDP-1",fake.outputs)
+                changed=copy.deepcopy(manager.load())
+                for m in changed["monitors"]:m["id"]+="-b"
+                manager.apply(changed)
+                self.assertEqual(len(manager.owned),2)
+                self.assertEqual(fake.outputs[manager.prefix+"1-b"]["x"],origin)
+                fake.outputs.clear();manager.owned.clear();manager.applied=None
+                with self.assertRaisesRegex(RuntimeError,"Keep at least one existing display"):
+                    manager.apply(default_layout())
+            finally:manager.lock.close()
     def test_failed_creation_is_cleaned(self):
         with tempfile.TemporaryDirectory() as temp:
             fake=FakeHypr();manager=Manager(temp,"/unused",fake);fake.fail=True
