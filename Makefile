@@ -3,7 +3,7 @@ CC ?= cc
 BUILD ?= build
 CPPFLAGS += -I$(BUILD) $(shell pkg-config --cflags sdl2 gl wayland-client egl gbm libdrm)
 CXXFLAGS ?= -O2 -g
-override CXXFLAGS += -std=c++20 -Wall -Wextra -Wpedantic -Werror
+override CXXFLAGS += -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread
 DEPFLAGS = -MMD -MP
 WL_CFLAGS := $(shell pkg-config --cflags wayland-client)
 LDLIBS += $(shell pkg-config --libs sdl2 gl wayland-client egl gbm libdrm)

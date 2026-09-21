@@ -1,4 +1,5 @@
 #pragma once
+#include "async_file.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -51,9 +52,7 @@ class LiveControls {
         return path + suffix;
     }
     static void writeFile(const std::string& target, const std::string& body) {
-        const auto temp = target + ".tmp";
-        { std::ofstream file(temp); file << body; }
-        std::rename(temp.c_str(), target.c_str());
+        AsyncFile::instance().write(target, body);
     }
     void updatePan() {
         panX = panY = 0; panStarted = false;
@@ -92,6 +91,7 @@ public:
         if (!path.empty()) { unlink(path.c_str()); unlink((path + ".pan").c_str()); update(); }
     }
     ~LiveControls() {
+        AsyncFile::instance().flush();
         if (path.empty()) return;
         for (const auto& base : {path, mirror}) {
             if (base.empty()) continue;

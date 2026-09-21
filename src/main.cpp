@@ -330,7 +330,18 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     GpuTimers gpuTimers;gpuTimers.probe();
     unsigned missedBaseline=output?output->missedVblanks():0;
     unsigned seenMisses=missedBaseline;
-    double fallbackUntil=0, workP99=0, gpuP99=5, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=latchMarginMs(0, gpuP99);
+    double fallbackUntil=0, workP99=0, gpuP99=5, workMax=0, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=latchMarginMs(0, gpuP99);
+    MissPenalty missPenalty;
+    // Optional, live-reloaded stabilisation settings; see tracking::Prediction.
+    const std::string trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
+    std::filesystem::file_time_type trackingVersion{};
+    bool trackingLoaded=false;
+    double nextTrackingCheck=0;
+    auto describePrediction=[&](const char* source){
+        const auto& p=tracking.camera.prediction;
+        std::cout<<"Tracking: prediction up to "<<p.horizonMs<<" ms, fading in from "<<p.restSpeed<<" to "<<p.fullSpeed<<" deg/s, "<<p.samples<<" samples ("<<source<<")"<<std::endl;
+    };
+    describePrediction("defaults");
     std::vector<double> latchWork, latchGpu;
     auto serviceCaptures=[&]{ for(auto& p:panels) if(p.capture && !p.failed) p.capture->service(); };
     int glStreak=0, swapStreak=0;
@@ -406,7 +417,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         // Direct mode samples the pose at the end of the idle time. A missed vblank returns to sampling immediately for one second.
         const bool earlyPose=!output || monotonicSeconds()<fallbackUntil || !output->hasVblank();
         if(!earlyPose){
-            lastMarginMs=latchMarginMs(workP99, gpuP99);
+            lastMarginMs=latchMarginMs(workP99, gpuP99)+missPenalty.value(monotonicSeconds());
             const auto hz=output->refreshHz();
             const auto periodUs=hz?1000000ull/hz:0;
             const auto marginUs=static_cast<std::uint64_t>(lastMarginMs*1000.0);
@@ -431,6 +442,19 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         if(!running) break;
         const double workStarted=monotonicSeconds();
         reconnectCaptures();
+        if(!trackingPath.empty() && workStarted>=nextTrackingCheck){
+            nextTrackingCheck=workStarted+.25;
+            std::error_code missing;
+            const auto version=std::filesystem::last_write_time(trackingPath,missing);
+            if(missing){
+                if(trackingLoaded){tracking.camera.prediction={};trackingLoaded=false;describePrediction("defaults");}
+            }else if(!trackingLoaded || version!=trackingVersion){
+                trackingLoaded=true;trackingVersion=version;
+                std::ifstream file(trackingPath);std::string line;std::getline(file,line);
+                if(const auto parsed=tracking::parsePrediction(line)){tracking.camera.prediction=*parsed;describePrediction("tracking.tsv");}
+                else std::cerr<<"Ignoring invalid tracking.tsv; expected: tracking-v1 <horizonMs 0..30> <restSpeed> <fullSpeed> <samples 2..8>"<<std::endl;
+            }
+        }
         tracking.update();
         {
             timespec now{}; clock_gettime(CLOCK_MONOTONIC,&now);
@@ -638,6 +662,8 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                 for(size_t i=0;i<panels.size();++i)if(panels[i].visible)drawPanel(panels[i],i,cx,cy,(right-left)/900.f,distance,workspace);
             }
         };
+        // The spectator render queues ahead of the stereo scene, so it is part of what must finish before the flip.
+        const bool timeScene=gpuTimers.begin(GpuTimers::Scene);
         if(tracking.spectator>=0){spectatorEnabled=tracking.spectator==1;tracking.spectator=-1;spectatorError.clear();}
         if(!spectatorEnabled)spectator.reset();
         if(spectatorEnabled){
@@ -655,7 +681,6 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             }
         }
         const int eyeWidth=w/(stereo?2:1);
-        const bool timeScene=gpuTimers.begin(GpuTimers::Scene);
         renderScene(w,h,stereo,false);
         if(timeScene)gpuTimers.end(GpuTimers::Scene);
         GLenum glError=GL_NO_ERROR; while(GLenum err=glGetError()) glError=err;
@@ -681,13 +706,13 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             std::cerr<<error.what()<<'\n';
             if(++swapStreak>=5){ result=3; break; }
         }
-        workTimes.push_back(workMs);++drawn;++reportFrames;
+        workTimes.push_back(workMs); if(workMs>workMax) workMax=workMs; ++drawn;++reportFrames;
         latchWork.push_back(workMs); if(latchWork.size()>120) latchWork.erase(latchWork.begin());
         if(!latchWork.empty()){ auto ranked=latchWork; std::sort(ranked.begin(),ranked.end()); workP99=ranked[(ranked.size()-1)*99/100]; }
         const double now=monotonicSeconds(); lastFrameMs=(now-frameStarted)*1000; frameTimes.push_back(lastFrameMs);
         if(output){
             const unsigned missedNow=output->missedVblanks();
-            if(missedNow>seenMisses){ fallbackUntil=now+1; seenMisses=missedNow; }
+            if(missedNow>seenMisses){ missPenalty.miss(now,missedNow-seenMisses); fallbackUntil=now+1; seenMisses=missedNow; }
         }
         if(now-reportTime>=5){
             std::sort(workTimes.begin(),workTimes.end());std::sort(frameTimes.begin(),frameTimes.end());
@@ -697,19 +722,20 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             const double gpuCaptureP95=gpu?gpuCaptureTimes[gpuCaptureTimes.size()*95/100]:0;
             const double gpuSceneP95=gpu?gpuSceneTimes[gpuSceneTimes.size()*95/100]:0;
             const unsigned missed=output?output->missedVblanks():0;
-            std::cout<<"Performance: "<<reportFrames/(now-reportTime)<<" present fps, work p95 "<<workP95<<" ms, frame p95 "<<frameP95<<" ms";
+            std::cout<<"Performance: "<<reportFrames/(now-reportTime)<<" present fps, work p95 "<<workP95<<" ms, work max "<<workMax<<" ms, frame p95 "<<frameP95<<" ms";
             if(gpu)std::cout<<", gpu capture p95 "<<gpuCaptureP95<<" ms, gpu scene p95 "<<gpuSceneP95<<" ms";
             if(output)std::cout<<", missed vblanks "<<missed-missedBaseline<<" ("<<missed<<" session)";
             std::cout<<std::endl;
             for(const auto& p:panels)if(p.capture)std::cout<<"Capture: "<<p.layout.output<<" "<<(p.visible?"visible":"paused")<<" "<<p.capture->transport()<<" "<<p.width<<"x"<<p.height<<" source "<<p.sourceWidth<<"x"<<p.sourceHeight<<" requests "<<p.capture->requests()<<" frames "<<p.frames<<std::endl;
             if(!posePath.empty()){
-                const auto temp=posePath+".stats.tmp";
-                {std::ofstream stats(temp);stats<<"{\"pid\":"<<getpid()<<",\"time\":"<<std::setprecision(12)<<now<<",\"fps\":"<<reportFrames/(now-reportTime)
+                std::ostringstream stats;
+                stats<<"{\"pid\":"<<getpid()<<",\"time\":"<<std::setprecision(12)<<now<<",\"fps\":"<<reportFrames/(now-reportTime)
                     <<",\"environmentLoading\":"<<(environment.loadingImage()?"true":"false")<<",\"environmentError\":"<<std::quoted(environment.error)
                     <<",\"geometryDistance\":"<<distance
                     <<",\"zoomDepth\":"<<(focusOutput.empty()?distance-panZ:focusDepth)<<",\"maxZoomDepth\":"<<maxZoomDepth()<<",\"panX\":"<<focusX<<",\"panY\":"<<focusY
                     <<",\"spectator\":"<<(spectator?"true":"false")<<",\"spectatorFrames\":"<<(spectator?spectator->frames:0)<<",\"spectatorError\":"<<std::quoted(spectatorError)
-                    <<",\"workP95\":"<<workP95<<",\"frameP95\":"<<frameP95<<",\"predictionMs\":"<<lastPredictionMs<<",\"latchMarginMs\":"<<lastMarginMs;
+                    <<",\"workP95\":"<<workP95<<",\"workMax\":"<<workMax<<",\"frameP95\":"<<frameP95<<",\"predictionMs\":"<<lastPredictionMs<<",\"predictionCapMs\":"<<tracking.camera.prediction.horizonMs
+                    <<",\"latchMarginMs\":"<<lastMarginMs<<",\"latchPenaltyMs\":"<<missPenalty.ms;
                     if(gpu)stats<<",\"gpuCaptureP95\":"<<gpuCaptureP95<<",\"gpuSceneP95\":"<<gpuSceneP95;
                     if(output)stats<<",\"refreshHz\":"<<output->refreshHz()<<",\"missedVblanks\":"<<missed<<",\"missedVblanksWindow\":"<<missed-missedBaseline;
                     stats<<",\"captures\":[";
@@ -722,10 +748,10 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                         if(importMs>=0)stats<<",\"importMs\":"<<importMs;
                         if(!p.captureStatus.empty())stats<<",\"status\":"<<std::quoted(p.captureStatus);
                         stats<<"}";
-                    }stats<<"]}";}
-                std::rename(temp.c_str(),(posePath+".stats").c_str());
+                    }stats<<"]}";
+                AsyncFile::instance().write(posePath+".stats", stats.str());
             }
-            missedBaseline=missed;reportTime=now;reportFrames=0;workTimes.clear();frameTimes.clear();gpuCaptureTimes.clear();gpuSceneTimes.clear();
+            missedBaseline=missed;reportTime=now;reportFrames=0;workMax=0;workTimes.clear();frameTimes.clear();gpuCaptureTimes.clear();gpuSceneTimes.clear();
         }
         if (smoke && drawn>=10 && std::all_of(panels.begin(),panels.end(),[](const Panel& p){ return !p.capture || p.frames>=10; })) running=false;
         if(!output && SDL_GL_GetSwapInterval()==0)SDL_Delay(1);

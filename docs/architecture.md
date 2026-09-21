@@ -276,3 +276,25 @@ does not cause a one-frame jump. Rotation and position then use the existing
 time-based camera easing (settling in about 0.5 seconds). Selection is retained
 during that transition; new zoom, fit or pan input interrupts it. Repeated
 recenter requests start from the current rendered transform.
+
+### Head-pose prediction and its tuning file
+
+In direct mode the renderer samples the pose late, just before the flip deadline, and
+extrapolates it to the middle of the next scanout (`src/vblank.hpp`). `tracking::Camera::predict`
+takes angular velocity from a least-squares fit over the newest unbroken run of samples, not a
+two-point difference, which multiplies sensor jitter by horizon/dt. Prediction fades in with head
+speed: a still head is shown exactly as measured, a fast turn gets the whole horizon.
+
+The four values are read from an optional `tracking.tsv` beside the viewer layout
+(`~/.local/state/omarchy-xr/`), checked every 250 ms, so they can be tuned while wearing the glasses:
+
+    tracking-v1 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8>
+
+The default is `tracking-v1 20 2 20 5`. A lower horizon, higher speeds or more samples give a
+steadier image; the opposite gives less lag. `0` for the horizon disables prediction. Removing the
+file restores the defaults, and an invalid line is ignored with a message in `viewer.log`.
+
+A missed vblank returns to early sampling for one second and adds 1 ms to the latch margin
+(`MissPenalty`, at most 6 ms, draining at 1 ms per 20 s). The scene GPU timer that feeds the margin
+includes the spectator render, because it queues ahead of the stereo scene. `pose.sock.stats`
+reports `predictionMs`, `predictionCapMs`, `latchMarginMs` and `latchPenaltyMs`.

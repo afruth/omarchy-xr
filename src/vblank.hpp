@@ -14,6 +14,19 @@ inline double latchMarginMs(double cpuP99Ms, double gpuP99Ms) {
     return std::max(3.0, cpuP99Ms + gpuP99Ms + 1.5);
 }
 
+// Extra latch margin learned from missed vblanks. Each miss adds 1 ms at once and the extra drains at
+// 1 ms per 20 s, so the loop settles on a margin that holds instead of alternating every second
+// between late and early pose sampling.
+struct MissPenalty {
+    double ms=0, updated=-1;
+    double value(double now) {
+        if (updated >= 0 && now > updated) ms = std::max(0.0, ms - (now - updated) * 0.05);
+        updated = now;
+        return ms;
+    }
+    void miss(double now, unsigned count = 1) { ms = std::min(6.0, value(now) + count); }
+};
+
 inline bool latchWaiting(std::uint64_t nowUs, std::uint64_t lastVblankUs, unsigned refreshHz, double marginMs) {
     if (!refreshHz || !lastVblankUs || marginMs < 0) return false;
     const std::uint64_t period = 1000000ull / refreshHz;
