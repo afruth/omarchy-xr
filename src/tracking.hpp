@@ -1,0 +1,54 @@
+#pragma once
+#include <array>
+#include <cmath>
+#include <sstream>
+#include <string>
+
+namespace tracking {
+struct Quaternion { double w=1,x=0,y=0,z=0; };
+inline Quaternion conjugate(Quaternion q) { return {q.w,-q.x,-q.y,-q.z}; }
+inline Quaternion multiply(Quaternion a, Quaternion b) {
+    return {a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z,
+        a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
+        a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
+        a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w};
+}
+// Gen1/Gen2 camera convention from the SDK demo: yaw left-positive,
+// pitch down-positive, roll around forward. Recenter heading only, preserving
+// gravity. Do not reinterpret the device quaternion's body frame as the camera.
+inline Quaternion orientation(double roll, double pitch, double yaw) {
+    constexpr double halfRadians=3.14159265358979323846/360;
+    const double y=yaw*halfRadians,p=-pitch*halfRadians,r=-roll*halfRadians;
+    return multiply(multiply({std::cos(y),0,std::sin(y),0},
+        {std::cos(p),std::sin(p),0,0}),{std::cos(r),0,0,std::sin(r)});
+}
+inline std::array<float,16> matrix(Quaternion q) {
+    const double w=q.w,x=q.x,y=q.y,z=q.z;
+    return {float(1-2*(y*y+z*z)),float(2*(x*y+w*z)),float(2*(x*z-w*y)),0,
+        float(2*(x*y-w*z)),float(1-2*(x*x+z*z)),float(2*(y*z+w*x)),0,
+        float(2*(x*z+w*y)),float(2*(y*z-w*x)),float(1-2*(x*x+y*y)),0,
+        0,0,0,1};
+}
+struct Camera {
+    Quaternion view;
+    double roll=0,pitch=0,yaw=0,neutralYaw=0;
+    double timestamp=-1;
+    bool centered=false;
+    unsigned samples=0;
+    bool fresh(double now) const { return timestamp>=0 && now>=timestamp && now-timestamp<=.25; }
+    void updateView() {view=conjugate(orientation(roll,pitch,std::remainder(yaw-neutralYaw,360.0)));}
+    bool accept(const std::string& packet, double now) {
+        std::istringstream in(packet); double stamp,r,p,y; std::string version,extra;
+        if (!(in>>version>>stamp>>r>>p>>y) || version!="euler-nwu-v1" || (in>>extra)
+            || !std::isfinite(stamp) || !std::isfinite(r) || !std::isfinite(p) || !std::isfinite(y)
+            || stamp<=timestamp || stamp>now || now-stamp>.25) return false;
+        roll=r;pitch=p;yaw=y;timestamp=stamp;++samples;
+        if (!centered) {neutralYaw=yaw;centered=true;}
+        updateView(); return true;
+    }
+    void recenter(double now) {
+        if (fresh(now)) {neutralYaw=yaw;centered=true;updateView();}
+        else centered=false; // Hold last view until a fresh sample can recenter.
+    }
+};
+}

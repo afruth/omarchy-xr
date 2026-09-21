@@ -1,4 +1,6 @@
+#include "gpu_capture.hpp"
 #include "capture.hpp"
+#include <cstdlib>
 #include "pixels.hpp"
 #include "wlr-screencopy-client.h"
 #include <wayland-client.h>
@@ -16,6 +18,13 @@ struct DesktopCapture::Impl {
     wl_display* display = nullptr;
     wl_registry* registry = nullptr;
     wl_shm* shm = nullptr;
+    zwp_linux_dmabuf_v1* dmabuf=nullptr;
+    std::unique_ptr<GpuCapture> gpu;
+    bool gpuMode=false,gpuDisabled=std::getenv("OMARCHY_XR_SHM_CAPTURE")!=nullptr,retry=false;
+    bool visible=true,submitted=false,released=true,forceCopy=true,includeCursor=true;
+    unsigned desiredWidth=16384,desiredHeight=16384,requestCount=0,version=1;
+    unsigned allocatedWidth=0,allocatedHeight=0,allocatedStride=0,allocatedFormat=0;
+    unsigned dmaFormat=0,dmaWidth=0,dmaHeight=0;
     zwlr_screencopy_manager_v1* manager = nullptr;
     zwlr_screencopy_frame_v1* pending = nullptr;
     wl_buffer* buffer = nullptr;
@@ -25,20 +34,23 @@ struct DesktopCapture::Impl {
     std::vector<std::unique_ptr<Output>> outputs;
     Output* selected = nullptr;
     bool ready = false;
-    unsigned interval = 33;
+    double interval = 1000./60;
     std::string failure;
     using Clock = std::chrono::steady_clock;
     Clock::time_point requested{}, next{};
 
     void clearFrame() {
-        if (pending) zwlr_screencopy_frame_v1_destroy(pending);
-        if (buffer) wl_buffer_destroy(buffer);
-        if (pixels != MAP_FAILED) munmap(pixels, size);
-        pending = nullptr; buffer = nullptr; pixels = MAP_FAILED;
-        size = 0; flags = 0; ready = false;
+        if(pending)zwlr_screencopy_frame_v1_destroy(pending);
+        pending=nullptr;flags=0;ready=false;submitted=false;dmaWidth=dmaHeight=0;
+    }
+    void clearBuffer(){
+        if(buffer)wl_buffer_destroy(buffer);
+        if(pixels!=MAP_FAILED)munmap(pixels,size);
+        buffer=nullptr;pixels=MAP_FAILED;size=0;
     }
     ~Impl() {
-        clearFrame();
+        clearFrame();clearBuffer();gpu.reset();
+        if(dmabuf)zwp_linux_dmabuf_v1_destroy(dmabuf);
         for (auto& out : outputs) wl_output_release(out->proxy);
         if (manager) zwlr_screencopy_manager_v1_destroy(manager);
         if (shm) wl_shm_destroy(shm);
@@ -55,13 +67,21 @@ struct DesktopCapture::Impl {
     }
     static void description(void*, wl_output*, const char*) {}
     static constexpr wl_output_listener outputListener{geometry, mode, done, scale, name, description};
+    static void dmaFormatEvent(void*,zwp_linux_dmabuf_v1*,uint32_t){}
+    static void dmaModifierEvent(void*,zwp_linux_dmabuf_v1*,uint32_t,uint32_t,uint32_t){}
+    static constexpr zwp_linux_dmabuf_v1_listener dmaListener{dmaFormatEvent,dmaModifierEvent};
     static void global(void* data, wl_registry* reg, uint32_t id, const char* iface, uint32_t version) {
         auto& self = *static_cast<Impl*>(data);
         if (std::strcmp(iface, wl_shm_interface.name) == 0)
             self.shm = static_cast<wl_shm*>(wl_registry_bind(reg, id, &wl_shm_interface, 1));
-        else if (std::strcmp(iface, zwlr_screencopy_manager_v1_interface.name) == 0)
-            self.manager = static_cast<zwlr_screencopy_manager_v1*>(
-                wl_registry_bind(reg, id, &zwlr_screencopy_manager_v1_interface, 1));
+        else if (std::strcmp(iface, zwp_linux_dmabuf_v1_interface.name)==0 && version>=3){
+            self.dmabuf=static_cast<zwp_linux_dmabuf_v1*>(wl_registry_bind(reg,id,&zwp_linux_dmabuf_v1_interface,3));
+            zwp_linux_dmabuf_v1_add_listener(self.dmabuf,&dmaListener,&self);
+        }
+        else if (std::strcmp(iface, zwlr_screencopy_manager_v1_interface.name) == 0) {
+            self.version=std::min(version,3u);
+            self.manager = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg,id,&zwlr_screencopy_manager_v1_interface,self.version));
+        }
         else if (std::strcmp(iface, wl_output_interface.name) == 0 && version >= 4) {
             auto out = std::make_unique<Output>();
             out->owner = &self; out->id = id;
@@ -97,23 +117,53 @@ struct DesktopCapture::Impl {
             self.failure = "Invalid or excessively large capture buffer"; return;
         }
         self.format = fmt; self.width = w; self.height = h; self.stride = row;
-        self.size = size_t(row) * h;
+        if(self.version<3)self.submit(frame);
+    }
+    static void release(void* data,wl_buffer*){static_cast<Impl*>(data)->released=true;}
+    static constexpr wl_buffer_listener bufferListener{release};
+    bool allocateShm(){
+        const auto w=width,h=height,row=stride,fmt=format;
+        if(buffer && allocatedWidth==w && allocatedHeight==h && allocatedStride==row && allocatedFormat==fmt)return true;
+        clearBuffer();
+        size = size_t(row) * h;
         const int fd = memfd_create("omarchy-xr-capture", MFD_CLOEXEC);
-        if (fd < 0) { self.failure = "Cannot create capture shared memory"; return; }
-        if (ftruncate(fd, static_cast<off_t>(self.size)) != 0) {
-            close(fd); self.failure = "Cannot size capture shared memory"; return;
+        if (fd < 0) { failure = "Cannot create capture shared memory"; return false; }
+        if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
+            close(fd); failure = "Cannot size capture shared memory"; return false;
         }
-        self.pixels = mmap(nullptr, self.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        if (self.pixels == MAP_FAILED) {
-            close(fd); self.failure = "Cannot map capture shared memory"; return;
+        pixels = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (pixels == MAP_FAILED) {
+            close(fd); failure = "Cannot map capture shared memory"; return false;
         }
-        wl_shm_pool* pool = wl_shm_create_pool(self.shm, fd, static_cast<int>(self.size));
-        self.buffer = wl_shm_pool_create_buffer(pool, 0, static_cast<int>(w),
+        wl_shm_pool* pool = wl_shm_create_pool(shm, fd, static_cast<int>(size));
+        buffer = wl_shm_pool_create_buffer(pool, 0, static_cast<int>(w),
             static_cast<int>(h), static_cast<int>(row), fmt);
         wl_shm_pool_destroy(pool);
         close(fd);
-        zwlr_screencopy_frame_v1_copy(frame, self.buffer);
+        allocatedWidth=w;allocatedHeight=h;allocatedStride=row;allocatedFormat=fmt;
+        wl_buffer_add_listener(buffer,&bufferListener,this);return true;
     }
+    void submit(zwlr_screencopy_frame_v1* frame){
+        if(!failure.empty())return;
+        gpuMode=false;
+        if(!gpuDisabled && dmaWidth && dmabuf){
+            if(!gpu)gpu=std::make_unique<GpuCapture>();
+            if(gpu->allocate(dmabuf,dmaWidth,dmaHeight,dmaFormat)){
+                gpuMode=true;
+                if(!wl_proxy_get_listener(reinterpret_cast<wl_proxy*>(gpu->buffer)))wl_buffer_add_listener(gpu->buffer,&bufferListener,this);
+            }else {gpuDisabled=true;gpu->clearSource();}
+        }
+        if(!gpuMode && !allocateShm())return;
+        auto destination=gpuMode?gpu->buffer:buffer;
+        if(version>=2 && !forceCopy)zwlr_screencopy_frame_v1_copy_with_damage(frame,destination);
+        else zwlr_screencopy_frame_v1_copy(frame,destination);
+        submitted=true;released=false;forceCopy=false;
+    }
+    static void onDma(void* data,zwlr_screencopy_frame_v1*,uint32_t format,uint32_t w,uint32_t h){
+        auto& s=*static_cast<Impl*>(data);s.dmaFormat=format;s.dmaWidth=w;s.dmaHeight=h;
+    }
+    static void onBufferDone(void* data,zwlr_screencopy_frame_v1* frame){static_cast<Impl*>(data)->submit(frame);}
+    static void onDamage(void*,zwlr_screencopy_frame_v1*,uint32_t,uint32_t,uint32_t,uint32_t){}
     static void onFlags(void* data, zwlr_screencopy_frame_v1*, uint32_t value) {
         static_cast<Impl*>(data)->flags = value;
     }
@@ -121,11 +171,13 @@ struct DesktopCapture::Impl {
         static_cast<Impl*>(data)->ready = true;
     }
     static void onFailed(void* data, zwlr_screencopy_frame_v1*) {
-        static_cast<Impl*>(data)->failure = "Compositor rejected capture (output unavailable or capture blocked)";
+        auto& s=*static_cast<Impl*>(data);
+        if(s.gpuMode){s.gpuDisabled=true;s.retry=true;s.released=true;}
+        else s.failure="Compositor rejected capture (output unavailable or capture blocked)";
     }
-    // Bind version 1: only these four events can be delivered.
+    // Version 3 negotiates GPU and SHM buffers; older compositors use SHM.
     static constexpr zwlr_screencopy_frame_v1_listener frameListener{
-        onBuffer, onFlags, onReady, onFailed, nullptr, nullptr, nullptr};
+        onBuffer, onFlags, onReady, onFailed, onDamage, onDma, onBufferDone};
 
     void pump() {
         if (wl_display_dispatch_pending(display) < 0) { failure = "Wayland connection lost"; return; }
@@ -146,12 +198,29 @@ struct DesktopCapture::Impl {
             if ((result < 0 && errno != EINTR) || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)))
                 failure = "Wayland capture socket disconnected";
         }
+        // Buffer negotiation callbacks enqueue copy requests. Flush immediately,
+        // rather than holding them until the next rendered frame.
+        if(wl_display_flush(display)<0 && errno!=EAGAIN)failure="Wayland flush failed";
+
     }
 };
 
 DesktopCapture::DesktopCapture() : impl(std::make_unique<Impl>()) {}
 DesktopCapture::~DesktopCapture() = default;
-void DesktopCapture::setFrameRate(unsigned fps) { impl->interval = 1000 / std::clamp(fps, 1u, 60u); }
+void DesktopCapture::service(){if(impl->display && impl->failure.empty())impl->pump();}
+void DesktopCapture::setIncludeCursor(bool enabled){impl->includeCursor=enabled;}
+void DesktopCapture::setFrameRate(unsigned fps) { impl->interval = 1000. / std::clamp(fps, 1u, 120u); }
+void DesktopCapture::setDemand(bool visible,unsigned width,unsigned height){
+    if(visible && (!impl->visible || width!=impl->desiredWidth || height!=impl->desiredHeight)){
+        // Cancel a damage wait on a quality/visibility transition and use a new
+        // source buffer. Keep the previous scaled texture until a new frame arrives.
+        impl->clearFrame();impl->clearBuffer();if(impl->gpu)impl->gpu->clearSource();
+        impl->released=true;impl->forceCopy=true;impl->next={};
+    }
+    impl->visible=visible;impl->desiredWidth=std::max(1u,width);impl->desiredHeight=std::max(1u,height);
+}
+const char* DesktopCapture::transport() const{return impl->gpuMode?"dmabuf":"shm";}
+unsigned DesktopCapture::requests() const{return impl->requestCount;}
 const std::string& DesktopCapture::error() const { return impl->failure; }
 bool DesktopCapture::connect() {
     auto& s = *impl;
@@ -183,24 +252,40 @@ bool DesktopCapture::update(CapturedFrame& frame) {
     s.pump();
     if (!s.failure.empty()) return false;
     const auto now = Impl::Clock::now();
-    if (s.pending && !s.ready && now - s.requested > std::chrono::seconds(3)) {
+    if(s.retry){s.clearFrame();s.gpu->clearSource();s.gpuMode=false;s.retry=false;s.forceCopy=true;}
+    if (s.pending && !s.ready && (!s.submitted || s.version<2) && now - s.requested > std::chrono::seconds(3)) {
         s.failure = "Capture timed out after three seconds"; return false;
     }
     bool updated = false;
     if (s.ready) {
-        frame.width = s.width; frame.height = s.height;
-        frame.rgba.resize(size_t(s.width) * s.height * 4);
-        const bool bgr = s.format == WL_SHM_FORMAT_XBGR8888 || s.format == WL_SHM_FORMAT_ABGR8888;
-        copyRgba(s.pixels, frame.rgba.data(), s.width, s.height, s.stride, bgr,
-                 s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
+        if(s.visible){
+            const unsigned nativeWidth=s.gpuMode?s.gpu->width:s.width,nativeHeight=s.gpuMode?s.gpu->height:s.height;
+            const float ratio=std::min({1.f,float(s.desiredWidth)/nativeWidth,float(s.desiredHeight)/nativeHeight});
+            frame.sourceWidth=nativeWidth;frame.sourceHeight=nativeHeight;
+            frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
+            frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
+            if(s.gpuMode){
+                s.gpu->scale(frame.width,frame.height,s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
+                frame.texture=s.gpu->texture;frame.rgba.clear();
+            }else{
+                frame.texture=0;frame.rgba.resize(size_t(frame.width)*frame.height*4);
+                const bool bgr=s.format==WL_SHM_FORMAT_XBGR8888 || s.format==WL_SHM_FORMAT_ABGR8888;
+                copyRgbaScaled(s.pixels,frame.rgba.data(),s.width,s.height,s.stride,bgr,
+                    s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT,frame.width,frame.height);
+            }
+            updated=true;
+        }
         s.clearFrame();
-        updated = true;
     }
-    if (!s.pending && now >= s.next) {
-        s.pending = zwlr_screencopy_manager_v1_capture_output(s.manager, 1, s.selected->proxy);
-        zwlr_screencopy_frame_v1_add_listener(s.pending, &Impl::frameListener, &s);
-        s.requested = now; s.next = now + std::chrono::milliseconds(s.interval);
-        wl_display_flush(s.display);
+    if (s.visible && !s.pending && s.released && now + std::chrono::milliseconds(1) >= s.next) {
+        s.pending=zwlr_screencopy_manager_v1_capture_output(s.manager,s.includeCursor?1:0,s.selected->proxy);
+        zwlr_screencopy_frame_v1_add_listener(s.pending,&Impl::frameListener,&s);
+        s.requested=now;
+        const auto interval=std::chrono::duration_cast<Impl::Clock::duration>(std::chrono::duration<double,std::milli>(s.interval));
+        // Preserve cadence across sub-ms vblank jitter; never accumulate a backlog.
+        if(s.next==Impl::Clock::time_point{} || now-s.next>interval)s.next=now+interval;
+        else s.next+=interval;
+        ++s.requestCount;wl_display_flush(s.display);
     }
     return updated;
 }

@@ -8,6 +8,17 @@ struct Bounds { Point low, high; };
 // Exact bounds of the continuous cylindrical patch, also bounding all triangles
 // and the 0..0.01 depth layers used by the renderer. No vertex-sampling guess.
 inline Bounds bounds(const Pose& p,float width,float height) {
+    if(p.spherical){
+        Bounds b{{INFINITY,INFINITY,INFINITY},{-INFINITY,-INFINITY,-INFINITY}};
+        const int nx=surfaceSegments(width,p.surfaceBend),ny=verticalSegments(height,p);
+        for(int i=0;i<=nx;++i)for(int j=0;j<=ny;++j)for(float offset:{0.f,.01f}){
+            auto v=vertex(p,(float(i)/nx-.5f)*width,(float(j)/ny-.5f)*height,offset);
+            b.low.x=std::min(b.low.x,v.x);b.high.x=std::max(b.high.x,v.x);
+            b.low.y=std::min(b.low.y,v.y);b.high.y=std::max(b.high.y,v.y);
+            b.low.z=std::min(b.low.z,v.z);b.high.z=std::max(b.high.z,v.z);
+        }
+        return b;
+    }
     Bounds b{{INFINITY,p.center.y-height/2,INFINITY},{-INFINITY,p.center.y+height/2,-INFINITY}};
     auto include=[&](float x) {
         for(float z:{0.f,.01f}) {
@@ -29,7 +40,25 @@ inline float separation(const Bounds& a,const Bounds& b) {
     const float x=gap(a.low.x,a.high.x,b.low.x,b.high.x),y=gap(a.low.y,a.high.y,b.low.y,b.high.y),z=gap(a.low.z,a.high.z,b.low.z,b.high.z);
     return std::sqrt(x*x+y*y+z*z);
 }
-inline bool separated(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,float workspace,float gap) {
+inline bool separated(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace,float gap) {
+    if(workspace.follow){
+        const float k=workspaceBend(span,distance,workspace);
+        // Shared-cylinder patches occupy disjoint rectangles in their continuous
+        // surface coordinates. World-axis AABBs overlap even for disjoint arcs;
+        // using those boxes here used to inflate the ring and its gutters.
+        auto intervalGap=[](float a,float aw,float b,float bw){return std::max({b-a-aw,a-b-bw,0.f});};
+        for(size_t i=0;i<panels.size();++i)for(size_t j=0;j<i;++j){
+            const auto& a=panels[i];const auto& b=panels[j];
+            float dx=intervalGap(a.x,a.width,b.x,b.width);
+            const float dy=intervalGap(a.y,a.height,b.y,b.height);
+            if(k>0){
+                const float period=2*pi/k*900;
+                dx=std::min({dx,intervalGap(a.x,a.width,b.x-period,b.width),intervalGap(a.x,a.width,b.x+period,b.width)});
+            }
+            if(std::hypot(dx,dy)+.01f<gap)return false;
+        }
+        return true;
+    }
     std::vector<Bounds> boxes;
     for(const auto& p:panels) {
         const float w=p.width/900,h=p.height/900;
@@ -39,8 +68,14 @@ inline bool separated(const std::vector<PanelLayout>& panels,float cx,float cy,f
     }
     return true;
 }
-inline float safeDistance(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float desired,float workspace,float gap) {
-    // Rechecked on every distance change: zoom cannot invalidate the gutter.
+inline float safeDistance(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float desired,spatial::Workspace workspace,float gap) {
+    workspace.gap=gap/900;
+    if(workspace.follow && workspace.degrees>=0){
+        if(!separated(panels,cx,cy,span,desired,workspace,gap))
+            throw std::runtime_error("Workspace wrap would overlap monitors. Reduce wrap or rearrange the layout.");
+        return desired;
+    }
+    // Legacy curvature may enlarge the radius; explicit following never stretches gutters.
     float distance=desired;
     for(int i=0;i<100 && distance<=10000;++i) {
         if(separated(panels,cx,cy,span,distance,workspace,gap)) return distance;

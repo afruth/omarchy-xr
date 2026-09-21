@@ -11,6 +11,7 @@ struct PanelLayout {
     std::string output;
     float x = 0, y = 0, width = 1920, height = 1080;
     float curvature = 0;
+    float brightness = 100;
 };
 inline std::vector<PanelLayout> readLayout(const std::string& path) {
     std::ifstream file(path);
@@ -31,8 +32,13 @@ inline std::vector<PanelLayout> readLayout(const std::string& path) {
             throw std::runtime_error("Invalid or duplicate panel in layout: " + line);
         row >> std::ws;
         if (!row.eof()) {
-            if (!(row >> p.curvature) || row >> extra || !std::isfinite(p.curvature) || p.curvature < 0 || p.curvature > 100)
+            if (!(row >> p.curvature) || !std::isfinite(p.curvature) || p.curvature < 0 || p.curvature > 100)
                 throw std::runtime_error("Surface curvature must be 0..100");
+        }
+        row >> std::ws;
+        if (!row.eof()) {
+            if (!(row >> p.brightness) || row >> extra || !std::isfinite(p.brightness) || p.brightness < 1 || p.brightness > 100)
+                throw std::runtime_error("Brightness must be 1..100");
         }
         panels.push_back(p);
     }

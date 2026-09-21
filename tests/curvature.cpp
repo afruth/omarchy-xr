@@ -8,6 +8,74 @@
 bool near(float a,float b) { return std::abs(a-b)<1e-4f; }
 int main() {
     using namespace spatial;
+    // Explicit angular placement stays fixed as safety radius/zoom change.
+    for(float degrees:{0.f,9.f,90.f,180.f,270.f,360.f}) {
+        Workspace workspace;workspace.degrees=degrees;
+        for(float distance:{2.f,5.f,20.f}) {
+            auto p=pose(2,0,2,8,distance,workspace,0);
+            assert(std::abs(p.yaw+degrees*pi/180/4)<1e-5);
+        }
+        std::vector<PanelLayout> ring{{"a",0,0,1920,1080},{"b",1950,0,1920,1080},{"c",3900,0,1920,1080}};
+        auto d=safeDistance(ring,2910,540,5820.f/900,5,workspace,30);
+        assert(separated(ring,2910,540,5820.f/900,d,workspace,30));
+        assert(d<100);
+    }
+
+    using namespace spatial;
+    Workspace cylinder;cylinder.degrees=180;cylinder.follow=true;
+    const auto cylinderPose=pose(2,1,2,8,5,cylinder,100);
+    assert(!cylinderPose.spherical && cylinderPose.latitude==0);
+    for(float x:{-1.f,0.f,1.f})for(float y:{-.6f,0.f,.6f}){
+        auto v=vertex(cylinderPose,x,y);
+        assert(near(v.y,1+y));
+        const float radius=1/cylinderPose.surfaceBend;
+        const float z=v.z-(radius-5);
+        assert(std::abs(std::hypot(v.x,z)-radius)<1e-4);
+    }
+    const auto cylinderBounds=bounds(cylinderPose,2,1.2f);
+    for(int i=0;i<=surfaceSegments(2,cylinderPose.surfaceBend);++i)
+        for(int j=0;j<=verticalSegments(1.2f,cylinderPose);++j){
+            auto v=vertex(cylinderPose,(float(i)/surfaceSegments(2,cylinderPose.surfaceBend)-.5f)*2,
+                          (float(j)/verticalSegments(1.2f,cylinderPose)-.5f)*1.2f);
+            assert(v.x>=cylinderBounds.low.x && v.x<=cylinderBounds.high.x);
+            assert(v.y>=cylinderBounds.low.y && v.y<=cylinderBounds.high.y);
+            assert(v.z>=cylinderBounds.low.z && v.z<=cylinderBounds.high.z);
+        }
+    // Gaps retain their layout arc width, regardless of geometry distance.
+    // Old center-only stretching made these 30px gutters hundreds of pixels wide.
+    for(float degrees:{30.f,90.f,180.f,270.f,360.f})for(float distance:{2.f,5.f,50.f}){
+        Workspace wrap;wrap.follow=true;wrap.degrees=degrees;wrap.gap=30.f/900;
+        const float span=4190.f/900,cx=2095.f/900;
+        auto left=pose(1720.f/900-cx,0,3440.f/900,span,distance,wrap,0);
+        auto right=pose(3830.f/900-cx,0,720.f/900,span,distance,wrap,0);
+        const float a=-left.yaw+3440.f/1800*left.surfaceBend;
+        const float b=-right.yaw-720.f/1800*right.surfaceBend;
+        assert(std::abs((b-a)/left.surfaceBend*900-30)<.005);
+        auto upper=pose(0,300.f/900,2,span,distance,wrap,0);
+        auto lower=pose(0,-430.f/900,2,span,distance,wrap,0);
+        const float topEdge=upper.center.y-600.f/1800;
+        const float bottomEdge=lower.center.y+800.f/1800;
+        assert(std::abs((topEdge-bottomEdge)*900-30)<.005);
+        if(degrees==360){
+            const float seam=2*pi/left.surfaceBend*900-4190;
+            assert(std::abs(seam-30)<.005);
+        }
+    }
+    std::vector<PanelLayout> closeRow{{"left",0,0,3440,1440},{"right",3470,0,720,1440}};
+    Workspace following;following.degrees=90;following.follow=true;following.gap=30.f/900;
+    assert(safeDistance(closeRow,2095,720,4190.f/900,5,following,30)==5);
+    assert(separated(closeRow,2095,720,4190.f/900,5,following,30));
+    // Vertical position and height do not bend or hit a pole, even at 360°.
+    Workspace full;full.follow=true;full.degrees=360;
+    std::vector<PanelLayout> tall{{"tower",0,-8000,1920,8192}};
+    assert(safeDistance(tall,960,-3904,1920.f/900,5,full,30)==5);
+    auto high=pose(1,20,2,8,5,full,100);
+    assert(near(high.center.y,20));
+    assert(near(vertex(high,.5f,10).y-vertex(high,.5f,-10).y,20));
+    assert(near(vertex(high,.5f,10).x,vertex(high,.5f,-10).x));
+    assert(near(vertex(high,.5f,10).z,vertex(high,.5f,-10).z));
+    cylinder.degrees=0;
+    assert(pose(2,1,2,8,5,cylinder,100).surfaceBend==0);
     auto flat=pose(2,1,2,6,5,0,0);
     auto f=vertex(flat,.8f,.3f);
     assert(near(f.x,2.8f)&&near(f.y,1.3f)&&near(f.z,-5));
@@ -47,7 +115,10 @@ int main() {
     int fd=mkstemp(path);assert(fd>=0);close(fd);
     { std::ofstream file(path);file<<"A 0 0 1920 1080\nB 1920 0 1920 1080 75\n"; }
     auto layout=readLayout(path);assert(layout.size()==2&&layout[0].curvature==0&&layout[1].curvature==75);
-    for(auto bad:{"nan","-1","101","25 extra"}) {
+    assert(layout[0].brightness==100 && layout[1].brightness==100);
+    {std::ofstream file(path);file<<"A 0 0 1920 1080 75 45\n";}
+    assert(readLayout(path)[0].brightness==45);
+    for(auto bad:{"nan","-1","101","25 extra","25 0","25 101","25 nan","25 50 extra"}) {
         {std::ofstream file(path);file<<"A 0 0 1920 1080 "<<bad<<'\n';}
         bool rejected=false;try {readLayout(path);}catch(const std::runtime_error&){rejected=true;}assert(rejected);
     }

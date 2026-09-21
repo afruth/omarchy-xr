@@ -3,11 +3,12 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import socket
 import time
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "studio"))
-from sdk_worker import Session
+from sdk_worker import Session, PosePublisher
 from sdk import SDK
 
 
@@ -26,6 +27,7 @@ class SessionTests(unittest.TestCase):
         function("create", 0x100000001)  # ensure pointer-sized handles, not c_int
         function("get_device_type", 1)
         function("is_product_id_valid", 1)
+        function("is_product_support_native_dof", 0)
         function("get_display_mode", 0x31)
         function("get_brightness_level", 4)
         with patch("sdk_worker.C.CDLL", return_value=library):
@@ -36,6 +38,7 @@ class SessionTests(unittest.TestCase):
         session, library, calls = self.make_session()
         session.connect(0x1301)
         self.assertTrue(session.state()["communication"])
+        self.assertFalse(session.state()["nativeDof"])
         self.assertFalse(session.state()["tracking"])
         session.callback((C.c_float * 7)(0, 0, 0, 1, 0, 0, 0), 1)
         self.assertTrue(session.state()["tracking"])
@@ -44,6 +47,38 @@ class SessionTests(unittest.TestCase):
         session.close()
         self.assertEqual(calls[-4:], ["close_imu", "stop", "shutdown", "destroy"])
         self.assertFalse(session.state()["communication"])
+
+    def test_pose_packet_validation_and_expiry(self):
+        session, _, _ = self.make_session()
+        self.assertIsNone(session.pose_packet())
+        session.on_pose((C.c_float * 7)(float("nan"), 0, 0, 0, 0, 0, 0), 1)
+        self.assertEqual(session.samples, 0)
+        session.on_pose((C.c_float * 7)(10, -20, 30, 2, 0, 0, 0), 1)
+        packet = session.pose_packet().decode().split()
+        self.assertEqual(packet[0], "euler-nwu-v1")
+        self.assertEqual([float(v) for v in packet[2:]], [10, -20, 30])
+        with patch("sdk_worker.time.monotonic", return_value=float(packet[1])+1):
+            self.assertIsNone(session.pose_packet())
+        session.close()
+        self.assertIsNone(session.pose_packet())
+
+    def test_pose_publisher_delivers_without_control_loop(self):
+        session, _, _ = self.make_session()
+        with tempfile.TemporaryDirectory() as directory, socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as receiver:
+            path=str(Path(directory)/"pose.sock")
+            try:
+                receiver.bind(path)
+            except PermissionError:
+                self.skipTest("Unix sockets restricted by sandbox")
+            receiver.settimeout(1)
+            publisher=PosePublisher(session,path)
+            try:
+                session.on_pose((C.c_float * 7)(15,-25,35,1,0,0,0),1)
+                packet=receiver.recv(256).decode().split()
+                self.assertEqual(packet[0],"euler-nwu-v1")
+                self.assertEqual([float(v) for v in packet[2:]],[15,-25,35])
+            finally:publisher.close()
+        session.close()
 
     def test_start_failure_cleans_initialized_handle(self):
         session, library, calls = self.make_session()
@@ -70,6 +105,76 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(session.mode)
         self.assertIn("rejected", session.state()["displayError"])
         session.close()
+
+    def test_stereo_restores_original_mode_and_journal(self):
+        session, library, calls = self.make_session()
+        with tempfile.TemporaryDirectory() as directory:
+            session.mode_journal = Path(directory)/"mode.json"
+            session.connect(0x1301)
+            library.xr_device_provider_get_display_mode.side_effect = [0x34,0x32,0x34]
+            session.begin_stereo()
+            self.assertEqual(session.mode,0x32)
+            self.assertEqual(json.loads(session.mode_journal.read_text()),{"mode":0x34})
+            session.end_stereo()
+            session.verify_restore()
+            self.assertIsNone(session.original_mode)
+            self.assertFalse(session.mode_journal.exists())
+            session.close()
+
+    def test_stereo_ack_does_not_require_host_timing_to_change_immediately(self):
+        session, library, _ = self.make_session()
+        session.connect(0x1301)
+        library.xr_device_provider_get_display_mode.side_effect = [0x34,0x34,0x32,0x34]
+        session.begin_stereo()
+        self.assertEqual(session.mode,0x34)  # host is still driving its old timing
+        self.assertEqual(session.original_mode,0x34)
+        session.wait_mode(0x32)  # verified after direct scanout starts
+        session.end_stereo()
+        session.verify_restore()
+        self.assertIsNone(session.original_mode)
+        session.close()
+
+    def test_reconnect_does_not_switch_already_restored_mode(self):
+        session, library, _ = self.make_session()
+        with tempfile.TemporaryDirectory() as directory:
+            session.mode_journal=Path(directory)/"mode.json"
+            session.mode_journal.write_text('{"mode":52}')
+            library.xr_device_provider_get_display_mode.side_effect=lambda *args:0x34
+            session.connect(0x1301)
+            library.xr_device_provider_set_display_mode.assert_not_called()
+            self.assertIsNone(session.original_mode)
+            self.assertFalse(session.mode_journal.exists())
+            session.close()
+            library.xr_device_provider_set_display_mode.assert_not_called()
+
+    def test_reconnect_defers_mismatched_mode_to_supervisor(self):
+        session, library, _ = self.make_session()
+        with tempfile.TemporaryDirectory() as directory:
+            session.mode_journal=Path(directory)/"mode.json"
+            session.mode_journal.write_text('{"mode":52}')
+            library.xr_device_provider_get_display_mode.side_effect=lambda *args:0x32
+            session.connect(0x1301)
+            library.xr_device_provider_set_display_mode.assert_not_called()
+            self.assertEqual(session.original_mode,0x34)
+            self.assertTrue(session.mode_journal.exists())
+            self.assertIn("pending",session.display_error)
+            session.close()
+            library.xr_device_provider_set_display_mode.assert_not_called()
+            self.assertTrue(session.mode_journal.exists())
+
+    def test_pending_recovery_query_failure_preserves_tracking(self):
+        session, library, _ = self.make_session()
+        with tempfile.TemporaryDirectory() as directory:
+            session.mode_journal=Path(directory)/"mode.json"
+            session.mode_journal.write_text('{"mode":52}')
+            library.xr_device_provider_get_display_mode.side_effect=lambda *args:-7
+            session.connect(0x1301)
+            self.assertTrue(session.communication)
+            self.assertTrue(session.imu)
+            self.assertEqual(session.original_mode,0x34)
+            session.close()
+            library.xr_device_provider_set_display_mode.assert_not_called()
+            self.assertTrue(session.mode_journal.exists())
 
     def test_reapply_readback_mismatch(self):
         session, library, calls = self.make_session()

@@ -6,6 +6,7 @@
 
 struct CapturedFrame {
     unsigned width = 0, height = 0;
+    unsigned sourceWidth=0,sourceHeight=0,texture=0;
     std::vector<std::uint8_t> rgba;
 };
 
@@ -18,10 +19,16 @@ public:
     DesktopCapture& operator=(const DesktopCapture&) = delete;
     bool connect();
     void setFrameRate(unsigned fps);
+    void setDemand(bool visible,unsigned width,unsigned height);
+    const char* transport() const;
+    unsigned requests() const;
     std::vector<std::string> outputs() const;
     bool select(const std::string& name);
     // Nonblocking. Returns true only when a new frame is available.
     bool update(CapturedFrame& frame);
+    // Drain/flush protocol while presentation waits; GL context must remain current.
+    void service();
+    void setIncludeCursor(bool enabled);
     const std::string& error() const;
 private:
     struct Impl;

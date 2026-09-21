@@ -8,10 +8,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libsdl2-dev libgl1-mesa-dev libwayland-dev libwayland-bin xvfb xauth
+        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libsdl2-dev libgl1-mesa-dev libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev lua5.4 xvfb xauth
       - name: Build and check CLI
         run: make check
       - name: Software rendering smoke test
-        run: xvfb-run -a make smoke
+        run: |
+          xvfb-run -a make check-environment
+          xvfb-run -a make smoke
+          xvfb-run -a ./build/omarchy-xr --stereo --smoke-test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'

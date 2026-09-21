@@ -72,6 +72,38 @@ class SDK:
         self.started = time.time()
         self.state["message"] = "Reapplying the glasses display mode…"
 
+    def stereo(self, enabled):
+        self.display_command("stereo" if enabled else "stereo_off")
+
+    def restore_rate(self):
+        self.display_command("restore_rate")
+
+    def verify_restore(self):
+        self.display_command("verify_restore")
+
+    def verify_stereo(self):
+        self.display_command("verify_stereo")
+
+    def display_command(self, command):
+        deadline = time.monotonic() + 20
+        while self.pending and time.monotonic() < deadline:
+            self.status()
+            time.sleep(.05)
+        if not self.process or self.process.poll() is not None or not self.state.get("communication"):
+            raise RuntimeError("SDK communication is required for stereo")
+        self.process.stdin.write(command + "\n")
+        self.process.stdin.flush()
+        self.started = time.time()
+        self.pending = True
+        while time.monotonic() < deadline:
+            state = self.status()
+            if not state["busy"]:
+                if state.get("error"):
+                    raise RuntimeError(state["message"])
+                return
+            time.sleep(.05)
+        raise RuntimeError("Stereo display-mode command timed out")
+
     def status(self):
         if self.process:
             previous_sequence = self.state.get("sequence", -1)
