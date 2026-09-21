@@ -1,5 +1,6 @@
 #include "camera_controls.hpp"
 #include "live_controls.hpp"
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
@@ -135,7 +136,7 @@ int main() {
         assert(std::abs(centerFromLook.x)>1e-3);
     }
     // A pitched look's heading-only zoom walks a fresh sample toward the top
-    // edge; the gesture must keep the first UV across ticks.
+    // edge; the gesture must keep the first UV across ticks and zero-delta gaps.
     const float pitchDeg=-std::atan2(origin.y,5.f)*180/spatial::pi;
     const float yawDeg=std::atan2(origin.x,5.f)*180/spatial::pi;
     auto pitched=targeting::viewRotation({},pitchDeg,yawDeg);
@@ -146,16 +147,26 @@ int main() {
     float depth=5;
     std::optional<targeting::Hit> sample=first;
     for(int tick=0;tick<5;++tick){
-        assert(navigation::lockZoomGaze(locked,sample));
-        assert(std::abs(locked->u-first->u)<1e-5 && std::abs(locked->v-first->v)<1e-5);
         auto focus=navigation::applyPanLimits(gazed,gazePose,depth,28,16.f/9,navigation::gazeFocus(gazed,*locked),true);
         depth=navigation::zoomDepth(depth,-std::log(.9f),20);
         auto camera=navigation::panFocus(gazePose,pitched,depth,focus.x,focus.y);
         auto view=tracking::multiply(pitched,camera.rotation);
         sample=targeting::intersect(targeting::viewRay(view,camera.pan),gazed,gazePose);
+        assert(std::abs(locked->u-first->u)<1e-5 && std::abs(locked->v-first->v)<1e-5);
     }
     assert(sample && std::abs(sample->v-first->v)>1e-3);
+    assert(navigation::lockZoomGaze(locked,sample));
     assert(std::abs(locked->u-first->u)<1e-5 && std::abs(locked->v-first->v)<1e-5);
+    const float panDepth=2;
+    auto envelope=navigation::panLimits(gazed,gazePose,panDepth,28,16.f/9);
+    assert(envelope.x>0 && envelope.x<origin.x);
+    auto snapped=navigation::applyPanLimits(gazed,gazePose,panDepth,28,16.f/9,origin,false);
+    assert(std::abs(std::abs(snapped.x)-envelope.x)<1e-5);
+    auto held=navigation::applyPanLimits(gazed,gazePose,panDepth,28,16.f/9,origin,true);
+    assert(std::abs(held.x-origin.x)<1e-6 && std::abs(held.y-origin.y)<1e-6);
+    auto panRange=navigation::gazePanLimits(gazed,gazePose,panDepth,28,16.f/9,origin,true);
+    assert(panRange.x>=origin.x && panRange.y>=origin.y);
+    assert(std::abs(std::clamp(origin.x,-panRange.x,panRange.x)-origin.x)<1e-6);
     // Gaze must see empty space through the retained gutter, not a stretched panel.
     spatial::Workspace gutterWrap;gutterWrap.follow=true;gutterWrap.degrees=90;gutterWrap.gap=30.f/900;
     std::vector<PanelLayout> neighbours{{"a",0,0,1920,1080},{"b",1950,0,1920,1080}};

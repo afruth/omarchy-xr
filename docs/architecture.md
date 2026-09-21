@@ -197,13 +197,14 @@ at the keyboard before zoom does not anchor the monitor at the keyboard.
 
 Focused navigation holds workspace geometry distance fixed and changes camera
 translation and rotation. Wheel, swipe, and `zoom_in`/`zoom_out` zoom along the
-head-directed hit captured at the start of a continuous zoom gesture via
-`gazeFocus` and `panFocus`, so that look point stays on the heading axis.
-`panLimits` does not snap an on-panel origin to the monitor center. With no hit,
-zoom uses the selected monitor center, then workspace depth. Fit-target still faces
-the selected monitor's center; `frontFocus` aligns that center normal with the
-anchored camera. Intrinsic monitor curvature is preserved; front-facing height fit
-includes its edge depth.
+head-directed hit captured at the start of a zoom gesture via `gazeFocus` and
+`panFocus`, so that look point stays on the heading axis. The captured UV is held
+across zero-delta frames until pan, fit, or recenter. `panLimits` does not snap
+an on-panel origin to the monitor center or pull it into the pan envelope when
+pan begins. With no hit, zoom uses the selected monitor center, then workspace
+depth. Fit-target still faces the selected monitor's center; `frontFocus` aligns
+that center normal with the anchored camera. Intrinsic monitor curvature is
+preserved; front-facing height fit includes its edge depth.
 Rotation and translation ease together. Live head tracking remains relative to the
 anchor. Zoom stays in front of curved edges; Ctrl+Up restores workspace overview.
 Tests cover side-monitor normals, projected fit bounds, curved surfaces, retained

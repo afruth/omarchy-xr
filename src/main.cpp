@@ -287,14 +287,14 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             int w,h;dimensions(w,h);
             auto limits=navigation::panLimits(p,pose,depth,fov,float(w/(stereo?2:1))/std::max(h,1));
             if(limits.x==0 && limits.y==0){panOutput.clear();return;}
-            zoomGaze.reset();focusFromGaze=false;
+            zoomGaze.reset();
             if(focusOutput!=p.output)focusX=focusY=0;
             if(!panCamera){smoothFocusX=focusX;smoothFocusY=focusY;}
             panCamera=true;
             focusOutput=p.output;focusDepth=depth;focusAnchor=baseView();targetDistance=distance;
         }
         int w,h;dimensions(w,h);
-        const auto limits=navigation::panLimits(p,pose,focusDepth,fov,float(w/(stereo?2:1))/std::max(h,1));
+        const auto limits=navigation::gazePanLimits(p,pose,focusDepth,fov,float(w/(stereo?2:1))/std::max(h,1),{focusX,focusY,0},focusFromGaze);
         const float speed=2*focusDepth*std::tan(fov*pi/360)/400;
         focusX=std::clamp(focusX-dx*speed,-limits.x,limits.x);
         focusY=std::clamp(focusY+dy*speed,-limits.y,limits.y);
@@ -432,9 +432,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         if(controls.panStarted || controls.panX || controls.panY)
             panSelected(float(controls.panX),float(controls.panY),controls.panStarted);
         sampleTarget();
-        bool zoomedThisFrame=false;
         auto zoomBy = [&](float amount) {
-            zoomedThisFrame=true;
             if(!focusSelected(false,amount)) {
                 targetDistance=distance;
                 targetPanZ=distance-navigation::zoomDepth(distance-targetPanZ,amount,maxZoomDepth());
@@ -464,7 +462,6 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                 if (event.motion.state&SDL_BUTTON_MMASK) { panX+=event.motion.xrel*distance*.0015f; panY-=event.motion.yrel*distance*.0015f; targetPanX=panX;targetPanY=panY; }
             }
         }
-        if(!zoomedThisFrame)zoomGaze.reset();
         const double cameraTime=monotonicSeconds();
         const float cameraDt=float(cameraTime-lastCameraTime);lastCameraTime=cameraTime;
         if(std::abs(std::log(distance/targetDistance))>1e-5f)

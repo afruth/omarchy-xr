@@ -123,9 +123,16 @@ inline PanLimits panLimits(const PanelLayout& p,const spatial::Pose& pose,float 
     auto limit=[&](float size,float view){return size>view ? size-view+buffer : 0.f;};
     return {limit(p.width/1800,vx),limit(p.height/1800,vy)};
 }
+inline PanLimits gazePanLimits(const PanelLayout& p,const spatial::Pose& pose,float depth,float fov,float aspect,targeting::Vec focus,bool keepGaze){
+    auto limits=panLimits(p,pose,depth,fov,aspect);
+    if(keepGaze){
+        limits.x=std::max(limits.x,std::abs(focus.x));
+        limits.y=std::max(limits.y,std::abs(focus.y));
+    }
+    return limits;
+}
 inline targeting::Vec applyPanLimits(const PanelLayout& p,const spatial::Pose& pose,float depth,float fov,float aspect,targeting::Vec focus,bool onPanelGaze){
-    if(onPanelGaze)return focus;
-    const auto limits=panLimits(p,pose,depth,fov,aspect);
+    const auto limits=gazePanLimits(p,pose,depth,fov,aspect,focus,onPanelGaze);
     return {std::clamp(focus.x,-limits.x,limits.x),std::clamp(focus.y,-limits.y,limits.y),0};
 }
 inline bool lockZoomGaze(std::optional<targeting::Hit>& locked,const std::optional<targeting::Hit>& current){
