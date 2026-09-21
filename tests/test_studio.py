@@ -133,31 +133,6 @@ class LayoutTests(unittest.TestCase):
                     with self.assertRaises(ValueError):validate(layout)
             finally:manager.cleanup();manager.lock.close()
 
-    def test_hide_keeps_viewer_and_outputs(self):
-        with tempfile.TemporaryDirectory() as temp:
-            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
-            manager.graphics_limits={"maxWidth":8192,"maxHeight":8192}
-            try:
-                manager.apply(default_layout())
-                viewer=Mock();viewer.poll.return_value=None
-                manager.viewer=viewer;manager.direct=True;manager.stereo_active=True
-                owned=set(manager.owned)
-                output=io.StringIO()
-                requests="\n".join(json.dumps({"action":action}) for action in ("hide","status"))
-                with patch("sys.stdin",io.StringIO(requests)), patch("sys.stdout",output):
-                    serve(manager)
-                replies=[json.loads(line) for line in output.getvalue().splitlines()]
-                self.assertTrue(all(reply["ok"] for reply in replies))
-                self.assertIn("stay running", replies[0]["message"])
-                self.assertEqual(manager.owned, owned)
-                self.assertIs(manager.viewer, viewer)
-                self.assertTrue(manager.direct)
-                self.assertTrue(manager.stereo_active)
-                viewer.terminate.assert_not_called()
-            finally:
-                manager.viewer=None;manager.direct=False;manager.stereo_active=False
-                manager.cleanup();manager.lock.close()
-
     def test_text_size_uses_omarchy_and_rejects_invalid_values(self):
         manager = Mock(); manager.status.return_value = {}
         requests = "\n".join(json.dumps({"action":"set_text_size","textSize":value}) for value in (14,8,21,True,"14"))

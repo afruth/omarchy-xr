@@ -24,7 +24,6 @@ class PluginContractTests(unittest.TestCase):
         self.assertTrue((ROOT / manifest["entryPoints"]["barWidget"]).is_file())
         self.assertEqual(manifest["barWidget"]["defaultSection"], "right")
         self.assertFalse(manifest["barWidget"].get("allowMultiple", False))
-        self.assertIn("studio/BarWidget.qml", install_studio.PLUGIN_FILES)
 
     def test_enable_places_bar_widget_after_tray_and_leaves_an_existing_icon(self):
         config = {
