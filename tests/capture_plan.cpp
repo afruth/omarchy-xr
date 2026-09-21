@@ -33,6 +33,15 @@ int main(){
         }
     };
     assert(scalePassScratch(0,1)==-1);
+    assert(captureAllocateSlot(-1,false,false)==0);
+    assert(captureAllocateSlot(0,false,false)==1);
+    assert(captureAllocateSlot(1,false,false)==0);
+    assert(captureAllocateSlot(0,false,true)==-1);
+    assert(captureAllocateSlot(1,true,false)==-1);
+    assert(capturePresentSlot(1,0,true)==0);
+    assert(capturePresentSlot(1,0,false)==1);
+    assert(capturePresentSlot(-1,0,false)==0);
+    assert(capturePresentSlot(-1,-1,true)==-1);
     targetsDiffer(same);targetsDiffer(half);targetsDiffer(quarter);targetsDiffer(deep);targetsDiffer(deeper);
     PanelLayout p{"test",0,0,1800,900,0};
     auto plan=[&](float x,float z){return adaptive::project(p,{{x,0,z},0,0},{},{},800,600,60,0);};

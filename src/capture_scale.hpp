@@ -25,3 +25,18 @@ inline int scalePassScratch(unsigned index, unsigned count) {
     if (count == 0 || index + 1 >= count) return -1;
     return static_cast<int>(index % 2);
 }
+
+// Next compositor buffer. The completed image stays reserved, busy or not.
+inline int captureAllocateSlot(int shownSlot, bool busy0, bool busy1) {
+    for (int i = 0; i < 2; ++i) {
+        if (i == shownSlot || (i == 0 ? busy0 : busy1)) continue;
+        return i;
+    }
+    return -1;
+}
+
+// A finished copy publishes the capture slot. A rebake stays on the completed image.
+inline int capturePresentSlot(int captureSlot, int shownSlot, bool rebake) {
+    if (rebake) return shownSlot;
+    return captureSlot >= 0 ? captureSlot : shownSlot;
+}

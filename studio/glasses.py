@@ -1,7 +1,9 @@
 """Read-only glasses detection and explicitly requested USB-C recovery."""
 from pathlib import Path
+import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 
@@ -14,11 +16,33 @@ set -eu
 cd /sys/bus/platform/drivers/ucsi_acpi
 case "$1" in USBC[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;; *) exit 2;; esac
 test -L "$1"
-trap 'printf "%s" "$1" > bind' EXIT
+rebind() { printf "%s" "$1" > bind 2>/dev/null || true; }
+trap rebind EXIT
+trap 'rebind; exit 143' TERM
 printf "%s" "$1" > unbind
 printf "%s" "$1" > bind
 trap - EXIT
 """
+
+
+def worker_pid(pid):
+    try:
+        comm = Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return None
+    if comm in ("sh", "bash", "dash"):
+        return pid
+    try:
+        children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+    except OSError:
+        return None
+    for token in children:
+        try:
+            if Path(f"/proc/{token}/comm").read_text().strip() in ("sh", "bash", "dash"):
+                return int(token)
+        except OSError:
+            continue
+    return None
 
 
 def read(path):
@@ -46,6 +70,8 @@ class Recovery:
     def __init__(self):
         self.process = None
         self.started = 0
+        self.worker = None
+        self.signaled = False
         self.message = ""
 
     def start(self):
@@ -59,19 +85,35 @@ class Recovery:
         self.process = subprocess.Popen(
             ["pkexec", "/bin/sh", "-c", RESET_SCRIPT, "omarchy-xr-reset", candidates[0]],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.started = time.monotonic()
+        self.started = 0
+        self.worker = None
+        self.signaled = False
         self.message = "Authorize the administrator prompt; then wait for USB-C to reconnect."
 
     def status(self):
-        if self.process is not None and self.started and time.monotonic() - self.started > 120:
-            self.process.kill()
+        if self.process is not None and self.worker is None:
+            self.worker = worker_pid(self.process.pid)
+            if self.worker:
+                self.started = time.monotonic()
+        if self.process is not None and self.started and not self.signaled and time.monotonic() - self.started > 120:
             try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                os.kill(self.worker, signal.SIGTERM)
+            except OSError:
                 pass
-            self.process = None
-            self.message = "USB-C recovery timed out. You can retry."
-        if self.process is not None:
+            self.signaled = True
+        if self.process is not None and self.signaled:
+            code = self.process.poll()
+            if code is None:
+                try:
+                    code = self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    code = None
+            if code is None:
+                self.message = "USB-C recovery timed out. You can retry."
+            else:
+                self.process = None
+                self.message = "USB-C recovery timed out. You can retry."
+        elif self.process is not None:
             code = self.process.poll()
             if code is not None:
                 self.process = None

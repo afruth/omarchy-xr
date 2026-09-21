@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -56,6 +58,41 @@ class GlassesTests(unittest.TestCase):
         self.assertFalse(state["recovering"])
         self.assertIn("Waiting for video", state["recoveryMessage"])
         self.assertTrue(state["canReset"])
+
+    @patch("glasses.os.kill")
+    @patch("glasses.worker_pid", return_value=None)
+    @patch("glasses.shutil.which", return_value="/usr/bin/pkexec")
+    @patch("glasses.controllers", return_value=["USBC000:00"])
+    @patch("glasses.subprocess.Popen")
+    def test_recovery_timeout_signals_shell_after_work_starts(self, popen, candidates, which, worker, kill):
+        process = Mock()
+        process.pid = 10
+        process.poll.return_value = None
+        process.wait.side_effect = subprocess.TimeoutExpired(["pkexec"], 2)
+        popen.return_value = process
+        clock = {"now": 1000.0}
+        recovery = Recovery()
+        with patch("glasses.time.monotonic", side_effect=lambda: clock["now"]):
+            recovery.start()
+            clock["now"] = 1300
+            self.assertTrue(recovery.status()["recovering"])
+            kill.assert_not_called()
+            worker.return_value = 4242
+            recovery.status()
+            clock["now"] = 1419
+            self.assertTrue(recovery.status()["recovering"])
+            kill.assert_not_called()
+            clock["now"] = 1421
+            waiting = recovery.status()
+            self.assertTrue(waiting["recovering"])
+            self.assertIs(recovery.process, process)
+            kill.assert_called_once_with(4242, signal.SIGTERM)
+            process.poll.return_value = 143
+            finished = recovery.status()
+        self.assertFalse(finished["recovering"])
+        self.assertIsNone(recovery.process)
+        self.assertIn("timed out", finished["recoveryMessage"])
+        self.assertNotIn(signal.SIGKILL, [call.args[1] for call in kill.call_args_list])
 
     @patch("glasses.subprocess.Popen")
     def test_ambiguous_or_missing_controller_does_not_reset(self, popen):

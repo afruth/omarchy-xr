@@ -27,7 +27,7 @@ struct GpuCapture {
     EGLDisplay display=EGL_NO_DISPLAY;
     Slot slots[2]{};
     int shownSlot=-1,captureSlot=-1;
-    bool direct=false,invertY=false;
+    bool invertY=false;
     GLuint texture=0,scratch[2]{},scratchFbo[2]{},writeFbo=0;
     unsigned scaledWidth=0,scaledHeight=0,scratchWidth[2]{},scratchHeight[2]{};
     ~GpuCapture(){clear();if(device)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
@@ -44,7 +44,7 @@ struct GpuCapture {
     }
     void clearSource(){
         for(auto& slot:slots)destroySlot(slot);
-        shownSlot=captureSlot=-1;direct=false;
+        shownSlot=captureSlot=-1;
     }
     void clear(){
         clearSource();
@@ -61,8 +61,10 @@ struct GpuCapture {
     bool createFailed=false;
     wl_buffer* buffer() const { return captureSlot>=0 ? slots[captureSlot].buffer : nullptr; }
     GLuint framebuffer() const { return captureSlot>=0 ? slots[captureSlot].readFbo : 0; }
-    unsigned width() const { return captureSlot>=0 ? slots[captureSlot].width : (shownSlot>=0 ? slots[shownSlot].width : 0); }
-    unsigned height() const { return captureSlot>=0 ? slots[captureSlot].height : (shownSlot>=0 ? slots[shownSlot].height : 0); }
+    unsigned width() const { return shownSlot>=0 ? slots[shownSlot].width : 0; }
+    unsigned height() const { return shownSlot>=0 ? slots[shownSlot].height : 0; }
+    unsigned capturedWidth() const { const int slot=capturePresentSlot(captureSlot,shownSlot,false); return slot>=0 ? slots[slot].width : 0; }
+    unsigned capturedHeight() const { const int slot=capturePresentSlot(captureSlot,shownSlot,false); return slot>=0 ? slots[slot].height : 0; }
     void noteRelease(wl_buffer* released){
         for(auto& slot:slots) if(slot.buffer==released) slot.busy=false;
     }
@@ -112,14 +114,12 @@ struct GpuCapture {
     bool allocate(zwp_linux_dmabuf_v1* manager,unsigned w,unsigned h,unsigned fmt){
         createFailed=false;
         if(!manager || !init()){createFailed=true;return false;}
-        for(int i=0;i<2;++i){
-            if(direct && i==shownSlot) continue;
-            if(slots[i].busy) continue;
-            if(slots[i].buffer && (slots[i].width!=w || slots[i].height!=h || slots[i].format!=fmt)) destroySlot(slots[i]);
-            if(!slots[i].buffer && !makeSlot(slots[i],manager,w,h,fmt)){createFailed=true;return false;}
-            captureSlot=i;return true;
-        }
-        return false;
+        const int chosen=captureAllocateSlot(shownSlot,slots[0].busy,slots[1].busy);
+        if(chosen<0) return false;
+        auto& slot=slots[chosen];
+        if(slot.buffer && (slot.width!=w || slot.height!=h || slot.format!=fmt)) destroySlot(slot);
+        if(!slot.buffer && !makeSlot(slot,manager,w,h,fmt)){createFailed=true;return false;}
+        captureSlot=chosen;return true;
     }
     void markBusy(){ if(captureSlot>=0) slots[captureSlot].busy=true; }
     void ensureTexture(GLuint& tex,unsigned& currentW,unsigned& currentH,unsigned w,unsigned h){
@@ -142,17 +142,16 @@ struct GpuCapture {
         glBlitFramebuffer(0,inverted?int(sh):0,int(sw),inverted?0:int(sh),0,0,int(dw),int(dh),GL_COLOR_BUFFER_BIT,GL_LINEAR);
     }
     // Returns the texture to display. A 1:1 upright import is the source itself.
-    GLuint present(unsigned w,unsigned h,bool inverted){
-        invertY=inverted;
-        const int source=captureSlot>=0?captureSlot:shownSlot;
+    GLuint present(unsigned w,unsigned h,bool inverted,bool rebake=false){
+        if(!rebake)invertY=inverted;
+        const int source=capturePresentSlot(captureSlot,shownSlot,rebake);
         if(source<0 || !slots[source].nativeTexture) return 0;
         const unsigned sw=slots[source].width,sh=slots[source].height;
         if(!inverted && w==sw && h==sh){
-            direct=true;shownSlot=source;captureSlot=-1;
+            if(!rebake){shownSlot=source;captureSlot=-1;}
             glFlush();
             return slots[source].nativeTexture;
         }
-        direct=false;
         auto passes=scalePasses(sw,sh,w,h);
         GLuint srcFbo=slots[source].readFbo;unsigned cw=sw,ch=sh;bool flip=inverted;
         for(size_t i=0;i<passes.size();++i){
@@ -167,7 +166,7 @@ struct GpuCapture {
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER,0);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
         glFlush();
-        shownSlot=source;captureSlot=-1;
+        if(!rebake){shownSlot=source;captureSlot=-1;}
         return texture;
     }
 };

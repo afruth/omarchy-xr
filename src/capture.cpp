@@ -267,7 +267,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
     bool updated = false;
     if (s.ready) {
         if(s.visible){
-            const unsigned nativeWidth=s.gpuMode?s.gpu->width():s.width,nativeHeight=s.gpuMode?s.gpu->height():s.height;
+            const unsigned nativeWidth=s.gpuMode?s.gpu->capturedWidth():s.width,nativeHeight=s.gpuMode?s.gpu->capturedHeight():s.height;
             const float ratio=std::min({1.f,float(s.desiredWidth)/nativeWidth,float(s.desiredHeight)/nativeHeight});
             frame.sourceWidth=nativeWidth;frame.sourceHeight=nativeHeight;
             frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
@@ -291,7 +291,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
         frame.sourceWidth=nativeWidth;frame.sourceHeight=nativeHeight;
         frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
         frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
-        frame.texture=s.gpu->present(frame.width,frame.height,s.gpu->invertY);
+        frame.texture=s.gpu->present(frame.width,frame.height,s.gpu->invertY,true);
         frame.rgba.clear();s.rebake=false;updated=true;
     }
     if (s.visible && !s.pending && s.released && now + std::chrono::milliseconds(1) >= s.next) {
