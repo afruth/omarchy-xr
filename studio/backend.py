@@ -790,6 +790,8 @@ def serve(manager):
                 manager.sdk.restore(); response = {}
             elif action == "status":
                 response = {}
+            elif action == "hide":
+                response = {"message": "Studio hidden; virtual monitors and viewer stay running"}
             else:
                 raise ValueError("Unknown action")
             print(json.dumps({"ok": True, "requestId": request_id, **response, **manager.status()}), flush=True)

@@ -4,6 +4,7 @@
 
 - `studio/MonitorStudio.qml`: native Omarchy shell panel, `qs.Ui` controls and
   theme tokens, interactive 2D canvas. Plugin ID: `afruth.omarchy-xr`.
+- `studio/BarWidget.qml`: top-bar icon that summons the kept-loaded panel.
 - `studio/backend.py`: JSON-lines worker. Owns virtual monitor lifecycle, saved
   layouts, recovery journal, and renderer child process. Uses argument arrays
   for subprocess calls and validates all geometry and identities before Lua calls.
@@ -22,8 +23,10 @@ removes obsolete outputs, then writes the renderer layout. Layout editing leaves
 changes the VITURE mode and classification, then restores them on exit. An existing viewer stops before apply to release its captures.
 Monitor identifiers remain stable during an editor session.
 
-The editor is a kept-loaded plugin: hiding it does not stop the workspace.
-Explicit Stop removes owned outputs; normal helper termination also cleans up.
+The editor is a kept-loaded `panel` plus a `bar-widget`. Hiding it (Hide, Escape,
+or closing the window) dismisses the floating editor and leaves the top-bar icon
+so it can be summoned again. Hide does not stop the helper, remove OMXR outputs,
+or tear down stereo. Explicit Stop removes owned outputs; normal helper termination also cleans up.
 A lock prevents concurrent helpers, and an output journal enables crash recovery.
 Monitor creation intent is recorded before the create request. A failed Apply
 removes newly created outputs but may leave changes to existing outputs; the UI
