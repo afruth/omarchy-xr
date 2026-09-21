@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -93,6 +94,102 @@ class GlassesTests(unittest.TestCase):
         self.assertIsNone(recovery.process)
         self.assertIn("timed out", finished["recoveryMessage"])
         self.assertNotIn(signal.SIGKILL, [call.args[1] for call in kill.call_args_list])
+
+    def test_term_after_unbind_binds_the_controller(self):
+        # bind is a fifo, so the script stops after unbind. Open it only once TERM is
+        # no longer pending; opening earlier lets the main write finish and skips the trap.
+        harness = r"""
+set -eu
+mount -t tmpfs tmpfs /sys/bus/platform/drivers/ucsi_acpi
+d=/sys/bus/platform/drivers/ucsi_acpi
+ln -s driver "$d/USBC000:00"
+mkfifo "$d/bind"
+: > "$d/unbind"
+/bin/sh -c "$RESET" omarchy-xr-reset USBC000:00 >"$OUT/stdout" 2>"$OUT/stderr" &
+pid=$!
+i=0
+while [ "$i" -lt 50 ]; do
+  if [ -s "$d/unbind" ]; then break; fi
+  i=$((i + 1))
+  sleep 0.05
+done
+cp "$d/unbind" "$OUT/unbind"
+set +e
+kill -TERM "$pid"
+i=0
+delivered=0
+while [ "$i" -lt 50 ]; do
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d " " || true)
+  case "$state" in
+    ""|Z*) break ;;
+  esac
+  pending=$(awk '/^(SigPnd|ShdPnd):/{printf "%s", $2}' "/proc/$pid/status" 2>/dev/null || true)
+  case "$pending" in
+    *[!0]*) ;;
+    "") ;;
+    *) delivered=1; break ;;
+  esac
+  i=$((i + 1))
+  sleep 0.02
+done
+if kill -0 "$pid" 2>/dev/null; then
+  state=$(ps -o stat= -p "$pid" | tr -d " ")
+  case "$state" in
+    Z*) ;;
+    *)
+      if [ "$delivered" -ne 1 ]; then
+        echo "TERM was still pending" >&2
+        kill -KILL "$pid" 2>/dev/null || true
+        exit 1
+      fi
+      exec 3<>"$d/bind"
+      ;;
+  esac
+fi
+i=0
+while [ "$i" -lt 30 ]; do
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d " " || true)
+  case "$state" in
+    ""|Z*) break ;;
+  esac
+  i=$((i + 1))
+  sleep 0.1
+done
+if kill -0 "$pid" 2>/dev/null; then
+  state=$(ps -o stat= -p "$pid" | tr -d " ")
+  case "$state" in
+    Z*) ;;
+    *)
+      echo "reset script did not exit" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      exit 1
+      ;;
+  esac
+fi
+wait "$pid"
+printf '%s\n' "$?" > "$OUT/code"
+if [ -e /dev/fd/3 ]; then
+  dd if=/dev/fd/3 of="$OUT/bind" bs=256 count=1 status=none iflag=nonblock || true
+else
+  : > "$OUT/bind"
+fi
+exit 0
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            outcome = Path(directory)
+            env = os.environ.copy()
+            env.update(RESET=RESET_SCRIPT, OUT=directory)
+            proc = subprocess.run(
+                ["unshare", "--user", "--map-root-user", "--mount", "/bin/sh", "-c", harness],
+                env=env, capture_output=True, text=True, timeout=20, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            device = "USBC000:00"
+            self.assertEqual((outcome / "unbind").read_text(), device)
+            self.assertEqual((outcome / "code").read_text().strip(), "143")
+            self.assertEqual((outcome / "stderr").read_text(), "")
+            bind = (outcome / "bind").read_text()
+            self.assertTrue(bind and bind.count(device) * len(device) == len(bind))
 
     @patch("glasses.subprocess.Popen")
     def test_ambiguous_or_missing_controller_does_not_reset(self, popen):

@@ -11,12 +11,14 @@ DRIVER = Path("/sys/bus/platform/drivers/ucsi_acpi")
 
 # Fixed script, with the validated device passed as an argument, never shell code.
 # The exit trap retries binding if the first bind fails or the shell is interrupted.
+# Bash traps do not see the script's positional parameters, so the name is saved first.
 RESET_SCRIPT = """
 set -eu
 cd /sys/bus/platform/drivers/ucsi_acpi
 case "$1" in USBC[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;; *) exit 2;; esac
 test -L "$1"
-rebind() { printf "%s" "$1" > bind 2>/dev/null || true; }
+device="$1"
+rebind() { printf "%s" "$device" > bind 2>/dev/null || true; }
 trap rebind EXIT
 trap 'rebind; exit 143' TERM
 printf "%s" "$1" > unbind
