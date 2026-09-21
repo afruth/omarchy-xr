@@ -814,8 +814,8 @@ Item {
                                         onClicked: root.send("present_direct")
                                     }
                                     Action {
-                                        text: "Close viewer"
-                                        enabled: root.viewing && !root.busy
+                                        text: root.viewing ? "Close viewer" : "Release XR workspaces"
+                                        enabled: (root.viewing || root.activeCount > 0) && !root.busy
                                         verticalPadding: 12
                                         onClicked: root.send("stop_viewer")
                                     }
@@ -913,7 +913,7 @@ Item {
                                 }
                             }
                             Hint {
-                                text: "Closing the viewer keeps virtual monitors active."
+                                text: "Closing the viewer returns workspaces and open windows to your desktop."
                             }
                         }
                         ColumnLayout {

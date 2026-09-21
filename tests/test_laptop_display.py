@@ -97,6 +97,7 @@ class LaptopDisplayTests(unittest.TestCase):
         try:
             layout=default_layout();manager.apply(layout)
             original=fake.outputs.pop('eDP-1')
+            manager.laptop.stop=Mock(side_effect=lambda:fake.outputs.update({'eDP-1':original}))
             with patch.object(manager.laptop,'saved',return_value=[original]):
                 layout['monitors'][0]['width']=2560
                 manager.apply(layout)

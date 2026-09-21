@@ -56,7 +56,8 @@ Studio has three tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3**):
    the headset disappears from the normal desktop layout until you stop it.
    **Fullscreen mono** retains the regular-window fallback.
    **Windowed preview** opens the applied layout in a regular window.
-   **Close viewer** stops presentation while keeping virtual desktops running.
+   **Close viewer** stops presentation and returns XR workspaces and their open windows
+   to the laptop or another available desktop display, then removes the virtual monitors.
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
 

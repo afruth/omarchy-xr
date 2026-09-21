@@ -26,7 +26,12 @@ Monitor identifiers remain stable during an editor session.
 The editor is a kept-loaded `panel` plus a `bar-widget`. Hiding it (Hide, Escape,
 or closing the window) dismisses the floating editor and leaves the top-bar icon
 so it can be summoned again. Hide does not stop the helper, remove OMXR outputs,
-or tear down stereo. Explicit Stop removes owned outputs; normal helper termination also cleans up.
+or tear down stereo. Close viewer, viewer exit/crash, and explicit Stop restore the laptop display,
+move XR workspaces (without closing their windows) to a remaining display, and
+remove owned outputs. Internal viewer handoffs preserve the applied outputs.
+Layout shrink moves workspaces to a surviving XR output. If no reachable display
+exists or migration fails, outputs remain journaled for a retry; normal helper
+termination and crash recovery use the same cleanup path.
 A lock prevents concurrent helpers, and an output journal enables crash recovery.
 Monitor creation intent is recorded before the create request. A failed Apply
 removes newly created outputs but may leave changes to existing outputs; the UI
