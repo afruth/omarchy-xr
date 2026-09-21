@@ -12,6 +12,9 @@
 #include "targeting.hpp"
 #include "hover.hpp"
 #include "capture_plan.hpp"
+#include "gpu_timers.hpp"
+#include "vblank.hpp"
+#include <ctime>
 #include <csignal>
 #include <filesystem>
 #include <SDL.h>
@@ -34,6 +37,9 @@ struct Panel {
     GLuint texture = 0;
     unsigned width = 0, height = 0, frames = 0;
     bool failed = false;
+    std::string captureStatus;
+    double retryAt = 0;
+    int retryMs = 500;
     float halo=0;
     unsigned sourceWidth=0,sourceHeight=0,cpuWidth=0,cpuHeight=0;
     bool visible=true;
@@ -67,7 +73,9 @@ void drawPanel(const Panel& panel, size_t index, float cx, float cy, float span,
     if (panel.width && !panel.failed) {
         const auto content=interaction::content(w,h,panel.sourceWidth,panel.sourceHeight);
         const float tw=content.width,th=content.height;
-        glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,panel.frame.texture?panel.frame.texture:panel.texture);glColor3f(p.brightness/100,p.brightness/100,p.brightness/100);
+        glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,panel.frame.texture?panel.frame.texture:panel.texture);
+        const float dim=panel.captureStatus.empty()?1.f:.45f;
+        glColor3f(p.brightness/100*dim,p.brightness/100*dim,p.brightness/100*dim);
         surface(pose,-tw/2,-th/2,tw,th,.01f);
         glDisable(GL_TEXTURE_2D);
     } else {
@@ -318,7 +326,53 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     if(!layoutPath.empty()) layoutVersion=std::filesystem::last_write_time(layoutPath);
     Uint64 nextLayoutCheck=0;
     double reportTime=monotonicSeconds();unsigned reportFrames=0;
-    std::vector<double> workTimes,frameTimes;
+    std::vector<double> workTimes,frameTimes,gpuCaptureTimes,gpuSceneTimes;
+    GpuTimers gpuTimers;gpuTimers.probe();
+    unsigned missedBaseline=output?output->missedVblanks():0;
+    unsigned seenMisses=missedBaseline;
+    double fallbackUntil=0, workP99=0, gpuP99=5, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=latchMarginMs(0, gpuP99);
+    std::vector<double> latchWork, latchGpu;
+    auto serviceCaptures=[&]{ for(auto& p:panels) if(p.capture && !p.failed) p.capture->service(); };
+    int glStreak=0, swapStreak=0;
+    auto reconnectCaptures=[&]{
+        const double now=monotonicSeconds();
+        for(auto& p:panels){
+            if(p.capture || p.retryAt<=0 || now<p.retryAt) continue;
+            auto next=std::make_unique<DesktopCapture>();
+            next->setFrameRate(static_cast<unsigned>(fps));
+            if(next->connect() && next->select(p.layout.output)){
+                p.capture=std::move(next); p.captureStatus.clear(); p.retryAt=0; p.retryMs=500;
+            }else{
+                p.captureStatus=next->error().empty()?"reconnect failed":next->error();
+                p.retryAt=now+p.retryMs/1000.0; p.retryMs=DesktopCapture::nextRetryMs(p.retryMs);
+            }
+        }
+    };
+    auto ensureLease=[&]{
+        if(!output || output->pump()) return true;
+        std::cerr<<"Display lease ended; reacquiring for up to 10 seconds\n";
+        const double deadline=monotonicSeconds()+10;
+        while(monotonicSeconds()<deadline && !interrupted){
+            try{
+                output=std::make_unique<DirectOutput>(display,stereo);
+                if(!output->pump()) throw std::runtime_error("Replacement lease is not active");
+                for(auto& p:panels){
+                    p.texture=0; p.cpuWidth=0; p.capture.reset();
+                    p.retryAt=monotonicSeconds(); p.retryMs=500; p.captureStatus="reconnecting after lease";
+                    glGenTextures(1,&p.texture); glBindTexture(GL_TEXTURE_2D,p.texture);
+                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+                }
+                return true;
+            }catch(const std::exception& error){
+                std::cerr<<error.what()<<'\n';
+                SDL_Delay(200);
+            }
+        }
+        result=3; return false;
+    };
     auto updateCaptures = [&] {
         for (auto& p : panels) {
             if (!p.capture || p.failed) continue;
@@ -338,15 +392,53 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                 ++p.frames;
             }
             if (!p.capture->error().empty()) {
-                std::cerr << p.layout.output << ": " << p.capture->error() << '\n';
-                p.failed=true; p.capture.reset(); result=1;
+                std::cerr << p.layout.output << ": " << p.capture->error() << " (retrying)\n";
+                p.captureStatus=p.capture->error();
+                p.capture.reset();
+                p.retryAt=monotonicSeconds()+p.retryMs/1000.0;
+                p.retryMs=DesktopCapture::nextRetryMs(p.retryMs);
             }
         }
     };
     while (running && !interrupted) {
         const double frameStarted=monotonicSeconds();
-        if(output && !output->pump()) break;
+        if(!ensureLease()) break;
+        // Direct mode samples the pose at the end of the idle time. A missed vblank returns to sampling immediately for one second.
+        const bool earlyPose=!output || monotonicSeconds()<fallbackUntil || !output->hasVblank();
+        if(!earlyPose){
+            lastMarginMs=latchMarginMs(workP99, gpuP99);
+            const auto hz=output->refreshHz();
+            const auto periodUs=hz?1000000ull/hz:0;
+            const auto marginUs=static_cast<std::uint64_t>(lastMarginMs*1000.0);
+            const auto next=output->lastVblankUs()+periodUs;
+            const auto deadline=next>marginUs?next-marginUs:next;
+            while(latchWaiting(static_cast<std::uint64_t>(monotonicSeconds()*1e6), output->lastVblankUs(), hz, lastMarginMs) && !interrupted){
+                if(!ensureLease()){running=false;break;}
+                serviceCaptures();
+                timespec now{}; clock_gettime(CLOCK_MONOTONIC,&now);
+                const auto nowUs=static_cast<std::uint64_t>(now.tv_sec)*1000000ull+now.tv_nsec/1000;
+                if(nowUs+200>=deadline) break;
+                const auto remain=deadline-nowUs;
+                if(remain<=2000){
+                    timespec abs{}; abs.tv_sec=static_cast<time_t>(deadline/1000000ull); abs.tv_nsec=static_cast<long>((deadline%1000000ull)*1000ull);
+                    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &abs, nullptr);
+                    break;
+                }
+                timespec step{}; step.tv_nsec=2000*1000;
+                nanosleep(&step,nullptr);
+            }
+        }
+        if(!running) break;
+        const double workStarted=monotonicSeconds();
+        reconnectCaptures();
         tracking.update();
+        {
+            timespec now{}; clock_gettime(CLOCK_MONOTONIC,&now);
+            const double nowSeconds=now.tv_sec+now.tv_nsec/1e9;
+            const double target=predictionTargetSeconds(nowSeconds, output && output->hasVblank(), output?output->lastVblankUs():0, output?output->refreshHz():0, lastFrameMs);
+            tracking.camera.predict(target, nowSeconds);
+            lastPredictionMs=tracking.camera.predictionMs;
+        }
         if(!layoutPath.empty() && SDL_GetTicks64()>=nextLayoutCheck) {
             nextLayoutCheck=SDL_GetTicks64()+100;
             try {
@@ -509,7 +601,14 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             const float scale=p.quality.update(plan.scale,cameraTime);
             if(p.capture)p.capture->setDemand(p.visible,std::max(1u,unsigned(std::ceil(l.width*scale))),std::max(1u,unsigned(std::ceil(l.height*scale))));
         }
+        const auto gpuBefore=gpuSceneTimes.size();
+        gpuTimers.collect(gpuCaptureTimes,gpuSceneTimes);
+        for(auto i=gpuBefore;i<gpuSceneTimes.size();++i) latchGpu.push_back(gpuSceneTimes[i]);
+        while(latchGpu.size()>120) latchGpu.erase(latchGpu.begin());
+        if(!latchGpu.empty()){ auto ranked=latchGpu; std::sort(ranked.begin(),ranked.end()); gpuP99=ranked[(ranked.size()-1)*99/100]; }
+        const bool timeCapture=gpuTimers.begin(GpuTimers::Capture);
         updateCaptures();
+        if(timeCapture)gpuTimers.end(GpuTimers::Capture);
         if (smoke && (result || SDL_GetTicks64()-started>15000)) { result=1; break; }
         for(auto& p:panels)p.halo=navigation::ease(p.halo,selection.output==p.layout.output ? 1.f:0.f,cameraDt);
         glClearColor(0,0,0,1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -556,8 +655,12 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             }
         }
         const int eyeWidth=w/(stereo?2:1);
+        const bool timeScene=gpuTimers.begin(GpuTimers::Scene);
         renderScene(w,h,stereo,false);
-        if (glGetError()!=GL_NO_ERROR) { std::cerr << "OpenGL rendering error\n"; result=1; break; }
+        if(timeScene)gpuTimers.end(GpuTimers::Scene);
+        GLenum glError=GL_NO_ERROR; while(GLenum err=glGetError()) glError=err;
+        if(glError!=GL_NO_ERROR){ std::cerr<<"OpenGL rendering error "<<glError<<'\n'; if(++glStreak>=30){ result=2; break; } }
+        else glStreak=0;
         if(smoke && stereo && drawn==9) {
             std::vector<unsigned char> leftEye(eyeWidth*h*3),rightEye(leftEye.size());
             glPixelStorei(GL_PACK_ALIGNMENT,1);
@@ -566,17 +669,38 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             if(leftEye==rightEye)throw std::runtime_error("Stereo validation failed: eye images are identical");
             std::cout<<"Stereo validation: distinct left/right images"<<std::endl;
         }
-        double workMs=(monotonicSeconds()-frameStarted)*1000;
-        if(output)output->swap([&]{
-            const double started=monotonicSeconds();
-            updateCaptures();
-            workMs+=(monotonicSeconds()-started)*1000;
-        });else SDL_GL_SwapWindow(window);
+        double workMs=(monotonicSeconds()-workStarted)*1000;
+        try{
+            if(output)output->swap([&]{
+                const double started=monotonicSeconds();
+                updateCaptures();
+                workMs+=(monotonicSeconds()-started)*1000;
+            });else SDL_GL_SwapWindow(window);
+            swapStreak=0;
+        }catch(const std::exception& error){
+            std::cerr<<error.what()<<'\n';
+            if(++swapStreak>=5){ result=3; break; }
+        }
         workTimes.push_back(workMs);++drawn;++reportFrames;
-        const double now=monotonicSeconds();frameTimes.push_back((now-frameStarted)*1000);
+        latchWork.push_back(workMs); if(latchWork.size()>120) latchWork.erase(latchWork.begin());
+        if(!latchWork.empty()){ auto ranked=latchWork; std::sort(ranked.begin(),ranked.end()); workP99=ranked[(ranked.size()-1)*99/100]; }
+        const double now=monotonicSeconds(); lastFrameMs=(now-frameStarted)*1000; frameTimes.push_back(lastFrameMs);
+        if(output){
+            const unsigned missedNow=output->missedVblanks();
+            if(missedNow>seenMisses){ fallbackUntil=now+1; seenMisses=missedNow; }
+        }
         if(now-reportTime>=5){
             std::sort(workTimes.begin(),workTimes.end());std::sort(frameTimes.begin(),frameTimes.end());
-            std::cout<<"Performance: "<<reportFrames/(now-reportTime)<<" present fps, work p95 "<<workTimes[workTimes.size()*95/100]<<" ms, frame p95 "<<frameTimes[frameTimes.size()*95/100]<<" ms"<<std::endl;
+            const double workP95=workTimes[workTimes.size()*95/100],frameP95=frameTimes[frameTimes.size()*95/100];
+            const bool gpu= !gpuCaptureTimes.empty() && gpuCaptureTimes.size()==gpuSceneTimes.size();
+            if(gpu){std::sort(gpuCaptureTimes.begin(),gpuCaptureTimes.end());std::sort(gpuSceneTimes.begin(),gpuSceneTimes.end());}
+            const double gpuCaptureP95=gpu?gpuCaptureTimes[gpuCaptureTimes.size()*95/100]:0;
+            const double gpuSceneP95=gpu?gpuSceneTimes[gpuSceneTimes.size()*95/100]:0;
+            const unsigned missed=output?output->missedVblanks():0;
+            std::cout<<"Performance: "<<reportFrames/(now-reportTime)<<" present fps, work p95 "<<workP95<<" ms, frame p95 "<<frameP95<<" ms";
+            if(gpu)std::cout<<", gpu capture p95 "<<gpuCaptureP95<<" ms, gpu scene p95 "<<gpuSceneP95<<" ms";
+            if(output)std::cout<<", missed vblanks "<<missed-missedBaseline<<" ("<<missed<<" session)";
+            std::cout<<std::endl;
             for(const auto& p:panels)if(p.capture)std::cout<<"Capture: "<<p.layout.output<<" "<<(p.visible?"visible":"paused")<<" "<<p.capture->transport()<<" "<<p.width<<"x"<<p.height<<" source "<<p.sourceWidth<<"x"<<p.sourceHeight<<" requests "<<p.capture->requests()<<" frames "<<p.frames<<std::endl;
             if(!posePath.empty()){
                 const auto temp=posePath+".stats.tmp";
@@ -585,16 +709,23 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                     <<",\"geometryDistance\":"<<distance
                     <<",\"zoomDepth\":"<<(focusOutput.empty()?distance-panZ:focusDepth)<<",\"maxZoomDepth\":"<<maxZoomDepth()<<",\"panX\":"<<focusX<<",\"panY\":"<<focusY
                     <<",\"spectator\":"<<(spectator?"true":"false")<<",\"spectatorFrames\":"<<(spectator?spectator->frames:0)<<",\"spectatorError\":"<<std::quoted(spectatorError)
-                    <<",\"workP95\":"<<workTimes[workTimes.size()*95/100]<<",\"frameP95\":"<<frameTimes[frameTimes.size()*95/100]<<",\"captures\":[";
+                    <<",\"workP95\":"<<workP95<<",\"frameP95\":"<<frameP95<<",\"predictionMs\":"<<lastPredictionMs<<",\"latchMarginMs\":"<<lastMarginMs;
+                    if(gpu)stats<<",\"gpuCaptureP95\":"<<gpuCaptureP95<<",\"gpuSceneP95\":"<<gpuSceneP95;
+                    if(output)stats<<",\"refreshHz\":"<<output->refreshHz()<<",\"missedVblanks\":"<<missed<<",\"missedVblanksWindow\":"<<missed-missedBaseline;
+                    stats<<",\"captures\":[";
                     bool first=true;for(const auto& p:panels)if(p.capture){
                         if(!first)stats<<",";
                         first=false;
+                        const double importMs=p.capture->importLatencyMs();
                         stats<<"{\"output\":"<<std::quoted(p.layout.output)<<",\"visible\":"<<(p.visible?"true":"false")<<",\"transport\":"<<std::quoted(p.capture->transport())
-                            <<",\"width\":"<<p.width<<",\"height\":"<<p.height<<",\"nativeWidth\":"<<p.sourceWidth<<",\"nativeHeight\":"<<p.sourceHeight<<"}";
+                            <<",\"width\":"<<p.width<<",\"height\":"<<p.height<<",\"nativeWidth\":"<<p.sourceWidth<<",\"nativeHeight\":"<<p.sourceHeight;
+                        if(importMs>=0)stats<<",\"importMs\":"<<importMs;
+                        if(!p.captureStatus.empty())stats<<",\"status\":"<<std::quoted(p.captureStatus);
+                        stats<<"}";
                     }stats<<"]}";}
                 std::rename(temp.c_str(),(posePath+".stats").c_str());
             }
-            reportTime=now;reportFrames=0;workTimes.clear();frameTimes.clear();
+            missedBaseline=missed;reportTime=now;reportFrames=0;workTimes.clear();frameTimes.clear();gpuCaptureTimes.clear();gpuSceneTimes.clear();
         }
         if (smoke && drawn>=10 && std::all_of(panels.begin(),panels.end(),[](const Panel& p){ return !p.capture || p.frames>=10; })) running=false;
         if(!output && SDL_GL_GetSwapInterval()==0)SDL_Delay(1);

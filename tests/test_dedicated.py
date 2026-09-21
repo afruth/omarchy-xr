@@ -1,7 +1,7 @@
 import sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'studio'))
-from dedicated_helper import headset_edid
+from dedicated_helper import headset_edid, own_override
 class EdidTests(unittest.TestCase):
     def edid(self,name=b'VITURE'):
         e=bytearray(128);e[:8]=bytes.fromhex('00ffffffffffff00');e[54:59]=b'\x00\x00\x00\xfc\x00';e[59:72]=name.ljust(13,b' ');e[127]=-sum(e[:127])%256
@@ -15,6 +15,10 @@ class EdidTests(unittest.TestCase):
     def test_refuses_other_displays_and_bad_data(self):
         for e in (self.edid(b'Laptop'),b'',self.edid()[:-1],self.edid()[:-1]+b'\x01'):
             with self.assertRaises(ValueError):headset_edid(e)
+    def test_own_displayid_block_is_recognized(self):
+        self.assertTrue(own_override(headset_edid(self.edid())))
+        self.assertFalse(own_override(self.edid()))
+        self.assertFalse(own_override(b'x'*256))
 
 class AuthorizationTests(unittest.TestCase):
     def test_policy_only_grants_installed_helper_to_active_session(self):

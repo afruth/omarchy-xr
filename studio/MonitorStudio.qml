@@ -15,6 +15,8 @@ Item {
     property var shell: null
     property bool closingFromHost: false
     readonly property bool busy: requests.busy
+    property double busySinceMs: 0
+    property bool backendSlow: false
     RequestState { id: requests }
     property bool loaded: false
     property bool dirty: false
@@ -75,6 +77,8 @@ Item {
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
     property var performance: ({})
+    property string viewerExit: ""
+    property string controlsHint: ""
     property var glasses: ({})
     property bool confirmRecovery: false
     property string feedback: ""
@@ -174,6 +178,7 @@ Item {
     }
     function send(action, enabled, selectedSetup, updateSetup) {
         if (!backend.running) return;
+        if (!busy) { busySinceMs = Date.now(); backendSlow = false; }
         var requestId = requests.begin(action);
         if (!requestId) return;
         if (action !== "status") {
@@ -242,6 +247,7 @@ Item {
         } else canvas.requestPaint();
     }
     function setCount(count) {
+        count = Math.max(1, Math.min(16, count));
         var copy = JSON.parse(JSON.stringify(monitors));
         while (copy.length > count)
             copy.pop();
@@ -349,6 +355,8 @@ Item {
                     }
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
                     if (response.performance) root.performance=response.performance;
+                    root.viewerExit = response.viewerExit || "";
+                    root.controlsHint = response.controlsHint || "";
                     if (root.performance.geometryDistance > 0) root.geometryDistance=root.performance.geometryDistance;
                     root.spectatorEnabled = !!response.spectatorEnabled;
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
@@ -418,9 +426,15 @@ Item {
         }
     }
     Timer {
-        interval: 3000
+        interval: root.opened ? 3000 : 10000
         repeat: true
-        running: root.loaded
+        running: root.loaded && (root.opened || root.viewing)
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.busy
+        onTriggered: if (root.busySinceMs > 0 && Date.now() - root.busySinceMs > 20000) root.backendSlow = true
         onTriggered: if (!root.busy)
             root.send("status")
     }
@@ -595,13 +609,20 @@ Item {
                         color: root.viewing ? Color.accent : Qt.alpha(Color.foreground, .68)
                     }
                     Label {
-                        text: root.directOutput ? "Stereo live" : root.viewing ? "Preview live" : "Standby"
+                        text: root.directOutput ? "Stereo live" : root.viewing ? "Preview live" : (root.viewerExit || "Standby")
                     }
                     Action {
                         text: "Hide"
                         tooltipText: "Park on the top bar; XR stays running"
                         onClicked: root.hide()
                     }
+                }
+                Label {
+                    visible: root.controlsHint !== ""
+                    text: root.controlsHint
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Color.urgent
                 }
                 RowLayout {
                     Layout.fillWidth: true
@@ -887,7 +908,7 @@ Item {
                                     Layout.alignment: Qt.AlignBottom
                                     label: "Monitors"
                                     from: 1
-                                    to: 2147483647
+                                    to: 16
                                     value: root.monitors.length
                                     fieldWidth: 130
                                     onModified: function (value) {
@@ -1487,13 +1508,16 @@ Item {
                             Card {
                                 Heading { text: "Rendering & capture" }
                                 Hint {
-                                    text:root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" presented fps · CPU work p95 "+root.performance.workP95.toFixed(2)+" ms · frame p95 "+root.performance.frameP95.toFixed(2)+" ms" : "Start XR to measure performance."
+                                    text:root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" presented fps · CPU work p95 "+root.performance.workP95.toFixed(2)+" ms · frame p95 "+root.performance.frameP95.toFixed(2)+" ms"
+                                        +(root.performance.gpuSceneP95 !== undefined ? " · GPU scene p95 "+root.performance.gpuSceneP95.toFixed(2)+" ms · GPU capture p95 "+root.performance.gpuCaptureP95.toFixed(2)+" ms" : "")
+                                        +(root.performance.refreshHz ? " · missed vblanks "+root.performance.missedVblanksWindow+" / "+root.performance.missedVblanks : "")
+                                        : "Start XR to measure performance."
                                 }
                                 Repeater {
                                     model:root.performance.captures || []
                                     Hint {
                                         required property var modelData
-                                        text:modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight
+                                        text:modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight+(modelData.importMs !== undefined ? " · import "+Number(modelData.importMs).toFixed(1)+" ms" : "")
                                     }
                                 }
                                 Hint { text:"Adaptive capture resolution. Off-screen capture paused. Presentation rate follows the display mode." }
@@ -1508,15 +1532,15 @@ Item {
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
-                                    enabled: root.loaded && !root.busy
+                                    enabled: root.loaded
                                     Action {
                                         text: "Windowed preview"
-                                        enabled: root.activeCount > 0 && !root.dirty && !root.viewing
+                                        enabled: root.activeCount > 0 && !root.dirty && !root.viewing && !root.busy
                                         onClicked: root.send("start")
                                     }
                                     Action {
                                         text: "Fullscreen mono"
-                                        enabled: !!root.glasses.displays && root.glasses.displays.length === 1 && !root.viewing
+                                        enabled: !!root.glasses.displays && root.glasses.displays.length === 1 && !root.viewing && !root.busy
                                         onClicked: root.send("present")
                                     }
                                     Action {
@@ -1584,7 +1608,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 3
                         Label {
-                            text: root.busy ? "Working…" : root.activeCount + " active monitors"
+                            text: root.backendSlow ? "Backend is still working. Stop remains available." : root.busy ? "Working…" : root.activeCount + " active monitors"
                             color: root.busy ? Color.accent : Color.foreground
                         }
                         Label {

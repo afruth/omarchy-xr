@@ -13,6 +13,13 @@ import sys
 import time
 
 
+OUR_DISPLAYID_HEADER = bytes([0x70, 0x20, 7, 8, 0, 0x7e, 0, 4, 0x92, 0x02, 0x3a, 0])
+
+
+def own_override(data):
+    return len(data) >= 256 and data[-128:-116] == OUR_DISPLAYID_HEADER
+
+
 def headset_edid(data):
     if len(data) < 128 or len(data) % 128 or data[:8] != bytes.fromhex('00ffffffffffff00'):
         raise ValueError('Invalid EDID')
@@ -51,11 +58,21 @@ def main():
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     # Refuse to discard someone else's existing override.
     previous=override.read_bytes()
-    if previous.strip() not in (b'',b'unset'):
+    if previous.strip() not in (b'',b'unset') and not own_override(previous):
         raise RuntimeError('An EDID override already exists; leaving it untouched')
+    if own_override(previous):
+        override.write_text('reset')
     status=connector/'status'
-    def stop(*_):raise SystemExit(0)
-    signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
+    shutting_down=False
+    def stop(*_):
+        nonlocal shutting_down
+        if shutting_down: return
+        shutting_down=True
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        signal.signal(signal.SIGINT,signal.SIG_IGN)
+        signal.signal(signal.SIGHUP,signal.SIG_IGN)
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop);signal.signal(signal.SIGHUP,stop)
     # A cancelled authorization may have outlived the manager. Do not touch video.
     if select.select([sys.stdin], [], [], 0)[0]:
         lock.close()
@@ -73,10 +90,16 @@ def main():
             if line.strip()=='stop':break
     finally:
         if touched:
-            status.write_text('off')
-            time.sleep(.3)
-            override.write_text('reset')
-            status.write_text('detect')
+            for label, action in (
+                ('disable', lambda: status.write_text('off')),
+                ('wait', lambda: time.sleep(.3)),
+                ('reset', lambda: override.write_text('reset')),
+                ('detect', lambda: status.write_text('detect')),
+            ):
+                try:
+                    action()
+                except Exception as exc:
+                    print(f'restore {label}: {exc}', file=sys.stderr, flush=True)
         lock.close()
 
 if __name__=='__main__':

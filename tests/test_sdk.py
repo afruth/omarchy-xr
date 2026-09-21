@@ -8,7 +8,8 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "studio"))
-from sdk_worker import Session, PosePublisher
+from sdk_worker import Session, PosePublisher, record_keep_alive
+from clock import boot_time
 from sdk import SDK
 
 
@@ -55,12 +56,19 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(session.samples, 0)
         session.on_pose((C.c_float * 7)(10, -20, 30, 2, 0, 0, 0), 1)
         packet = session.pose_packet().decode().split()
-        self.assertEqual(packet[0], "euler-nwu-v1")
-        self.assertEqual([float(v) for v in packet[2:]], [10, -20, 30])
+        self.assertEqual(packet[0], "euler-nwu-v2")
+        self.assertEqual([float(v) for v in packet[2:5]], [10, -20, 30])
+        self.assertEqual(packet[5], "1")
         with patch("sdk_worker.time.monotonic", return_value=float(packet[1])+1):
             self.assertIsNone(session.pose_packet())
         session.close()
         self.assertIsNone(session.pose_packet())
+
+    def test_keep_alive_survives_two_failures(self):
+        self.assertEqual(record_keep_alive(0, "USB transfer failed"), 1)
+        self.assertEqual(record_keep_alive(1, "USB transfer failed"), 2)
+        with self.assertRaisesRegex(RuntimeError, "USB transfer failed"):
+            record_keep_alive(2, "USB transfer failed")
 
     def test_pose_publisher_delivers_without_control_loop(self):
         session, _, _ = self.make_session()
@@ -75,8 +83,9 @@ class SessionTests(unittest.TestCase):
             try:
                 session.on_pose((C.c_float * 7)(15,-25,35,1,0,0,0),1)
                 packet=receiver.recv(256).decode().split()
-                self.assertEqual(packet[0],"euler-nwu-v1")
-                self.assertEqual([float(v) for v in packet[2:]],[15,-25,35])
+                self.assertEqual(packet[0],"euler-nwu-v2")
+                self.assertEqual([float(v) for v in packet[2:5]],[15,-25,35])
+                self.assertEqual(packet[5],"1")
             finally:publisher.close()
         session.close()
 
@@ -187,6 +196,17 @@ class SessionTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_worker_receives_the_viewer_pose_socket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pose = Path(directory) / "runtime" / "pose.sock"
+            library = Path(directory) / "lib.so"
+            library.write_text("")
+            sdk = SDK(directory, pose)
+            with patch.object(sdk, "library", return_value=library), patch.object(sdk, "devices", return_value=[0x1301]), patch("sdk.subprocess.Popen") as spawn:
+                sdk.connect()
+            self.assertEqual(spawn.call_args.args[0][-1], str(pose))
+            sdk.process = None
+
     def test_missing_sdk_does_not_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             sdk = SDK(directory)
@@ -203,7 +223,7 @@ class SupervisorTests(unittest.TestCase):
                 process.poll.return_value = None
                 sdk.process = process
                 sdk.pid = 0x1301
-                sdk.started = time.time() - 30
+                sdk.started = boot_time() - 30
                 sdk.state = {"communication": True, "tracking": True}
                 with patch.object(sdk, "devices", return_value=[] if unplug else [0x1301]):
                     state = sdk.status()
@@ -219,9 +239,9 @@ class SupervisorTests(unittest.TestCase):
             sdk.process = Mock()
             sdk.process.poll.return_value = None
             sdk.pid = 0x1301
-            sdk.started = time.time()
+            sdk.started = boot_time()
             sdk.pending = True
-            sdk.state_file.write_text(json.dumps({"heartbeat": time.time(), "sequence": 1,
+            sdk.state_file.write_text(json.dumps({"heartbeat": boot_time(), "sequence": 1,
                 "communication": True, "tracking": False, "message": "Connected"}))
             with patch.object(sdk, "devices", return_value=[0x1301]):
                 self.assertFalse(sdk.status()["busy"])

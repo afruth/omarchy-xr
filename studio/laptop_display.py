@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+from atomic_file import atomic_write
+
 INTERNAL = re.compile(r'(?:eDP|LVDS|DSI)-[0-9]+')
 
 
@@ -160,7 +162,7 @@ def watch(directory,pid,output):
         monitors=snapshot(json.loads(hypr('-j','monitors')))
         if not monitors: raise RuntimeError('No active laptop display')
         journal={'session':os.environ.get('HYPRLAND_INSTANCE_SIGNATURE',''),'monitors':monitors}
-        temp=display.journal.with_suffix('.tmp');temp.write_text(json.dumps(journal));temp.replace(display.journal)
+        atomic_write(display.journal, json.dumps(journal))
         try:
             # Parent death during launch must never cause a late blackout.
             if stopped or select.select([sys.stdin],[],[],0)[0]: return

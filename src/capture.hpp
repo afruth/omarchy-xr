@@ -29,6 +29,10 @@ public:
     // Drain/flush protocol while presentation waits; GL context must remain current.
     void service();
     void setIncludeCursor(bool enabled);
+    // Backoff for a transient capture failure: 0.5 s, then doubling, capped at 5 s.
+    static constexpr int nextRetryMs(int current) { return current < 500 ? 500 : (current >= 5000 ? 5000 : current * 2); }
+    // Milliseconds from the compositor ready event to the finished import. Negative when no frame has been imported.
+    double importLatencyMs() const;
     const std::string& error() const;
 private:
     struct Impl;

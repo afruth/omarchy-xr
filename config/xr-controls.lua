@@ -2,10 +2,32 @@
 -- No processes are spawned during a gesture. Atomic cumulative samples are read
 -- by the renderer each frame. Horizontal gestures remain available to Hyprland.
 local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/state")
-local path = state .. "/omarchy-xr/pose.sock.controls"
+local runtime = os.getenv("XDG_RUNTIME_DIR")
+local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
+local path = runtime_root .. "/pose.sock.controls"
+local CONTROLS_VERSION = 2
+omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
 local active = false
 local lastTap, tapBlockedUntil=nil,0
+local function bootSeconds()
+    local file=io.open("/proc/uptime","r")
+    if not file then return os.time() end
+    local seconds=file:read("*n");file:close()
+    return seconds or os.time()
+end
+local function fresh(stamp)
+    if stamp==nil then return false end
+    local now=stamp>1000000000 and os.time() or bootSeconds()
+    return now-stamp>=0 and now-stamp<=2
+end
+local function numbers(line)
+    if not line then return {} end
+    line=line:gsub("^v2%s+","")
+    local fields={}
+    for value in line:gmatch("%S+") do fields[#fields+1]=tonumber(value) end
+    return fields
+end
 local function tapTime()
     -- Monotonic wall time; os.clock measures CPU time, os.time is too coarse.
     local file=io.open("/proc/uptime","r")
@@ -24,7 +46,7 @@ local function publish(delta, mode)
     if mode then fit_serial = serial; fit_mode = mode end
     local file = io.open(path .. ".tmp", "w")
     if not file then return end
-    file:write(string.format("%s %d %.9f %d %d\n", session, serial, total, fit_serial, fit_mode))
+    file:write(string.format("v2 %s %d %.9f %d %d\n", session, serial, total, fit_serial, fit_mode))
     file:close()
     os.rename(path .. ".tmp", path)
 end
@@ -67,7 +89,7 @@ local function publishPan()
     panSerial=panSerial+1
     local file=io.open(path..".pan.tmp","w")
     if not file then return end
-    file:write(string.format("%s %d %d %.9f %.9f %d %d\n",session,panSerial,panId,panX,panY,panActive and 1 or 0,os.time()))
+    file:write(string.format("v2 %s %d %d %.9f %.9f %d %d\n",session,panSerial,panId,panX,panY,panActive and 1 or 0,math.floor(bootSeconds())))
     file:close();os.rename(path..".pan.tmp",path..".pan")
 end
 local panGesture={
@@ -141,24 +163,23 @@ local function refresh()
     local file = io.open(path .. ".active", "r")
     local owner, stamp
     if file then owner, stamp = file:read("*n", "*n"); file:close() end
-    local live = stamp ~= nil and os.time() - stamp >= 0 and os.time() - stamp <= 2
+    local live = fresh(stamp)
     if live and tostring(owner) ~= session then
         session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
         -- Preserve accumulated input across a Hyprland config reload.
         local previous = io.open(path, "r")
         if previous then
-            local old_owner, old_serial, old_total, old_fit, old_mode = previous:read("*n", "*n", "*n", "*n", "*n")
-            previous:close()
-            if old_owner == owner and old_mode then
-                serial = old_serial; total = old_total; fit_serial = old_fit; fit_mode = old_mode
+            local saved = numbers(previous:read("*l")); previous:close()
+            if saved[1] == owner and saved[5] then
+                serial, total, fit_serial, fit_mode = saved[2], saved[3], saved[4], saved[5]
             end
         end
     end
     if live and not active then
         local previous=io.open(path..".pan","r")
         if previous then
-            local owner,seq,id,x,y=previous:read("*n","*n","*n","*n","*n");previous:close()
-            if tostring(owner)==session and y then panSerial=seq;panId=id;panX=x;panY=y end
+            local saved=numbers(previous:read("*l")); previous:close()
+            if saved[1] and tostring(saved[1])==session and saved[5] then panSerial,panId,panX,panY=saved[2],saved[3],saved[4],saved[5] end
         end
     end
     if live ~= active then
@@ -171,15 +192,16 @@ local function refresh()
         hl.gesture({fingers=fingers, direction="vertical", action=active and gesture or "unset"})
     end
     if active and panActive then publishPan() end
+    local versionFile=io.open(runtime_root.."/controls.version","w")
+    if versionFile then versionFile:write(CONTROLS_VERSION.."\n"); versionFile:close() end
+    if setHoverTimer then setHoverTimer(active) end
 end
-refresh()
 local timer = hl.timer(refresh, {timeout=250, type="repeat"})
 -- Keep the timer alive and expose the exact callbacks for integration checks.
-omarchy_xr_controls = {tap_bindings=taps, recenter=function() publish(0,3) end,bindings=bindings, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,2) end}
+omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=function() publish(0,3) end,bindings=bindings, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,2) end}
 
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
-local hoverIntervalMs = 2
 local gazeOwner, gazeSerial, gazeTarget
 local function selectGazeWorkspace()
     if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;return end
@@ -187,7 +209,8 @@ local function selectGazeWorkspace()
     if not file then return end
     local line=file:read("*l");file:close()
     if not line then return end
-    local owner,serialText,mode,name=line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ")
+    local owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
+    if not owner then owner,serialText,mode,name=line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ") end
     if owner~=session then return end
     local serialNumber=tonumber(serialText)
     if not serialNumber then return end
@@ -210,5 +233,15 @@ local function selectGazeWorkspace()
     end
 end
 local function updatePointer() selectGazeWorkspace() end
+local hoverTimer
+function setHoverTimer(enabled)
+    if enabled then
+        if not hoverTimer then hoverTimer=hl.timer(updatePointer,{timeout=33,type="repeat"}) end
+    elseif hoverTimer then
+        if hoverTimer.stop then hoverTimer:stop() end
+        hoverTimer=nil
+    end
+    omarchy_xr_controls.hover_timer=hoverTimer
+end
 omarchy_xr_controls.hover=updatePointer
-omarchy_xr_controls.hover_timer=hl.timer(updatePointer, {timeout=hoverIntervalMs,type="repeat"})
+refresh()

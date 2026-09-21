@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Monitor lifecycle and JSON-lines IPC for the Omarchy shell panel."""
 import argparse
+import ctypes
 import fcntl
 import json
 import math
@@ -10,7 +11,9 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
+import traceback
 import uuid
 
 from laptop_display import LaptopDisplay, internal
@@ -20,8 +23,10 @@ from glasses import Recovery, detect
 from sdk import SDK
 from dedicated import Dedicated
 import socket
-from input_settings import load_controls, save_controls
+from input_settings import DEFAULTS, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
+from atomic_file import atomic_write
+from clock import boot_time
 
 
 def default_layout():
@@ -75,6 +80,8 @@ def validate(layout, check_gaps=True):
     monitors = layout.get("monitors")
     if not isinstance(monitors, list) or not monitors:
         raise ValueError("Add at least one monitor")
+    if len(monitors) > 16:
+        raise ValueError("Use at most 16 monitors")
     def curvature(value):
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
             raise ValueError("Curvature must be 0–100 percent")
@@ -121,10 +128,30 @@ def validate(layout, check_gaps=True):
 
 
 def atomic_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, indent=2) + "\n")
-    temp.replace(path)
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
+
+
+def runtime_dir():
+    override = os.environ.get("OMARCHY_XR_RUNTIME")
+    path = Path(override) if override else Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omarchy-xr"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def die_with_parent():
+    # PR_SET_PDEATHSIG: the viewer exits if this worker is killed.
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl(1, signal.SIGTERM, 0, 0, 0)
+
+
+def quarantine(path):
+    path = Path(path)
+    if not path.exists():
+        return
+    dest = path.with_name(path.name + ".corrupt")
+    if dest.exists():
+        dest.unlink()
+    path.replace(dest)
 
 
 def run_hypr(*args):
@@ -136,11 +163,16 @@ def run_hypr(*args):
 
 
 class Manager:
-    def __init__(self, directory, renderer, runner=run_hypr):
+    def __init__(self, directory, renderer, runner=run_hypr, runtime=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.pose_socket = (Path(runtime) if runtime else self.directory) / "pose.sock"
         self.lock = (self.directory / "manager.lock").open("w")
-        fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"ok": False, "message": "Monitor manager is already running"}), flush=True)
+            raise SystemExit(1)
         self.runner, self.renderer = runner, str(renderer)
         self.presentation_profile = self.directory / "presentation.json"
         try:
@@ -161,24 +193,73 @@ class Manager:
         self.internal_workspaces = {}
         self.output_error = ""
         self.recovery = Recovery()
-        self.sdk = SDK(self.directory)
+        self.sdk = SDK(self.directory, self.pose_socket)
         self.dedicated = Dedicated(self.directory, self.renderer)
         self.direct = False
         self.stereo_active = False
         self.original_output = None
         self.restoration_error = ""
         self.viewer = None
+        self.viewer_exit = ""
         self.presenting = False
         self.log = None
         self.laptop = LaptopDisplay(self.directory, self.runner)
         try: self.laptop.recover()
         except Exception as exc: self.laptop.error = str(exc)
         if self.journal.exists():
-            names = json.loads(self.journal.read_text())
-            if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", n) for n in names):
-                raise ValueError("Invalid output recovery journal")
-            self.owned = set(names)
-            self.cleanup()
+            try:
+                names = json.loads(self.journal.read_text())
+                if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", n) for n in names):
+                    raise ValueError("Invalid output recovery journal")
+                self.owned = set(names)
+            except (OSError, ValueError) as exc:
+                self.restoration_error = str(exc)
+                quarantine(self.journal)
+                self.owned = set()
+                try:
+                    for monitor in self.monitors():
+                        name = monitor.get("name", "")
+                        if isinstance(name, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", name):
+                            self.owned.add(name)
+                except Exception as scan_exc:
+                    self.restoration_error += "; " + str(scan_exc)
+            if self.owned:
+                try:
+                    self.cleanup()
+                except Exception as exc:
+                    self.restoration_error = "; ".join(filter(None, (self.restoration_error, str(exc))))
+        self.recover_stranded_stereo()
+
+    def record_stereo(self):
+        atomic_json(self.directory / "stereo.json", {"stereoActive": True, "originalOutput": self.original_output})
+
+    def clear_stereo(self):
+        (self.directory / "stereo.json").unlink(missing_ok=True)
+
+    def recover_stranded_stereo(self):
+        path = self.directory / "stereo.json"
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            quarantine(path)
+            return
+        if not isinstance(data, dict) or data.get("stereoActive") is not True:
+            return
+        self.stereo_active = True
+        output = data.get("originalOutput")
+        self.original_output = output if isinstance(output, dict) else None
+        try:
+            self.stop_viewer()
+        except Exception as exc:
+            self.restoration_error = "; ".join(filter(None, (self.restoration_error, str(exc))))
+
+    def _watch_viewer(self, process):
+        process.wait()
+        code = process.returncode
+        if self.viewer is process:
+            self.append_backend_log(f"Viewer exited (code {code})")
 
     def monitors(self):
         return json.loads(self.runner("-j", "monitors"))
@@ -260,21 +341,28 @@ class Manager:
                     self.viewer.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self.viewer.kill()
-                    self.viewer.wait()
+                    try:
+                        self.viewer.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
             self.viewer = None
         if self.log:
             self.log.close()
             self.log = None
+        released = False
         if self.stereo_active:
             try:
                 self.sdk.stereo(False)  # request old EDID family before re-detection
+                released = True
             except Exception as exc:
                 failures.append(str(exc))
         try:
             self.dedicated.stop()
         except Exception as exc:
             failures.append(str(exc))
-        if self.stereo_active:
+        if self.stereo_active and not released:
+            failures.append("Skipped the display-mode wait because the glasses were not asked to leave side-by-side mode")
+        elif self.stereo_active:
             try:
                 if self.original_output:
                     original = self.original_output
@@ -302,6 +390,7 @@ class Manager:
                 self.sdk.verify_restore()
                 self.stereo_active = False
                 self.original_output = None
+                self.clear_stereo()
             except Exception as exc:
                 failures.append(str(exc))
         self.direct = False
@@ -334,10 +423,7 @@ class Manager:
         self.applied = json.loads(json.dumps(layout))
         self.save(layout)
         content = f'# settings {layout["fps"]} {layout.get("curvature", 0)} {layout["spacing"]} {layout.get("workspaceDegrees", -1)} {int(layout.get("workspaceFollow", False))}\n' + "".join(f'{self.prefix}{m["id"]}\t{m["x"]}\t{m["y"]}\t{m["width"]}\t{m["height"]}\t{m.get("curvature", 0)}\t{m.get("brightness", 100)}\n' for m in layout["monitors"])
-        target = self.directory / "viewer.tsv"
-        temp = target.with_suffix(".tmp")
-        temp.write_text(content)
-        temp.replace(target)
+        atomic_write(self.directory / "viewer.tsv", content)
 
     def hardware_limits(self):
         if self.graphics_limits is None:
@@ -509,7 +595,7 @@ class Manager:
             raise RuntimeError("Renderer not installed. Run make install-studio")
         args = [self.renderer, "--layout", str(self.directory / "viewer.tsv"), "--fps", str(self.applied["fps"]),
                 "--workspace-curvature", str(self.applied.get("curvature", 0)), "--spacing", str(self.applied["spacing"]),
-                "--pose-socket", str(self.directory / "pose.sock")]
+                "--pose-socket", str(self.pose_socket)]
         if self.applied.get("workspaceFollow", False):
             args += ["--workspace-follow"]
         if self.applied.get("workspaceDegrees", -1)>=0:
@@ -528,36 +614,62 @@ class Manager:
             self.stop_viewer()
         self.direct = direct
         self.presenting = present
-        self.log = (self.directory / "viewer.log").open("w")
-        self.viewer = subprocess.Popen(args, stdout=self.log, stderr=self.log)
+        self.rotate_viewer_log()
+        env = os.environ.copy()
+        env["OMARCHY_XR_MIRROR_STATE"] = str(self.directory / "pose.sock.controls")
+        self.viewer = subprocess.Popen(args, stdout=self.log, stderr=self.log, env=env, preexec_fn=die_with_parent)
+        threading.Thread(target=self._watch_viewer, args=(self.viewer,), daemon=True).start()
         time.sleep(.25)
         if self.viewer.poll() is not None:
             raise RuntimeError("Viewer could not start. See " + str(self.directory / "viewer.log"))
 
-    def display_event(self, stage, error=None):
+    def display_event(self, stage, error=None, output=None):
         # Append rather than overwrite so a later recovery attempt keeps the cause.
-        event = {"time": time.time(), "stage": stage}
+        event = {"time": boot_time(), "stage": stage}
         if error is not None:
             event["error"] = str(error)
+        if not isinstance(output, str):
+            output = getattr(self.dedicated, "output", None)
+        if isinstance(output, str) and output:
+            event["output"] = output
+        path = self.directory / "display-events.jsonl"
         try:
-            event["monitors"] = self.monitors()
-        except Exception as exc:
-            event["monitorError"] = str(exc)
-        with (self.directory / "display-events.jsonl").open("a") as log:
-            log.write(json.dumps(event) + "\n")
+            if path.exists() and path.stat().st_size > 256 * 1024:
+                previous = self.directory / "display-events.jsonl.1"
+                if previous.exists():
+                    previous.unlink()
+                path.replace(previous)
+            with path.open("a", encoding="utf-8") as log:
+                log.write(json.dumps(event) + "\n")
+        except OSError:
+            pass
 
     def start_dedicated(self):
-        self.stop_viewer()
+        saved_output = self.original_output if self.stereo_active else None
+        if not self.sdk.process or self.sdk.process.poll() is not None:
+            self.sdk.connect()
+        try:
+            self.stop_viewer()
+        except Exception as exc:
+            # A stranded side-by-side mode must not block the next session.
+            self.display_event("stereo-restore-skipped", str(exc))
+            self.restoration_error = str(exc)
         displays = detect(self.monitors())["displays"]
         if len(displays) != 1:
             raise RuntimeError("Connect exactly one VITURE video output")
-        self.original_output = next(m for m in self.monitors() if m["name"] == displays[0])
+        current = next(m for m in self.monitors() if m["name"] == displays[0])
+        family = f'{saved_output["width"]}x{saved_output["height"]}@' if isinstance(saved_output, dict) else ""
+        if family and not any(str(mode).startswith(family) for mode in current.get("availableModes", [])):
+            self.original_output = saved_output
+        else:
+            self.original_output = current
         if not self.sdk.process or self.sdk.process.poll() is not None:
             self.sdk.connect()
         stage = "SDK stereo request"
         try:
             self.display_event("stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
+            self.record_stereo()
             self.sdk.stereo(True)
             self.display_event("stereo-request-acknowledged")
             stage = "waiting for stereo EDID"
@@ -613,7 +725,7 @@ class Manager:
             self.place_spectator()
         if self.direct and self.viewer and self.viewer.poll() is None:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
-                connection.sendto(b"spectator_on" if enabled else b"spectator_off", str(self.directory / "pose.sock"))
+                connection.sendto(b"spectator_on" if enabled else b"spectator_off", str(self.pose_socket))
         self.spectator_enabled = enabled
         self.save_presentation()
 
@@ -627,7 +739,7 @@ class Manager:
         for _ in range(80):
             if self.viewer.poll() is not None: break
             try:
-                stats=json.loads((self.directory/"pose.sock.stats").read_text())
+                stats=json.loads(Path(str(self.pose_socket)+".stats").read_text())
                 if stats.get("pid")==self.viewer.pid and stats.get("fps",0)>0 and 0<=time.monotonic()-stats["time"]<8:
                     if self.applied:
                         monitors = self.monitors()
@@ -654,7 +766,7 @@ class Manager:
         if not self.viewer or self.viewer.poll() is not None:
             raise RuntimeError("Open the XR viewer first")
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
-            connection.sendto(action.encode(), str(self.directory / "pose.sock"))
+            connection.sendto(action.encode(), str(self.pose_socket))
 
     def present(self, layout):
         if len(detect(self.monitors())["displays"]) != 1:
@@ -681,41 +793,98 @@ class Manager:
         workspace = int(monitor["activeWorkspace"]["id"])
         self.runner("eval", f'hl.exec_cmd("foot", {{workspace="{workspace} silent"}})')
 
+    def controls_hint(self):
+        if not self.viewer or self.viewer.poll() is not None:
+            return ""
+        base = os.environ.get("OMARCHY_XR_RUNTIME")
+        if not base:
+            base = str(Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omarchy-xr")
+        try:
+            version = int((Path(base) / "controls.version").read_text().strip())
+        except (OSError, ValueError):
+            version = 0
+        if version != 2:
+            return "Reinstall XR controls with make install-controls"
+        return ""
+
     def status(self):
-        if self.applied:
+        try:
+            monitors = self.monitors()
+        except Exception:
+            monitors = None
+        if self.applied and monitors is not None:
             try:
-                monitors = self.monitors()
                 self.reconcile_outputs(monitors)
                 self.reconcile_laptop_workspaces(monitors)
                 self.output_error = ""
             except Exception as exc:
                 self.output_error = str(exc)
+        elif self.applied:
+            self.output_error = self.output_error or "Display status unavailable"
         if self.viewer and self.viewer.poll() is not None:
+            code = self.viewer.returncode
+            self.viewer_exit = f"Viewer exited (code {code})"
+            self.append_backend_log(self.viewer_exit)
             try:
                 self.stop_viewer()
             except Exception as exc:
                 self.restoration_error = str(exc)
         try:
-            glasses = detect(self.monitors())
+            glasses = detect(monitors if monitors is not None else [])
+            if monitors is None:
+                glasses["detectionError"] = "Display status unavailable"
         except Exception:
             glasses = detect([])
             glasses["detectionError"] = "Display status unavailable"
         glasses["dedicatedDisplay"] = self.dedicated.output if self.direct else None
         glasses.update(self.recovery.status())
         glasses["sdk"] = self.sdk.status()
+        pending = self.sdk.state.get("displayError") or ""
+        if "restoration is pending" in pending and pending not in self.restoration_error:
+            self.restoration_error = "; ".join(filter(None, (self.restoration_error, pending)))
         performance = {}
         if self.viewer and self.viewer.poll() is None:
             try:
-                sample = json.loads((self.directory / "pose.sock.stats").read_text())
+                sample = json.loads(Path(str(self.pose_socket) + ".stats").read_text())
                 if sample.get("pid") == self.viewer.pid and 0 <= time.monotonic()-sample["time"] < 12:
                     performance = sample
             except (OSError, ValueError, KeyError, TypeError):
                 pass
         laptop_status=self.laptop.status()
-        try: laptop_status["available"]=bool(internal(self.monitors())) or laptop_status["off"]
+        try: laptop_status["available"]=bool(internal(monitors or [])) or laptop_status["off"]
         except Exception: laptop_status["available"]=laptop_status["off"]
         return {"laptopOffEnabled":self.laptop_off_enabled,"laptopDisplay":laptop_status,"spectatorEnabled": self.spectator_enabled, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
-                "direct": self.direct, "stereo": self.stereo_active, "restorationError": "; ".join(filter(None, (self.restoration_error,self.output_error))), "glasses": glasses}
+                "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
+                "restorationError": "; ".join(filter(None, (self.restoration_error, self.output_error, self.viewer_exit))), "glasses": glasses}
+
+    def append_backend_log(self, text):
+        path = self.directory / "backend.log"
+        try:
+            if path.exists() and path.stat().st_size > 512 * 1024:
+                previous = self.directory / "backend.log.1"
+                if previous.exists():
+                    previous.unlink()
+                path.replace(previous)
+            with path.open("a", encoding="utf-8") as log:
+                log.write(text)
+                if not text.endswith("\n"):
+                    log.write("\n")
+        except OSError:
+            pass
+
+    def rotate_viewer_log(self):
+        if self.log:
+            self.log.close()
+            self.log = None
+        path = self.directory / "viewer.log"
+        previous = self.directory / "viewer.log.1"
+        try:
+            if path.exists():
+                path.replace(previous)
+        except OSError:
+            pass
+        self.log = path.open("w", encoding="utf-8")
+        self.viewer_exit = ""
 
 
 def serve(manager):
@@ -726,7 +895,31 @@ def serve(manager):
             request_id = request.get("requestId")
             action = request["action"]
             if action == "load":
-                response = {"layout": manager.load(), "controls": load_controls(manager.directory), "setups": manager.setups(), "graphicsLimits": manager.hardware_limits(), "environment":manager.environment.snapshot(), "builtInSetups":built_in_setups()}
+                warnings = []
+                try:
+                    layout = manager.load()
+                except (OSError, ValueError) as exc:
+                    quarantine(manager.profile)
+                    layout = default_layout()
+                    warnings.append("Layout file was invalid and was set aside")
+                    manager.append_backend_log(f"layout load: {exc}")
+                try:
+                    controls = load_controls(manager.directory)
+                except (OSError, ValueError) as exc:
+                    quarantine(manager.directory / "controls-settings.json")
+                    controls = dict(DEFAULTS)
+                    warnings.append("Control settings were invalid and were set aside")
+                    manager.append_backend_log(f"controls load: {exc}")
+                try:
+                    setups = manager.setups()
+                except (OSError, ValueError) as exc:
+                    quarantine(manager.directory / "setups.json")
+                    setups = {"version": 1, "selected": "", "items": []}
+                    warnings.append("Saved setups were invalid and were set aside")
+                    manager.append_backend_log(f"setups load: {exc}")
+                response = {"layout": layout, "controls": controls, "setups": setups, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
+                if warnings:
+                    response["message"] = " ".join(warnings)
             elif action == "set_environment":
                 manager.environment.set(request.get("environment"))
                 response = {"environment":manager.environment.snapshot(), "message":"Background updated."}
@@ -799,7 +992,13 @@ def serve(manager):
                 raise ValueError("Unknown action")
             print(json.dumps({"ok": True, "requestId": request_id, **response, **manager.status()}), flush=True)
         except Exception as exc:
-            print(json.dumps({"ok": False, "requestId": request_id, "message": str(exc), **manager.status()}), flush=True)
+            manager.append_backend_log(traceback.format_exc())
+            try:
+                extra = manager.status()
+            except Exception as status_exc:
+                manager.append_backend_log(traceback.format_exc())
+                extra = {"statusError": f"{type(status_exc).__name__}: {status_exc}"}
+            print(json.dumps({"ok": False, "requestId": request_id, "message": f"{type(exc).__name__}: {exc}", **extra}), flush=True)
 
 
 def main():
@@ -808,12 +1007,21 @@ def main():
     args = parser.parse_args()
     directory = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "omarchy-xr"
     manager = None
+    shutting_down = False
     def stop(*_):
+        nonlocal shutting_down
+        if shutting_down:
+            return
+        shutting_down = True
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGHUP, stop)
     try:
-        manager = Manager(directory, args.renderer)
+        manager = Manager(directory, args.renderer, runtime=runtime_dir())
         serve(manager)
     finally:
         if manager:

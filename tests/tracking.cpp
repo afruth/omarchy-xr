@@ -18,6 +18,9 @@ int main() {
     assert(!c.accept("euler-nwu-v1 11 0 0 0 junk",11));
     assert(!c.accept("euler-nwu-v1 12 0 0 0",11));
     assert(!c.accept("euler-nwu-v1 10.1 0 0 0",11));
+    tracking::Camera timed;
+    assert(timed.accept("euler-nwu-v2 1 4 5 6 4242",1) && timed.deviceTimestamp==4242);
+    assert(!timed.accept("euler-nwu-v2 1.1 0 0 0",1.1));
     // SDK Gen1/Gen2 reference directions. Viewed world moves opposite the head.
     auto view=[](double r,double p,double y){return tracking::matrix(tracking::conjugate(tracking::orientation(r,p,y)));};
     equal(transform(view(0,0,90),{-1,0,0}),{0,0,-1}); // looking left
@@ -47,5 +50,18 @@ int main() {
     assert(!c.fresh(12));c.recenter(12);assert(!c.centered);
     auto held=tracking::matrix(c.view);assert(held==actual);
     assert(c.accept("euler-nwu-v1 13 0 0 -150",13));assert(near(c.view.w,1));
+    tracking::Camera predicted;
+    assert(predicted.accept("euler-nwu-v1 10 0 0 0",10));
+    assert(!predicted.predict(10.01,10));
+    assert(predicted.accept("euler-nwu-v1 10.01 0 0 10",10.01));
+    assert(predicted.predict(10.02,10.01));
+    auto predictedView=tracking::conjugate(tracking::orientation(0,0,20));
+    assert(near(predicted.view.w,predictedView.w) && near(predicted.view.y,predictedView.y));
+    assert(near(predicted.predictionMs,10));
+    assert(predicted.predict(10.06,10.01));
+    predictedView=tracking::conjugate(tracking::orientation(0,0,40));
+    assert(near(predicted.view.w,predictedView.w) && near(predicted.view.y,predictedView.y));
+    assert(near(predicted.predictionMs,30));
+    assert(!predicted.predict(10.06,11));
     std::cout<<"SDK reference camera: six directions, 60 combined poses, yaw-only recenter, wrap and freshness passed\n";
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <sstream>
@@ -32,18 +33,45 @@ inline std::array<float,16> matrix(Quaternion q) {
 struct Camera {
     Quaternion view;
     double roll=0,pitch=0,yaw=0,neutralYaw=0;
-    double timestamp=-1;
-    bool centered=false;
+    double timestamp=-1, deviceTimestamp=0, predictionMs=0;
+    bool centered=false, predictionActive=false;
     unsigned samples=0;
+    struct Sample { double t=0, roll=0, pitch=0, yaw=0; };
+    Sample history[8]{};
+    int histCount=0, histNext=0;
     bool fresh(double now) const { return timestamp>=0 && now>=timestamp && now-timestamp<=.25; }
-    void updateView() {view=conjugate(orientation(roll,pitch,std::remainder(yaw-neutralYaw,360.0)));}
+    void updateView() {view=conjugate(orientation(roll,pitch,std::remainder(yaw-neutralYaw,360.0))); predictionActive=false; predictionMs=0;}
+    void remember() {
+        history[histNext]={timestamp,roll,pitch,yaw};
+        histNext=(histNext+1)%8;
+        if(histCount<8)++histCount;
+    }
+    // Extrapolate to a scanout time. The horizon never exceeds 30 ms, and a stale pose is left as measured.
+    bool predict(double targetTime, double now) {
+        predictionActive=false; predictionMs=0;
+        if(histCount<2 || !fresh(now)) { updateView(); return false; }
+        const Sample& latest=history[(histNext+7)%8];
+        const Sample& previous=history[(histNext+6)%8];
+        const double dt=latest.t-previous.t;
+        const double horizon=std::clamp(targetTime-latest.t, 0.0, 0.030);
+        if(dt<0.001 || dt>0.05 || horizon<=0) { updateView(); return false; }
+        const double vr=(latest.roll-previous.roll)/dt;
+        const double vp=(latest.pitch-previous.pitch)/dt;
+        const double vy=std::remainder(latest.yaw-previous.yaw,360.0)/dt;
+        if(std::abs(vr)>2000 || std::abs(vp)>2000 || std::abs(vy)>2000) { updateView(); return false; }
+        const double relYaw=std::remainder((latest.yaw-neutralYaw)+vy*horizon,360.0);
+        view=conjugate(orientation(latest.roll+vr*horizon, latest.pitch+vp*horizon, relYaw));
+        predictionActive=true; predictionMs=horizon*1000; return true;
+    }
     bool accept(const std::string& packet, double now) {
-        std::istringstream in(packet); double stamp,r,p,y; std::string version,extra;
-        if (!(in>>version>>stamp>>r>>p>>y) || version!="euler-nwu-v1" || (in>>extra)
-            || !std::isfinite(stamp) || !std::isfinite(r) || !std::isfinite(p) || !std::isfinite(y)
+        std::istringstream in(packet); double stamp,r,p,y,device=0; std::string version,extra;
+        if (!(in>>version>>stamp>>r>>p>>y) || (version!="euler-nwu-v1" && version!="euler-nwu-v2")) return false;
+        if (version=="euler-nwu-v2" && (!(in>>device) || !std::isfinite(device))) return false;
+        if ((in>>extra) || !std::isfinite(stamp) || !std::isfinite(r) || !std::isfinite(p) || !std::isfinite(y)
             || stamp<=timestamp || stamp>now || now-stamp>.25) return false;
-        roll=r;pitch=p;yaw=y;timestamp=stamp;++samples;
+        roll=r;pitch=p;yaw=y;timestamp=stamp;deviceTimestamp=device;++samples;
         if (!centered) {neutralYaw=yaw;centered=true;}
+        remember();
         updateView(); return true;
     }
     void recenter(double now) {

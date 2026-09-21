@@ -263,9 +263,12 @@ class LayoutTests(unittest.TestCase):
         for change in (lambda x:x.update(fps=0),lambda x:x["monitors"][0].update(width=0),lambda x:x["monitors"][1].update(x=0),lambda x:x["monitors"][0].update(id='bad"name')):
             layout=default_layout();change(layout)
             with self.assertRaises(ValueError):validate(layout)
-    def test_no_three_monitor_limit(self):
-        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%10)*664,"y":(i//10)*504} for i in range(100)]
+    def test_monitor_count_is_capped_at_sixteen(self):
+        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%4)*664,"y":(i//4)*504} for i in range(16)]
         validate(layout)
+        layout["monitors"].append({"id":"16","width":640,"height":480,"x":0,"y":20000})
+        with self.assertRaisesRegex(ValueError,"16"):
+            validate(layout)
     def test_spacing(self):
         for gap in (0,-1,True,1.5,float("nan"),8193):
             layout=default_layout();layout["spacing"]=gap
@@ -489,5 +492,115 @@ class LayoutTests(unittest.TestCase):
             recovered=Manager(temp,"/unused",fake)
             try:self.assertEqual(list(fake.outputs),["eDP-1"])
             finally:recovered.lock.close()
+
+    def test_viewer_log_rotates_and_exit_code_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            renderer=Path(temp)/"renderer"
+            renderer.write_text("")
+            manager=Manager(temp,renderer,FakeHypr())
+            (Path(temp)/"viewer.log").write_text("previous crash\n")
+            process=Mock();process.poll.return_value=None;process.pid=42
+            try:
+                manager.apply(default_layout())
+                with patch("backend.subprocess.Popen",return_value=process):
+                    manager.start()
+                self.assertEqual((Path(temp)/"viewer.log.1").read_text(),"previous crash\n")
+                self.assertEqual((Path(temp)/"viewer.log").read_text(),"")
+                process.poll.return_value=9
+                process.returncode=9
+                status=manager.status()
+                self.assertEqual(status["viewerExit"],"Viewer exited (code 9)")
+                self.assertIn("Viewer exited (code 9)",status["restorationError"])
+                self.assertIsNone(manager.viewer)
+                self.assertIn("Viewer exited (code 9)",(Path(temp)/"backend.log").read_text())
+            finally:
+                manager.cleanup();manager.lock.close()
+
+    def test_request_failure_survives_a_broken_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manager=Manager(temp,"/unused",FakeHypr())
+            try:
+                manager.status=Mock(side_effect=KeyError("layout"))
+                stdout=io.StringIO()
+                with patch("sys.stdin",io.StringIO('{"requestId":7,"action":"not-a-real-action"}\n')), patch("sys.stdout",stdout):
+                    serve(manager)
+                reply=json.loads(stdout.getvalue().splitlines()[0])
+                self.assertFalse(reply["ok"])
+                self.assertEqual(reply["requestId"],7)
+                self.assertIn("ValueError",reply["message"])
+                self.assertIn("KeyError",reply["statusError"])
+                log=(Path(temp)/"backend.log").read_text()
+                self.assertIn("Traceback",log)
+                self.assertIn("KeyError",log)
+            finally:
+                manager.lock.close()
+
+    def test_stranded_side_by_side_mode_can_start_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr()
+            fake.outputs["DP-1"]={"name":"DP-1","description":"VITURE","width":3840,"height":1080,"x":0,"y":0,"scale":1,"availableModes":["3840x1080@60.00Hz"]}
+            manager=Manager(temp,"/unused",fake)
+            saved={"name":"DP-1","width":1920,"height":1080,"refreshRate":120,"x":1920,"y":0,"scale":1}
+            manager.stereo_active=True
+            manager.original_output=saved
+            manager.sdk=Mock()
+            manager.sdk.process=None
+            manager.sdk.state={"communication":False}
+            def connect():
+                manager.sdk.process=Mock()
+                manager.sdk.process.poll.return_value=None
+                manager.sdk.state={"communication":True}
+            manager.sdk.connect.side_effect=connect
+            manager.sdk.stereo.side_effect=lambda enabled: (_ for _ in ()).throw(RuntimeError("mode family missing")) if not enabled else None
+            manager.dedicated=Mock()
+            manager.start=Mock()
+            try:
+                with patch("backend.time.sleep"):
+                    manager.start_dedicated()
+            except Exception:
+                pass
+            manager.sdk.connect.assert_called()
+            self.assertEqual(manager.original_output, saved)
+            manager.lock.close()
+
+    def test_stranded_stereo_is_restored_on_startup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first=Manager(temp,"/unused",FakeHypr())
+            first.stereo_active=True
+            first.original_output={"name":"DP-1","width":1920,"height":1080,"refreshRate":60,"x":0,"y":0,"scale":1}
+            first.record_stereo()
+            first.lock.close()
+            with patch.object(Manager,"stop_viewer") as stop:
+                second=Manager(temp,"/unused",FakeHypr())
+                stop.assert_called_once()
+                self.assertTrue(second.stereo_active)
+                second.lock.close()
+
+    def test_bad_journal_keeps_the_worker_available(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp)/"outputs.json").write_text("{")
+            manager=Manager(temp,"/unused",FakeHypr())
+            try:
+                self.assertTrue(manager.restoration_error)
+                self.assertTrue((Path(temp)/"outputs.json.corrupt").exists())
+                self.assertFalse(manager.owned)
+            finally:
+                manager.lock.close()
+
+    def test_invalid_layout_is_quarantined_on_load(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manager=Manager(temp,"/unused",FakeHypr())
+            (Path(temp)/"layout.json").write_text("{")
+            try:
+                stdout=io.StringIO()
+                with patch("backend.sys.stdin", io.StringIO('{"requestId":1,"action":"load"}\n')), patch("backend.sys.stdout", stdout):
+                    serve(manager)
+                reply=json.loads(stdout.getvalue().splitlines()[0])
+                self.assertTrue(reply["ok"])
+                self.assertEqual(len(reply["layout"]["monitors"]), 3)
+                self.assertIn("set aside", reply["message"])
+                self.assertTrue((Path(temp)/"layout.json.corrupt").exists())
+            finally:
+                manager.lock.close()
 
 if __name__=="__main__":unittest.main()

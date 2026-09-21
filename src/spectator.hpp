@@ -118,8 +118,8 @@ public:
             if(!slot)slot=std::make_unique<Slot>();
             if(slot->busy)continue;
             if(!slot->image.allocate(dma,w,h,DRM_FORMAT_XRGB8888))throw std::runtime_error("Spectator: GPU buffer import failed");
-            if(!wl_proxy_get_listener(reinterpret_cast<wl_proxy*>(slot->image.buffer)))wl_buffer_add_listener(slot->image.buffer,&Slot::listener,slot.get());
-            glBindFramebuffer(GL_FRAMEBUFFER,slot->image.readFbo);
+            if(!wl_proxy_get_listener(reinterpret_cast<wl_proxy*>(slot->image.buffer())))wl_buffer_add_listener(slot->image.buffer(),&Slot::listener,slot.get());
+            glBindFramebuffer(GL_FRAMEBUFFER,slot->image.framebuffer());
             if(!slot->depth)glGenRenderbuffers(1,&slot->depth);
             glBindRenderbuffer(GL_RENDERBUFFER,slot->depth);
             if(slot->depthWidth!=w || slot->depthHeight!=h){
@@ -136,7 +136,7 @@ public:
         if(!drawing)return;
         glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();
         drawing->busy=true;
-        wl_surface_attach(surface,drawing->image.buffer,0,0);
+        wl_surface_attach(surface,drawing->image.buffer(),0,0);
         wl_surface_damage(surface,0,0,w,h);
         callback=wl_surface_frame(surface);wl_callback_add_listener(callback,&frameListener,this);
         wl_surface_commit(surface);wl_display_flush(display);drawing=nullptr;++frames;

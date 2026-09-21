@@ -9,6 +9,9 @@ import threading
 import sys
 import time
 
+from atomic_file import atomic_write
+from clock import boot_time
+
 POSE = C.CFUNCTYPE(None, C.POINTER(C.c_float), C.c_uint64)
 
 
@@ -70,16 +73,20 @@ class Session:
             return
         now = time.monotonic()
         with self.pose_lock:
-            self.pose = (now, *euler)
+            self.pose = (now, *euler, int(timestamp))
             self.samples += 1
             self.last_pose = now
+        notify = getattr(self, "pose_notify", None)
+        if notify:
+            notify()
 
     def pose_packet(self):
         with self.pose_lock:
             pose = self.pose
         if not pose or time.monotonic() - pose[0] > .25:
             return None
-        return ("euler-nwu-v1 " + " ".join(format(v, ".17g") for v in pose)).encode("ascii")
+        mono, roll, pitch, yaw, device = pose
+        return (f"euler-nwu-v2 {mono:.17g} {roll:.17g} {pitch:.17g} {yaw:.17g} {device}").encode("ascii")
 
     def connect(self, pid):
         self.close()
@@ -145,9 +152,7 @@ class Session:
         if self.original_mode is None:
             self.original_mode = self.check("get_display_mode", self.handle)
             if self.mode_journal:
-                temp = self.mode_journal.with_suffix(".tmp")
-                temp.write_text(json.dumps({"mode": self.original_mode}))
-                temp.replace(self.mode_journal)
+                atomic_write(self.mode_journal, json.dumps({"mode": self.original_mode}))
         self.check("set_display_mode", self.handle, 0x32)  # standard SBS 3840x1080, 60 Hz
         # Gen2 readback reports the active host video timing. Verify only after
         # the host starts the new 3840-wide scanout, not immediately after ACK.
@@ -215,18 +220,37 @@ class Session:
                 "samples": self.samples, "nativeDof": self.native_dof, "displayMode": self.mode, "trackingError": self.tracking_error, "displayError": self.display_error}
 
 
+KEEP_ALIVE_LIMIT = 3
+
+
+def record_keep_alive(failures, error):
+    failures += 1
+    if failures >= KEEP_ALIVE_LIMIT:
+        raise RuntimeError(error)
+    return failures
+
+
 class PosePublisher:
-    """Keep pose transport independent of synchronous USB device-control calls."""
+    """Pose transport stays off the USB control calls. The callback wakes the sender; the thread only notices a stale pose."""
     def __init__(self, session, path):
         self.session, self.path = session, str(path)
         self.stop_event = threading.Event()
+        self.wake = threading.Condition()
+        self.generation = 0
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
+        session.pose_notify = self.notify
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
+    def notify(self):
+        with self.wake:
+            self.generation += 1
+            self.wake.notify()
+
     def run(self):
         previous = None
+        seen = 0
         while not self.stop_event.is_set():
             packet = self.session.pose_packet()
             if packet and packet != previous:
@@ -235,43 +259,55 @@ class PosePublisher:
                     previous = packet
                 except OSError:
                     pass
-            self.stop_event.wait(1/120)
+                continue
+            with self.wake:
+                if self.generation != seen:
+                    seen = self.generation
+                    continue
+                self.wake.wait(timeout=0.25)
+                seen = self.generation
 
     def close(self):
         self.stop_event.set()
+        self.notify()
         self.thread.join(timeout=1)
         self.socket.close()
 
 
 def main():
-    library, target, pid = sys.argv[1:]
+    library, target, pid, *rest = sys.argv[1:]
     target = Path(target)
+    pose_path = Path(rest[0]) if rest else target.with_name("pose.sock")
     session = None
     publisher = None
     message, error, sequence = "Connecting to glasses…", False, 0
     def publish():
-        data = {"heartbeat": time.time(), "message": message, "error": error, "sequence": sequence,
+        data = {"heartbeat": boot_time(), "message": message, "error": error, "sequence": sequence,
                 **(session.state() if session else {"communication": False, "tracking": False})}
-        temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(data))
-        temp.replace(target)
+        atomic_write(target, json.dumps(data))
     try:
         publish()
         session = Session(library, target.with_name("display-mode.json"))
         session.connect(int(pid))
-        publisher = PosePublisher(session, target.with_name("pose.sock"))
+        publisher = PosePublisher(session, pose_path)
         message = "SDK connected; waiting for tracking samples. Video is checked separately."
         sequence += 1
         last_query = time.monotonic()
         reported_tracking = False
         last_publish = 0
+        keep_alive_failures = 0
         while True:
             if session.state()["tracking"] and not reported_tracking:
                 message = "SDK connected and receiving head tracking. Video is checked separately."
                 sequence += 1
                 reported_tracking = True
             if time.monotonic() - last_query >= 5:
-                session.check("get_brightness_level", session.handle)
+                try:
+                    session.check("get_brightness_level", session.handle)
+                    keep_alive_failures = 0
+                except RuntimeError as exc:
+                    print(f"SDK keep-alive failed ({keep_alive_failures + 1}): {exc}", file=sys.stderr, flush=True)
+                    keep_alive_failures = record_keep_alive(keep_alive_failures, str(exc))
                 last_query = time.monotonic()
             if time.monotonic() - last_publish >= 1:
                 publish()

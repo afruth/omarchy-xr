@@ -33,11 +33,12 @@ struct DesktopCapture::Impl {
     uint32_t format = 0, width = 0, height = 0, stride = 0, flags = 0;
     std::vector<std::unique_ptr<Output>> outputs;
     Output* selected = nullptr;
-    bool ready = false;
+    bool ready = false, rebake = false;
     double interval = 1000./60;
+    double importMs = -1;
     std::string failure;
     using Clock = std::chrono::steady_clock;
-    Clock::time_point requested{}, next{};
+    Clock::time_point requested{}, next{}, readyAt{};
 
     void clearFrame() {
         if(pending)zwlr_screencopy_frame_v1_destroy(pending);
@@ -119,7 +120,11 @@ struct DesktopCapture::Impl {
         self.format = fmt; self.width = w; self.height = h; self.stride = row;
         if(self.version<3)self.submit(frame);
     }
-    static void release(void* data,wl_buffer*){static_cast<Impl*>(data)->released=true;}
+    static void release(void* data,wl_buffer* buffer){
+        auto& self=*static_cast<Impl*>(data);
+        self.released=true;
+        if(self.gpu)self.gpu->noteRelease(buffer);
+    }
     static constexpr wl_buffer_listener bufferListener{release};
     bool allocateShm(){
         const auto w=width,h=height,row=stride,fmt=format;
@@ -150,11 +155,12 @@ struct DesktopCapture::Impl {
             if(!gpu)gpu=std::make_unique<GpuCapture>();
             if(gpu->allocate(dmabuf,dmaWidth,dmaHeight,dmaFormat)){
                 gpuMode=true;
-                if(!wl_proxy_get_listener(reinterpret_cast<wl_proxy*>(gpu->buffer)))wl_buffer_add_listener(gpu->buffer,&bufferListener,this);
-            }else {gpuDisabled=true;gpu->clearSource();}
+                if(!wl_proxy_get_listener(reinterpret_cast<wl_proxy*>(gpu->buffer())))wl_buffer_add_listener(gpu->buffer(),&bufferListener,this);
+                gpu->markBusy();
+            }else if(gpu->createFailed){gpuDisabled=true;gpu->clearSource();}
         }
         if(!gpuMode && !allocateShm())return;
-        auto destination=gpuMode?gpu->buffer:buffer;
+        auto destination=gpuMode?gpu->buffer():buffer;
         if(version>=2 && !forceCopy)zwlr_screencopy_frame_v1_copy_with_damage(frame,destination);
         else zwlr_screencopy_frame_v1_copy(frame,destination);
         submitted=true;released=false;forceCopy=false;
@@ -168,7 +174,9 @@ struct DesktopCapture::Impl {
         static_cast<Impl*>(data)->flags = value;
     }
     static void onReady(void* data, zwlr_screencopy_frame_v1*, uint32_t, uint32_t, uint32_t) {
-        static_cast<Impl*>(data)->ready = true;
+        auto& self=*static_cast<Impl*>(data);
+        self.ready = true;
+        self.readyAt = Clock::now();
     }
     static void onFailed(void* data, zwlr_screencopy_frame_v1*) {
         auto& s=*static_cast<Impl*>(data);
@@ -211,15 +219,15 @@ void DesktopCapture::service(){if(impl->display && impl->failure.empty())impl->p
 void DesktopCapture::setIncludeCursor(bool enabled){impl->includeCursor=enabled;}
 void DesktopCapture::setFrameRate(unsigned fps) { impl->interval = 1000. / std::clamp(fps, 1u, 120u); }
 void DesktopCapture::setDemand(bool visible,unsigned width,unsigned height){
-    if(visible && (!impl->visible || width!=impl->desiredWidth || height!=impl->desiredHeight)){
-        // Cancel a damage wait on a quality/visibility transition and use a new
-        // source buffer. Keep the previous scaled texture until a new frame arrives.
-        impl->clearFrame();impl->clearBuffer();if(impl->gpu)impl->gpu->clearSource();
-        impl->released=true;impl->forceCopy=true;impl->next={};
-    }
-    impl->visible=visible;impl->desiredWidth=std::max(1u,width);impl->desiredHeight=std::max(1u,height);
+    width=std::max(1u,width);height=std::max(1u,height);
+    // The native GPU image does not depend on the requested size. Re-blit it
+    // immediately and let the next capture replace it when the compositor answers.
+    if(visible && (!impl->visible || width!=impl->desiredWidth || height!=impl->desiredHeight) && impl->gpu && impl->gpu->retained())
+        impl->rebake=true;
+    impl->visible=visible;impl->desiredWidth=width;impl->desiredHeight=height;
 }
 const char* DesktopCapture::transport() const{return impl->gpuMode?"dmabuf":"shm";}
+double DesktopCapture::importLatencyMs() const{return impl->importMs;}
 unsigned DesktopCapture::requests() const{return impl->requestCount;}
 const std::string& DesktopCapture::error() const { return impl->failure; }
 bool DesktopCapture::connect() {
@@ -259,23 +267,32 @@ bool DesktopCapture::update(CapturedFrame& frame) {
     bool updated = false;
     if (s.ready) {
         if(s.visible){
-            const unsigned nativeWidth=s.gpuMode?s.gpu->width:s.width,nativeHeight=s.gpuMode?s.gpu->height:s.height;
+            const unsigned nativeWidth=s.gpuMode?s.gpu->width():s.width,nativeHeight=s.gpuMode?s.gpu->height():s.height;
             const float ratio=std::min({1.f,float(s.desiredWidth)/nativeWidth,float(s.desiredHeight)/nativeHeight});
             frame.sourceWidth=nativeWidth;frame.sourceHeight=nativeHeight;
             frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
             frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
             if(s.gpuMode){
-                s.gpu->scale(frame.width,frame.height,s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
-                frame.texture=s.gpu->texture;frame.rgba.clear();
+                frame.texture=s.gpu->present(frame.width,frame.height,s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
+                frame.rgba.clear();s.rebake=false;
             }else{
                 frame.texture=0;frame.rgba.resize(size_t(frame.width)*frame.height*4);
                 const bool bgr=s.format==WL_SHM_FORMAT_XBGR8888 || s.format==WL_SHM_FORMAT_ABGR8888;
                 copyRgbaScaled(s.pixels,frame.rgba.data(),s.width,s.height,s.stride,bgr,
                     s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT,frame.width,frame.height);
             }
+            s.importMs=std::chrono::duration<double,std::milli>(Impl::Clock::now()-s.readyAt).count();
             updated=true;
         }
         s.clearFrame();
+    }else if(s.rebake && s.visible && s.gpu && s.gpu->retained()){
+        const unsigned nativeWidth=s.gpu->width(),nativeHeight=s.gpu->height();
+        const float ratio=std::min({1.f,float(s.desiredWidth)/nativeWidth,float(s.desiredHeight)/nativeHeight});
+        frame.sourceWidth=nativeWidth;frame.sourceHeight=nativeHeight;
+        frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
+        frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
+        frame.texture=s.gpu->present(frame.width,frame.height,s.gpu->invertY);
+        frame.rgba.clear();s.rebake=false;updated=true;
     }
     if (s.visible && !s.pending && s.released && now + std::chrono::milliseconds(1) >= s.next) {
         s.pending=zwlr_screencopy_manager_v1_capture_output(s.manager,s.includeCursor?1:0,s.selected->proxy);
