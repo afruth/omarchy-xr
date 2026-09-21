@@ -90,7 +90,12 @@ def place_bar_widget(shell_json, runner=subprocess.run, plugin_id=PLUGIN_ID, sec
     path = Path(shell_json)
     if not path.is_file():
         return False
-    config = json.loads(path.read_text())
+    try:
+        config = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(config, dict):
+        return False
     if widget_in_bar(config, plugin_id):
         return True
     updated = ensure_bar_widget(config, plugin_id, section)

@@ -74,6 +74,18 @@ class PluginContractTests(unittest.TestCase):
             self.assertIn(["omarchy", "bar", "put"], commands)
             self.assertIn(["omarchy-shell", "shell", "reloadConfig"], commands)
 
+    def test_place_bar_widget_returns_false_for_invalid_shell_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "shell.json"
+            runner = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+            path.write_text("{")
+            self.assertFalse(install_studio.place_bar_widget(path, runner=runner))
+            path.write_text("[]")
+            self.assertFalse(install_studio.place_bar_widget(path, runner=runner))
+            path.write_text("null")
+            self.assertFalse(install_studio.place_bar_widget(path, runner=runner))
+            self.assertEqual(path.read_text(), "null")
+
 
 if __name__ == "__main__":
     unittest.main()
