@@ -2,23 +2,26 @@
 import json
 import os
 from pathlib import Path
+from typing import Any
 import subprocess
 import sys
 import time
 
+from clock import boot_time
 from glasses import read
 
 
 class SDK:
-    def __init__(self, directory):
+    def __init__(self, directory, pose_socket=None):
         self.directory = Path(directory)
         self.state_file = self.directory / "sdk-status.json"
+        self.pose_socket = Path(pose_socket) if pose_socket else self.directory / "pose.sock"
         self.process = None
         self.log = None
-        self.started = 0
+        self.started = 0.0
         self.pending = False
         self.pid = None
-        self.state = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
+        self.state: dict[str, Any] = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
 
     def library(self):
         configured = os.environ.get("VITURE_SDK_LIBRARY")
@@ -42,9 +45,9 @@ class SDK:
         self.log = (self.directory / "sdk.log").open("w")
         self.process = subprocess.Popen(
             [sys.executable, "-B", str(Path(__file__).with_name("sdk_worker.py")), str(self.library()),
-             str(self.state_file), str(self.pid)], stdin=subprocess.PIPE, stdout=self.log, stderr=self.log, text=True,
+             str(self.state_file), str(self.pid), str(self.pose_socket)], stdin=subprocess.PIPE, stdout=self.log, stderr=self.log, text=True,
             env={**os.environ, "LD_LIBRARY_PATH": str(self.library().parent) + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")})
-        self.started = time.time()
+        self.started = boot_time()
         self.state = {"communication": False, "tracking": False, "message": "Connecting to glasses…", "error": False}
         self.pending = True
 
@@ -55,7 +58,10 @@ class SDK:
                     self.process.communicate("disconnect\n", timeout=2)
                 except (subprocess.TimeoutExpired, BrokenPipeError):
                     self.process.kill()
-                    self.process.wait()
+                    try:
+                        self.process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
             self.process = None
         if self.log:
             self.log.close()
@@ -69,7 +75,7 @@ class SDK:
         self.process.stdin.write("restore\n")
         self.process.stdin.flush()
         self.pending = True
-        self.started = time.time()
+        self.started = boot_time()
         self.state["message"] = "Reapplying the glasses display mode…"
 
     def stereo(self, enabled):
@@ -93,7 +99,7 @@ class SDK:
             raise RuntimeError("SDK communication is required for stereo")
         self.process.stdin.write(command + "\n")
         self.process.stdin.flush()
-        self.started = time.time()
+        self.started = boot_time()
         self.pending = True
         while time.monotonic() < deadline:
             state = self.status()
@@ -117,11 +123,15 @@ class SDK:
                 pass
             failure = ""
             if self.process.poll() is not None:
-                failure = self.state.get("message") if self.state.get("error") else "SDK process stopped. Connect again to retry."
+                message = self.state.get("message")
+                failure = message if isinstance(message, str) else "SDK process stopped. Connect again to retry."
             elif self.pid not in self.devices():
                 failure = "Glasses unplugged. Reconnect the cable, then choose Connect glasses."
-            elif time.time() - max(self.started, self.state.get("heartbeat", 0)) > 20:
-                failure = "SDK timed out. Connect again to retry."
+            else:
+                heartbeat = self.state.get("heartbeat", 0)
+                stamp = float(heartbeat) if isinstance(heartbeat, (int, float)) and not isinstance(heartbeat, bool) else 0.0
+                if boot_time() - max(self.started, stamp) > 20:
+                    failure = "SDK timed out. Connect again to retry."
             if failure:
                 self.disconnect()
                 self.state.update(message=failure, error=True)

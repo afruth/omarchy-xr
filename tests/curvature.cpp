@@ -6,7 +6,15 @@
 #include <unistd.h>
 
 bool near(float a,float b) { return std::abs(a-b)<1e-4f; }
+void explicitAngles();
+void fixedAngularPlacement();
 int main() {
+    explicitAngles();
+    fixedAngularPlacement();
+    std::cout<<"Curvature: flat limits, tangent planes, eye reference, continuity, sweep bounds, legacy layouts passed\n";
+}
+
+void explicitAngles() {
     using namespace spatial;
     // Explicit angular placement stays fixed as safety radius/zoom change.
     for(float degrees:{0.f,9.f,90.f,180.f,270.f,360.f}) {
@@ -61,6 +69,10 @@ int main() {
             assert(std::abs(seam-30)<.005);
         }
     }
+}
+
+void fixedAngularPlacement() {
+    using namespace spatial;
     std::vector<PanelLayout> closeRow{{"left",0,0,3440,1440},{"right",3470,0,720,1440}};
     Workspace following;following.degrees=90;following.follow=true;following.gap=30.f/900;
     assert(safeDistance(closeRow,2095,720,4190.f/900,5,following,30)==5);
@@ -74,6 +86,8 @@ int main() {
     assert(near(vertex(high,.5f,10).y-vertex(high,.5f,-10).y,20));
     assert(near(vertex(high,.5f,10).x,vertex(high,.5f,-10).x));
     assert(near(vertex(high,.5f,10).z,vertex(high,.5f,-10).z));
+    Workspace cylinder;
+    cylinder.follow=true;
     cylinder.degrees=0;
     assert(pose(2,1,2,8,5,cylinder,100).surfaceBend==0);
     auto flat=pose(2,1,2,6,5,0,0);
@@ -123,5 +137,4 @@ int main() {
         bool rejected=false;try {readLayout(path);}catch(const std::runtime_error&){rejected=true;}assert(rejected);
     }
     unlink(path);
-    std::cout<<"Curvature: flat limits, tangent planes, eye reference, continuity, sweep bounds, legacy layouts passed\n";
 }

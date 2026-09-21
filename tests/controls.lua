@@ -3,7 +3,12 @@ local files,bindings,gestures={}, {}, {}
 package.preload["hypr.xr-touchpads"]=function()return {"test-touchpad"} end
 local now=100
 files["/proc/uptime"]="100"
-os.getenv=function(key) return key=="XDG_STATE_HOME" and "/state" or "/home/user" end
+os.getenv=function(key)
+    if key=="XDG_STATE_HOME" then return "/state" end
+    if key=="XDG_RUNTIME_DIR" then return "/run" end
+    if key=="HOME" then return "/home/user" end
+    return nil
+end
 os.time=function() return now end
 os.rename=function(a,b) files[b]=files[a];files[a]=nil;return true end
 io.open=function(path,mode)
@@ -21,40 +26,27 @@ hl={
         bindings[key]=binding;return binding
     end,
     gesture=function(spec) gestures[#gestures+1]=spec end,
-    timer=function(callback,_) return {callback=callback} end,
+    timer=function(callback,options) return {callback=callback, timeout=options and options.timeout, enabled=true, set_enabled=function(self,value) self.enabled=value end} end,
 }
-local path="/state/omarchy-xr/pose.sock.controls"
+local path="/run/omarchy-xr/pose.sock.controls"
 dofile("config/xr-controls.lua")
+local function gstart(t)omarchy_xr_controls.gesture.start({time_ms=t,delta={y=0}})end
+local function gmove(t,y)omarchy_xr_controls.gesture.update({time_ms=t,delta={y=y}})end
+local function gend(t,cancelled)omarchy_xr_controls.gesture.finish({time_ms=t,cancelled=cancelled})end
+local firstTimer, gazeTimer
+local function testActivation()
 assert(not bindings["CTRL + Up"].enabled and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + Up"].enabled and gestures[#gestures].direction=="vertical")
-local function gstart(t)omarchy_xr_controls.gesture.start({time_ms=t,delta={y=0}})end
-local function gmove(t,y)omarchy_xr_controls.gesture.update({time_ms=t,delta={y=y}})end
-local function gend(t,cancelled)omarchy_xr_controls.gesture.finish({time_ms=t,cancelled=cancelled})end
--- Slow swipe commits early and remains continuous, in either direction.
-gstart(1000);gmove(1100,-25)
-assert(files[path]:find("0.100000000",1,true))
-gmove(1150,10);gend(1200)
-assert(files[path]:find("0.060000000",1,true))
-bindings["CTRL + Down"].callback()
-assert(files[path]:match("3 2\n$"))
--- Reload preserves cumulative zoom.
-dofile("config/xr-controls.lua")
-gstart(2000);gmove(2100,-10);gend(2200)
-assert(files[path]:find("0.100000000",1,true))
-local before=files[path]
-gstart(3000);gmove(3060,-60);assert(files[path]==before);gend(3100)
-assert(files[path]:find("0.100000000",1,true) and files[path]:match("2\n$"))
--- Fast down fits the workspace; a held fast start becomes continuous zoom instead.
-gstart(4000);gmove(4050,60);gend(4100);assert(files[path]:match("1\n$"))
-gstart(5000);gmove(5050,-60);gmove(5250,-10);gend(5300)
-assert(files[path]:find("0.380000000",1,true))
-before=files[path];gstart(6000);gmove(6050,-60);gend(6100,true);assert(files[path]==before)
+assert(omarchy_xr_controls.version==2 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+firstTimer=omarchy_xr_controls.hover_timer
+end
+local function testDoubleTap()
 local tap=bindings["mouse:274"]
 assert(tap.enabled and tap.options.device.inclusive and tap.options.device.list[1]=="test-touchpad")
 local function tapAt(ms)files["/proc/uptime"]=tostring(ms/1000);tap.callback()end
-before=files[path]
+local before=files[path]
 tapAt(101000);assert(files[path]==before) -- single tap does nothing
 tapAt(101200);assert(files[path]~=before and files[path]:match("3\n$"))
 before=files[path]
@@ -68,13 +60,52 @@ tapAt(103200);tapAt(103300);assert(files[path]==before) -- swipe cancels and sup
 tapAt(104000);assert(files[path]==before)
 tapAt(104200);assert(files[path]~=before)
 print("Double tap: single/late/triple/bounce taps and swipe cancellation passed")
+end
+local function testGestures()
+-- Slow swipe commits early and remains continuous, in either direction.
+gstart(1000);gmove(1100,-25)
+assert(files[path]:find("0.100000000",1,true))
+gmove(1150,10);gend(1200)
+assert(files[path]:find("0.060000000",1,true))
+bindings["CTRL + Down"].callback()
+assert(files[path]:match("3 2\n$"))
+-- Reload preserves cumulative zoom and disables the timer from the previous chunk.
+dofile("config/xr-controls.lua")
+assert(firstTimer.enabled==false)
+assert(omarchy_xr_controls.hover_timer and omarchy_xr_controls.hover_timer~=firstTimer and omarchy_xr_controls.hover_timer.enabled)
+gstart(2000);gmove(2100,-10);gend(2200)
+assert(files[path]:find("0.100000000",1,true))
+local before=files[path]
+gstart(3000);gmove(3060,-60);assert(files[path]==before);gend(3100)
+assert(files[path]:find("0.100000000",1,true) and files[path]:match("2\n$"))
+-- Fast down fits the workspace; a held fast start becomes continuous zoom instead.
+gstart(4000);gmove(4050,60);gend(4100);assert(files[path]:match("1\n$"))
+gstart(5000);gmove(5050,-60);gmove(5250,-10);gend(5300)
+assert(files[path]:find("0.380000000",1,true))
+before=files[path];gstart(6000);gmove(6050,-60);gend(6100,true);assert(files[path]==before)
+testDoubleTap()
+gazeTimer=omarchy_xr_controls.hover_timer
+assert(gazeTimer and gazeTimer.enabled)
 now=104;omarchy_xr_controls.refresh()
 assert(not bindings["CTRL + Up"].enabled and not bindings["mouse:274"].enabled and gestures[#gestures].action=="unset")
+assert(omarchy_xr_controls.hover_timer==nil and gazeTimer.enabled==false)
 local previous=files[path]
 bindings["CTRL + Up"].callback()
 assert(files[path]==previous)
 print("Live swipe direction, fit bindings, reload continuity and crash expiry passed")
+end
 
+local function holdStill(readHover, cursor, movements, focuses)
+    for i=1,300 do readHover(1,nil,.8,.2) end
+    assert(cursor.x==20)
+    for i=1,20 do cursor={x=cursor.x+1,y=cursor.y};readHover(1) end
+    assert(cursor.x==40 and #movements==0 and #focuses==1)
+    return cursor
+end
+local function repeatSample(sample, count, name)
+    for i=1,count do sample(1, name) end
+end
+local function testHalo()
 -- Halo transitions select workspaces, never continuously steer the mouse.
 local cursor={x=20,y=30}
 local movements,focuses={},{}
@@ -88,7 +119,9 @@ hl.dispatch=function(spec)
  if spec.workspace then focuses[#focuses+1]=spec.workspace
  else cursor=spec;movements[#movements+1]=spec end
 end
-now=105;files[path..".active"]="42 105";omarchy_xr_controls.refresh()
+now=105;files["/proc/uptime"]="105";files[path..".active"]="42 105";omarchy_xr_controls.refresh()
+local liveTimer=omarchy_xr_controls.hover_timer
+assert(liveTimer and liveTimer.enabled and liveTimer~=gazeTimer)
 local serial=0
 local function sample(mode,name,u,v)
  serial=serial+1
@@ -97,22 +130,23 @@ local function sample(mode,name,u,v)
 end
 sample(1);assert(#focuses==0) -- don't replay a pre-reload sample
 sample(1);assert(#focuses==1 and focuses[1]=="5") -- same timing as halo, no dwell
-for i=1,300 do sample(1,nil,.8,.2) end
-assert(#focuses==1 and #movements==0 and cursor.x==20)
-for i=1,20 do cursor={x=cursor.x+1,y=cursor.y};sample(1) end
-assert(cursor.x==40 and #movements==0 and #focuses==1)
+cursor=holdStill(sample, cursor, movements, focuses)
+assert(#focuses==1 and #movements==0)
 sample(1,"OMXR-test-2");assert(#focuses==2 and focuses[2]=="name:work")
 omarchy_xr_controls.hover();assert(#focuses==2) -- duplicate sample
 sample(0);sample(1);assert(#focuses==3 and focuses[3]=="5") -- leave/re-enter
-for i=1,200 do sample(1,"eDP-1") end
+repeatSample(sample, 200, "eDP-1")
 assert(#focuses==3)
-now=110;omarchy_xr_controls.refresh()
-for i=1,200 do sample(1) end
+now=110;files["/proc/uptime"]="110";omarchy_xr_controls.refresh()
+assert(omarchy_xr_controls.hover_timer==nil and liveTimer.enabled==false)
+repeatSample(sample, 200)
 assert(#focuses==3 and #movements==0)
 print("Halo transitions select existing workspaces once; pointer motion stays independent; stale sessions cannot focus")
+end
 
+local function testSettings()
 -- Apply settings live: unregister old gesture and replace only XR bindings.
-now=111;files[path..".active"]="42 111";omarchy_xr_controls.refresh()
+now=111;files["/proc/uptime"]="111";files[path..".active"]="42 111";omarchy_xr_controls.refresh()
 files["/state/omarchy-xr/controls-settings.tsv"]="5\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
 omarchy_xr_controls.refresh()
 assert(not bindings["CTRL + Up"] and bindings["ALT + Up"].enabled)
@@ -121,16 +155,24 @@ assert(gestures[#gestures-1].fingers==3 and gestures[#gestures-1].action=="unset
 bindings["CTRL + I"].callback();assert(files[path]:match("4\n$"))
 bindings["CTRL + O"].callback();assert(files[path]:match("5\n$"))
 print("Live hotkey replacement and swipe finger count passed")
+end
 
+local function testPan()
 local pan=omarchy_xr_controls.pan
 pan.start({delta={x=2,y=3}});pan.update({delta={x=8,y=-5}})
 assert(files[path..".pan"]:find("10.000000000 -2.000000000 1 111",1,true))
 pan.finish({cancelled=false})
 assert(files[path..".pan"]:find("10.000000000 -2.000000000 0 111",1,true))
 local last=files[path..".pan"]
-now=115;omarchy_xr_controls.refresh();pan.start({delta={x=20,y=20}})
+now=115;files["/proc/uptime"]="115";omarchy_xr_controls.refresh();pan.start({delta={x=20,y=20}})
 assert(files[path..".pan"]==last)
 local unset=false
 for _,g in ipairs(gestures) do if g.fingers==4 and g.direction=="swipe" and g.action=="unset" then unset=true end end
 assert(unset)
 print("Four-finger pan: two axes, cumulative motion, release and expiry passed")
+end
+testActivation()
+testGestures()
+testHalo()
+testSettings()
+testPan()

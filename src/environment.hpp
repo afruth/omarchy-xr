@@ -108,5 +108,5 @@ public:
         glPopAttrib();
     }
     // Called while the renderer's GL context is still current.
-    void release() {if(loader.valid())loader.wait();discardStaging();if(texture)glDeleteTextures(1,&texture);texture=0;if(mesh)glDeleteLists(mesh,1);mesh=0;}
+    void release() {if(loader.valid())loader.wait();discardStaging();if(texture)glDeleteTextures(1,&texture);texture=0;if(mesh)glDeleteLists(mesh,1);mesh=0;resident.clear();}
 };

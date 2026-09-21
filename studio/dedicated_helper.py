@@ -13,6 +13,13 @@ import sys
 import time
 
 
+OUR_DISPLAYID_HEADER = bytes([0x70, 0x20, 7, 8, 0, 0x7e, 0, 4, 0x92, 0x02, 0x3a, 0])
+
+
+def own_override(data):
+    return len(data) >= 256 and data[-128:-116] == OUR_DISPLAYID_HEADER
+
+
 def headset_edid(data):
     if len(data) < 128 or len(data) % 128 or data[:8] != bytes.fromhex('00ffffffffffff00'):
         raise ValueError('Invalid EDID')
@@ -33,29 +40,62 @@ def headset_edid(data):
     return bytes(base+ext)
 
 
-def main():
-    if os.geteuid()!=0:
-        raise RuntimeError('Dedicated output handoff requires administrator authorization')
-    if len(sys.argv)!=2 or not re.fullmatch(r'DP-[0-9]+',sys.argv[1]):
-        raise ValueError('Expected one DisplayPort connector name')
-    name=sys.argv[1]
-    candidates=[p for p in Path('/sys/class/drm').glob('card*-'+name) if (p/'status').read_text().strip()=='connected']
-    if len(candidates)!=1:raise RuntimeError('Expected one connected matching display')
-    connector=candidates[0]
-    edid=headset_edid((connector/'edid').read_bytes())
-    card=connector.name.split('-')[0]
-    minor=(Path('/sys/class/drm')/card/'dev').read_text().strip().split(':')[1]
-    override=Path('/sys/kernel/debug/dri')/minor/name/'edid_override'
-    if not override.is_file():raise RuntimeError('Kernel EDID override interface is unavailable')
-    lock=Path('/run/omarchy-xr-display.lock').open('w')
-    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+def claim_connector(name):
+    candidates = [path for path in Path('/sys/class/drm').glob('card*-' + name) if (path / 'status').read_text().strip() == 'connected']
+    if len(candidates) != 1:
+        raise RuntimeError('Expected one connected matching display')
+    connector = candidates[0]
+    edid = headset_edid((connector / 'edid').read_bytes())
+    card = connector.name.split('-')[0]
+    minor = (Path('/sys/class/drm') / card / 'dev').read_text().strip().split(':')[1]
+    override = Path('/sys/kernel/debug/dri') / minor / name / 'edid_override'
+    if not override.is_file():
+        raise RuntimeError('Kernel EDID override interface is unavailable')
+    return connector, edid, override
+
+
+def clear_own_override(override):
     # Refuse to discard someone else's existing override.
-    previous=override.read_bytes()
-    if previous.strip() not in (b'',b'unset'):
+    previous = override.read_bytes()
+    if previous.strip() not in (b'', b'unset') and not own_override(previous):
         raise RuntimeError('An EDID override already exists; leaving it untouched')
+    if own_override(previous):
+        override.write_text('reset')
+
+
+def restore_connector(status, override):
+    for label, action in (
+        ('disable', lambda: status.write_text('off')),
+        ('wait', lambda: time.sleep(.3)),
+        ('reset', lambda: override.write_text('reset')),
+        ('detect', lambda: status.write_text('detect')),
+    ):
+        try:
+            action()
+        except Exception as exc:
+            print(f'restore {label}: {exc}', file=sys.stderr, flush=True)
+
+
+def main():
+    if os.geteuid() != 0:
+        raise RuntimeError('Dedicated output handoff requires administrator authorization')
+    if len(sys.argv) != 2 or not re.fullmatch(r'DP-[0-9]+', sys.argv[1]):
+        raise ValueError('Expected one DisplayPort connector name')
+    connector, edid, override = claim_connector(sys.argv[1])
+    lock = Path('/run/omarchy-xr-display.lock').open('w')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    clear_own_override(override)
     status=connector/'status'
-    def stop(*_):raise SystemExit(0)
-    signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
+    shutting_down=False
+    def stop(*_):
+        nonlocal shutting_down
+        if shutting_down: return
+        shutting_down=True
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        signal.signal(signal.SIGINT,signal.SIG_IGN)
+        signal.signal(signal.SIGHUP,signal.SIG_IGN)
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop);signal.signal(signal.SIGHUP,stop)
     # A cancelled authorization may have outlived the manager. Do not touch video.
     if select.select([sys.stdin], [], [], 0)[0]:
         lock.close()
@@ -73,10 +113,7 @@ def main():
             if line.strip()=='stop':break
     finally:
         if touched:
-            status.write_text('off')
-            time.sleep(.3)
-            override.write_text('reset')
-            status.write_text('detect')
+            restore_connector(status, override)
         lock.close()
 
 if __name__=='__main__':

@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+from atomic_file import atomic_write
+
 INTERNAL = re.compile(r'(?:eDP|LVDS|DSI)-[0-9]+')
 
 
@@ -104,7 +106,8 @@ class LaptopDisplay:
         self.process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'watch',str(self.directory),str(renderer_pid),glasses_output],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.log,text=True,start_new_session=True)
         try:
-            if not select.select([self.process.stdout],[],[],10)[0] or self.process.stdout.readline().strip()!='ready':
+            stdout=self.process.stdout
+            if stdout is None or not select.select([stdout],[],[],10)[0] or stdout.readline().strip()!='ready':
                 raise RuntimeError('Could not disable laptop display; see laptop-display.log')
         except Exception:
             self.stop();raise
@@ -160,27 +163,42 @@ def watch(directory,pid,output):
         monitors=snapshot(json.loads(hypr('-j','monitors')))
         if not monitors: raise RuntimeError('No active laptop display')
         journal={'session':os.environ.get('HYPRLAND_INSTANCE_SIGNATURE',''),'monitors':monitors}
-        temp=display.journal.with_suffix('.tmp');temp.write_text(json.dumps(journal));temp.replace(display.journal)
+        atomic_write(display.journal, json.dumps(journal))
         try:
             # Parent death during launch must never cause a late blackout.
-            if stopped or select.select([sys.stdin],[],[],0)[0]: return
-            for m in monitors: hypr('eval','hl.monitor({output='+json.dumps(m['name'])+', disabled=true})')
-            for _ in range(20):
-                active={m['name'] for m in json.loads(hypr('-j','monitors'))}
-                if all(m['name'] not in active for m in monitors): break
-                time.sleep(.1)
-            else: raise RuntimeError('Hyprland did not disable the laptop display')
-            print('ready',flush=True)
-            while not stopped and not (Path(directory)/"laptop-display-restore").exists() and process_identity(pid)==identity and connection_alive(output):
-                if select.select([sys.stdin],[],[],.5)[0]: break
+            if stopped or select.select([sys.stdin], [], [], 0)[0]:
+                return
+            disable_laptop(monitors)
+            print('ready', flush=True)
+            while not stopped and not (Path(directory) / "laptop-display-restore").exists() and process_identity(pid) == identity and connection_alive(output):
+                if select.select([sys.stdin], [], [], .5)[0]:
+                    break
         finally:
-            # Retry independently of the app and leave a journal if restoration fails.
-            for attempt in range(10):
-                try: display.restore();break
-                except Exception as exc:
-                    print(str(exc),file=sys.stderr,flush=True)
-                    if attempt==9: raise
-                    time.sleep(.5)
+            restore_laptop(display)
+
+
+def disable_laptop(monitors):
+    for monitor in monitors:
+        hypr('eval', 'hl.monitor({output=' + json.dumps(monitor['name']) + ', disabled=true})')
+    for _ in range(20):
+        active = {monitor['name'] for monitor in json.loads(hypr('-j', 'monitors'))}
+        if all(monitor['name'] not in active for monitor in monitors):
+            return
+        time.sleep(.1)
+    raise RuntimeError('Hyprland did not disable the laptop display')
+
+
+def restore_laptop(display):
+    # Retry independently of the app and leave a journal if restoration fails.
+    for attempt in range(10):
+        try:
+            display.restore()
+            return
+        except Exception as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            if attempt == 9:
+                raise
+            time.sleep(.5)
 
 
 if __name__=='__main__':

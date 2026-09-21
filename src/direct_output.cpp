@@ -1,4 +1,5 @@
 #include "direct_output.hpp"
+#include "vblank.hpp"
 #include "drm-lease-client.h"
 #include <wayland-client.h>
 #include <xf86drm.h>
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <map>
 #include <chrono>
+#include <cstdint>
 
 struct DirectOutput::Impl {
     struct Connector {Impl* owner; wp_drm_lease_device_v1* device; wp_drm_lease_connector_v1* proxy;std::string name;uint32_t id=0;bool withdrawn=false;};
@@ -21,6 +23,7 @@ struct DirectOutput::Impl {
     std::vector<wp_drm_lease_device_v1*> devices;
     std::vector<std::unique_ptr<Connector>> outputs;
     wp_drm_lease_v1* lease=nullptr;int fd=-1;bool ended=false,flipping=false;
+    bool haveVblank=false;std::uint64_t lastVblankUs=0;unsigned missed=0;
     uint32_t crtc=0,connector=0;drmModeModeInfo mode{};
     gbm_device* gbm=nullptr;gbm_surface* surface=nullptr;gbm_bo* front=nullptr;
     EGLDisplay egl=EGL_NO_DISPLAY;EGLContext context=EGL_NO_CONTEXT;EGLSurface eglSurface=EGL_NO_SURFACE;
@@ -56,7 +59,7 @@ struct DirectOutput::Impl {
     }
     ~Impl(){
         if(fd>=0 && crtc)drmModeSetCrtc(fd,crtc,0,0,0,nullptr,0,nullptr);
-        if(egl!=EGL_NO_DISPLAY){eglMakeCurrent(egl,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(egl,context);if(eglSurface!=EGL_NO_SURFACE)eglDestroySurface(egl,eglSurface);eglTerminate(egl);}
+        if(egl!=EGL_NO_DISPLAY){if(context!=EGL_NO_CONTEXT && eglGetCurrentContext()==context)eglMakeCurrent(egl,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(context!=EGL_NO_CONTEXT)eglDestroyContext(egl,context);if(eglSurface!=EGL_NO_SURFACE)eglDestroySurface(egl,eglSurface);eglTerminate(egl);}
         if(front && surface)gbm_surface_release_buffer(surface,front);
         for(auto [bo,id]:framebuffers){(void)bo;drmModeRmFB(fd,id);}
         if(surface)gbm_surface_destroy(surface);
@@ -105,7 +108,12 @@ struct DirectOutput::Impl {
         if(wl_display_dispatch_pending(display)<0)return false;
         return !ended;
     }
-    static void flip(int,unsigned,unsigned,unsigned,void*d){static_cast<Impl*>(d)->flipping=false;}
+    static void flip(int,unsigned,unsigned sec,unsigned usec,void* d){
+        auto& self=*static_cast<Impl*>(d);
+        const auto now=static_cast<std::uint64_t>(sec)*1000000ull+usec;
+        if(self.haveVblank && vblankIntervalMissed(self.lastVblankUs,now,self.mode.vrefresh)) ++self.missed;
+        self.lastVblankUs=now;self.haveVblank=true;self.flipping=false;
+    }
     void swap(const std::function<void()>& service){
         if(!eglSwapBuffers(egl,eglSurface))throw std::runtime_error("Direct EGL swap failed");
         auto* next=gbm_surface_lock_front_buffer(surface);if(!next)throw std::runtime_error("Cannot lock scanout buffer");
@@ -146,4 +154,8 @@ int DirectOutput::width()const{return impl->mode.hdisplay;}
 int DirectOutput::height()const{return impl->mode.vdisplay;}
 bool DirectOutput::pump(){return impl->pump();}
 void DirectOutput::swap(const std::function<void()>& service){impl->swap(service);}
+unsigned DirectOutput::refreshHz() const {return impl->mode.vrefresh;}
+unsigned DirectOutput::missedVblanks() const {return impl->missed;}
+bool DirectOutput::hasVblank() const {return impl->haveVblank;}
+std::uint64_t DirectOutput::lastVblankUs() const {return impl->lastVblankUs;}
 std::vector<std::string> DirectOutput::connectors(){Impl p;std::vector<std::string> result;for(auto& o:p.outputs)if(!o->withdrawn)result.push_back(o->name);return result;}

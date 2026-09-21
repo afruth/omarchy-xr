@@ -30,4 +30,37 @@ TestCase {
         var result=Snap.place(ms,1,1947,4,30,.2);
         verify(result.blocked); compare(result.x,4000);
     }
+    function test_preview_without_hold_matches_place() {
+        var ms=[{x:0,y:0,width:1920,height:1080},{x:2000,y:0,width:1000,height:700}];
+        var placed=Snap.place(ms,1,1960,0,30,.2);
+        var previewed=Snap.preview(ms,1,1960,0,30,.2,null);
+        compare(previewed.x, placed.x);
+        compare(previewed.y, placed.y);
+        compare(previewed.blocked, placed.blocked);
+    }
+    function test_blocked_drag_holds_last_preview() {
+        var ms=[{x:0,y:0,width:1920,height:1080},{x:2000,y:0,width:1000,height:700}];
+        var first=Snap.preview(ms,1,1960,0,30,.2,null);
+        verify(!first.blocked);
+        var second=Snap.preview(ms,1,400,300,30,.2,first);
+        verify(second.blocked);
+        compare(second.x, first.x);
+        compare(second.y, first.y);
+        compare(ms[1].x, 2000);
+    }
+    function test_commit_copies_only_the_moved_monitor() {
+        var ms=[{x:0,y:0,width:1920,height:1080,id:"a"},{x:2000,y:0,width:1000,height:700,id:"b"}];
+        var next=Snap.commit(ms,1,{x:2200,y:40,snapX:false,snapY:false,blocked:false});
+        compare(next[1].x, 2200);
+        compare(next[1].y, 40);
+        compare(next[1].id, "b");
+        verify(next !== ms);
+        verify(next[0] === ms[0]);
+        compare(ms[1].x, 2000);
+    }
+    function test_commit_same_position_keeps_the_array() {
+        var ms=[{x:0,y:0,width:10,height:10}];
+        verify(Snap.commit(ms,0,{x:0,y:0}) === ms);
+        verify(Snap.commit(ms,0,null) === ms);
+    }
 }

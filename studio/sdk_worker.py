@@ -3,11 +3,15 @@ import ctypes as C
 import json
 import math
 from pathlib import Path
+from typing import Any
 import select
 import socket
 import threading
 import sys
 import time
+
+from atomic_file import atomic_write
+from clock import boot_time
 
 POSE = C.CFUNCTYPE(None, C.POINTER(C.c_float), C.c_uint64)
 
@@ -21,7 +25,7 @@ class Session:
         self.initialized = self.started = self.imu = False
         self.pose_lock = threading.Lock()
         self.pose = None
-        self.last_pose = 0
+        self.last_pose = 0.0
         self.samples = 0
         self.mode = None
         self.communication = False
@@ -70,16 +74,20 @@ class Session:
             return
         now = time.monotonic()
         with self.pose_lock:
-            self.pose = (now, *euler)
+            self.pose = (now, *euler, int(timestamp))
             self.samples += 1
             self.last_pose = now
+        notify = getattr(self, "pose_notify", None)
+        if notify:
+            notify()
 
     def pose_packet(self):
         with self.pose_lock:
             pose = self.pose
         if not pose or time.monotonic() - pose[0] > .25:
             return None
-        return ("euler-nwu-v1 " + " ".join(format(v, ".17g") for v in pose)).encode("ascii")
+        mono, roll, pitch, yaw, device = pose
+        return (f"euler-nwu-v2 {mono:.17g} {roll:.17g} {pitch:.17g} {yaw:.17g} {device}").encode("ascii")
 
     def connect(self, pid):
         self.close()
@@ -101,22 +109,7 @@ class Session:
             # An acknowledged device query, not just a successfully allocated handle.
             self.check("get_brightness_level", self.handle)
             self.communication = True
-            if self.mode_journal and self.mode_journal.exists():
-                original = json.loads(self.mode_journal.read_text())["mode"]
-                if original not in (0x31,0x32,0x33,0x34,0x35,0x41,0x42,0x43,0x44,0x45):
-                    raise RuntimeError("Invalid display recovery journal")
-                self.original_mode = original
-                # A reboot/replug may already have restored the saved mode.
-                # Do not bounce a healthy 120-Hz link through 60 Hz on connect.
-                try:
-                    if self.check("get_display_mode", self.handle) == original:
-                        self.verify_restore()
-                    else:
-                        # The supervisor must coordinate EDID/host timing changes.
-                        # Connecting tracking must not change display modes.
-                        self.display_error = "Previous display restoration is pending"
-                except RuntimeError as exc:
-                    self.display_error = "Previous display restoration is pending: " + str(exc)
+            self.load_mode_journal()
             try:
                 self.mode = self.check("get_display_mode", self.handle)
             except RuntimeError as exc:
@@ -129,6 +122,25 @@ class Session:
         except Exception:
             self.close()
             raise
+
+    def load_mode_journal(self):
+        if not self.mode_journal or not self.mode_journal.exists():
+            return
+        original = json.loads(self.mode_journal.read_text())["mode"]
+        if original not in (0x31, 0x32, 0x33, 0x34, 0x35, 0x41, 0x42, 0x43, 0x44, 0x45):
+            raise RuntimeError("Invalid display recovery journal")
+        self.original_mode = original
+        # A reboot/replug may already have restored the saved mode.
+        # Do not bounce a healthy 120-Hz link through 60 Hz on connect.
+        try:
+            if self.check("get_display_mode", self.handle) == original:
+                self.verify_restore()
+            else:
+                # The supervisor must coordinate EDID/host timing changes.
+                # Connecting tracking must not change display modes.
+                self.display_error = "Previous display restoration is pending"
+        except RuntimeError as exc:
+            self.display_error = "Previous display restoration is pending: " + str(exc)
 
     def wait_mode(self, expected):
         deadline = time.monotonic() + 5
@@ -145,9 +157,7 @@ class Session:
         if self.original_mode is None:
             self.original_mode = self.check("get_display_mode", self.handle)
             if self.mode_journal:
-                temp = self.mode_journal.with_suffix(".tmp")
-                temp.write_text(json.dumps({"mode": self.original_mode}))
-                temp.replace(self.mode_journal)
+                atomic_write(self.mode_journal, json.dumps({"mode": self.original_mode}))
         self.check("set_display_mode", self.handle, 0x32)  # standard SBS 3840x1080, 60 Hz
         # Gen2 readback reports the active host video timing. Verify only after
         # the host starts the new 3840-wide scanout, not immediately after ACK.
@@ -204,7 +214,8 @@ class Session:
         self.initialized = self.started = self.imu = self.communication = False
         with self.pose_lock:
             self.pose = None
-            self.last_pose = self.samples = 0
+            self.last_pose = 0.0
+            self.samples = 0
         self.mode = None
         self.tracking_error = ""
         self.display_error = ""
@@ -215,18 +226,37 @@ class Session:
                 "samples": self.samples, "nativeDof": self.native_dof, "displayMode": self.mode, "trackingError": self.tracking_error, "displayError": self.display_error}
 
 
+KEEP_ALIVE_LIMIT = 3
+
+
+def record_keep_alive(failures, error):
+    failures += 1
+    if failures >= KEEP_ALIVE_LIMIT:
+        raise RuntimeError(error)
+    return failures
+
+
 class PosePublisher:
-    """Keep pose transport independent of synchronous USB device-control calls."""
+    """Pose transport stays off the USB control calls. The callback wakes the sender; the thread only notices a stale pose."""
     def __init__(self, session, path):
         self.session, self.path = session, str(path)
         self.stop_event = threading.Event()
+        self.wake = threading.Condition()
+        self.generation = 0
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
+        session.pose_notify = self.notify
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
+    def notify(self):
+        with self.wake:
+            self.generation += 1
+            self.wake.notify()
+
     def run(self):
         previous = None
+        seen = 0
         while not self.stop_event.is_set():
             packet = self.session.pose_packet()
             if packet and packet != previous:
@@ -234,83 +264,112 @@ class PosePublisher:
                     self.socket.sendto(packet, self.path)
                     previous = packet
                 except OSError:
-                    pass
-            self.stop_event.wait(1/120)
+                    self.stop_event.wait(0.25)
+                continue
+            with self.wake:
+                if self.generation != seen:
+                    seen = self.generation
+                    continue
+                self.wake.wait(timeout=0.25)
+                seen = self.generation
 
     def close(self):
         self.stop_event.set()
+        self.notify()
         self.thread.join(timeout=1)
         self.socket.close()
 
 
+def sdk_command(session, action):
+    if action == "stereo":
+        session.begin_stereo()
+        return "Stereo SBS requested; waiting for the host video mode."
+    if action == "verify_stereo":
+        session.wait_mode(0x32)
+        return "Stereo video mode verified (3840×1080 at 60 Hz)."
+    if action == "stereo_off":
+        session.end_stereo()
+        return "Previous display mode requested; waiting for host restoration."
+    if action == "restore_rate":
+        session.restore_rate()
+        return "Previous refresh rate requested."
+    if action == "verify_restore":
+        session.verify_restore()
+        return "Previous glasses display mode restored and verified."
+    if action == "restore":
+        session.restore_display()
+        return "Display mode reapplied and verified. Check video status separately."
+    raise ValueError("Unknown SDK command")
+
+
+def keep_alive(session, failures, last_query):
+    if time.monotonic() - last_query < 5:
+        return failures, last_query
+    try:
+        session.check("get_brightness_level", session.handle)
+        return 0, time.monotonic()
+    except RuntimeError as exc:
+        print(f"SDK keep-alive failed ({failures + 1}): {exc}", file=sys.stderr, flush=True)
+        return record_keep_alive(failures, str(exc)), time.monotonic()
+
+
+def accept_command(session, state):
+    command = sys.stdin.readline()
+    if not command or command.strip() == "disconnect":
+        return False
+    try:
+        state["message"] = sdk_command(session, command.strip())
+        state["error"] = False
+    except Exception as exc:
+        state["message"], state["error"] = str(exc), True
+    state["sequence"] += 1
+    return True
+
+
+def serve_sdk(session, publish, state):
+    last_query = time.monotonic()
+    reported_tracking = False
+    last_publish = 0.0
+    failures = 0
+    while True:
+        if session.state()["tracking"] and not reported_tracking:
+            state["message"] = "SDK connected and receiving head tracking. Video is checked separately."
+            state["sequence"] += 1
+            reported_tracking = True
+        failures, last_query = keep_alive(session, failures, last_query)
+        if time.monotonic() - last_publish >= 1:
+            publish()
+            last_publish = time.monotonic()
+        readable, _, _ = select.select([sys.stdin], [], [], .1)
+        if not readable:
+            continue
+        if not accept_command(session, state):
+            return
+        last_publish = 0.0
+
+
 def main():
-    library, target, pid = sys.argv[1:]
-    target = Path(target)
+    library, status_name, pid, *rest = sys.argv[1:]
+    target = Path(status_name)
+    pose_path = Path(rest[0]) if rest else target.with_name("pose.sock")
     session = None
     publisher = None
-    message, error, sequence = "Connecting to glasses…", False, 0
+    state: dict[str, Any] = {"message": "Connecting to glasses…", "error": False, "sequence": 0}
     def publish():
-        data = {"heartbeat": time.time(), "message": message, "error": error, "sequence": sequence,
+        data = {"heartbeat": boot_time(), "message": state["message"], "error": state["error"], "sequence": state["sequence"],
                 **(session.state() if session else {"communication": False, "tracking": False})}
-        temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(data))
-        temp.replace(target)
+        atomic_write(target, json.dumps(data))
     try:
         publish()
         session = Session(library, target.with_name("display-mode.json"))
         session.connect(int(pid))
-        publisher = PosePublisher(session, target.with_name("pose.sock"))
-        message = "SDK connected; waiting for tracking samples. Video is checked separately."
-        sequence += 1
-        last_query = time.monotonic()
-        reported_tracking = False
-        last_publish = 0
-        while True:
-            if session.state()["tracking"] and not reported_tracking:
-                message = "SDK connected and receiving head tracking. Video is checked separately."
-                sequence += 1
-                reported_tracking = True
-            if time.monotonic() - last_query >= 5:
-                session.check("get_brightness_level", session.handle)
-                last_query = time.monotonic()
-            if time.monotonic() - last_publish >= 1:
-                publish()
-                last_publish = time.monotonic()
-            readable, _, _ = select.select([sys.stdin], [], [], .1)
-            if readable:
-                command = sys.stdin.readline()
-                if not command or command.strip() == "disconnect":
-                    break
-                try:
-                    action = command.strip()
-                    if action == "stereo":
-                        session.begin_stereo()
-                        message = "Stereo SBS requested; waiting for the host video mode."
-                    elif action == "verify_stereo":
-                        session.wait_mode(0x32)
-                        message = "Stereo video mode verified (3840×1080 at 60 Hz)."
-                    elif action == "stereo_off":
-                        session.end_stereo()
-                        message = "Previous display mode requested; waiting for host restoration."
-                    elif action == "restore_rate":
-                        session.restore_rate()
-                        message = "Previous refresh rate requested."
-                    elif action == "verify_restore":
-                        session.verify_restore()
-                        message = "Previous glasses display mode restored and verified."
-                    elif action == "restore":
-                        session.restore_display()
-                        message = "Display mode reapplied and verified. Check video status separately."
-                    else:
-                        raise ValueError("Unknown SDK command")
-                    error = False
-                except Exception as exc:
-                    message, error = str(exc), True
-                sequence += 1
-                last_publish = 0
+        publisher = PosePublisher(session, pose_path)
+        state["message"] = "SDK connected; waiting for tracking samples. Video is checked separately."
+        state["sequence"] += 1
+        serve_sdk(session, publish, state)
     except Exception as exc:
-        message, error = str(exc), True
-        sequence += 1
+        state["message"], state["error"] = str(exc), True
+        state["sequence"] += 1
         if session:
             session.communication = False
             session.last_pose = 0

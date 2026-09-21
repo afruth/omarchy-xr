@@ -1,6 +1,9 @@
 """Validated, data-only XR control preferences (never executable Lua)."""
 import json
+from pathlib import Path
 import re
+
+from atomic_file import atomic_write
 ACTIONS=('fit_all','fit_target','recenter','zoom_in','zoom_out')
 DEFAULTS={'fingers':3,'fit_all':'CTRL + Up','fit_target':'CTRL + Down','recenter':'','zoom_in':'','zoom_out':''}
 MODS={'SHIFT':1,'CTRL':4,'ALT':8,'SUPER':64}
@@ -47,16 +50,14 @@ def save_controls(directory,value,runner):
     path=directory/'controls-settings.tsv'
     content=str(value['fingers'])+'\n'+''.join(value[k]+'\n' for k in ACTIONS)
     profile=directory/'controls-settings.json'
-    previous={p:p.read_bytes() if p.exists() else None for p in (path,profile)}
-    temp=path.with_suffix('.tmp');temp.write_text(content);temp.replace(path)
-    profile=directory/'controls-settings.json';temp=profile.with_suffix('.tmp')
-    temp.write_text(json.dumps(value,indent=2)+'\n');temp.replace(profile)
+    previous: dict[Path, bytes | None]={p:p.read_bytes() if p.exists() else None for p in (path,profile)}
+    atomic_write(path, content)
+    atomic_write(profile, json.dumps(value, indent=2)+'\n')
     try:
         runner('eval','omarchy_xr_controls.refresh()')
     except Exception:
-        for p,content in previous.items():
-            if content is None:p.unlink(missing_ok=True)
-            else:
-                temp=p.with_suffix('.rollback');temp.write_bytes(content);temp.replace(p)
+        for item,saved in previous.items():
+            if saved is None:item.unlink(missing_ok=True)
+            else:atomic_write(item, saved.decode())
         raise
     return value

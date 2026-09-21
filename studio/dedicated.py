@@ -9,7 +9,7 @@ HELPER = Path('/usr/local/libexec/omarchy-xr-display')
 class Dedicated:
     def __init__(self,directory,renderer):
         self.directory=Path(directory);self.renderer=str(renderer)
-        self.process=None;self.log=None;self.output=None
+        self.process=None;self.log=None;self.output: str | None=None
     def start(self,output):
         if self.process:raise RuntimeError('Dedicated display is already reserved')
         if not HELPER.is_file():
@@ -17,8 +17,9 @@ class Dedicated:
         self.log=(self.directory/'dedicated.log').open('w')
         self.process=subprocess.Popen(['pkexec','--disable-internal-agent',str(HELPER),output],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.log,text=True)
         try:
-            if not select.select([self.process.stdout],[],[],45)[0]:raise RuntimeError('Display handoff authorization timed out')
-            if self.process.stdout.readline().strip()!='ready':raise RuntimeError('Display handoff failed or was cancelled. See '+str(self.directory/'dedicated.log'))
+            stdout=self.process.stdout
+            if stdout is None or not select.select([stdout],[],[],45)[0]:raise RuntimeError('Display handoff authorization timed out')
+            if stdout.readline().strip()!='ready':raise RuntimeError('Display handoff failed or was cancelled. See '+str(self.directory/'dedicated.log'))
             for _ in range(50):
                 names=subprocess.check_output([self.renderer,'--list-leases'],text=True,timeout=3).splitlines()
                 if output in names:self.output=output;return

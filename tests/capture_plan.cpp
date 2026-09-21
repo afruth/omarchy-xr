@@ -1,8 +1,48 @@
+#include "capture.hpp"
 #include "capture_plan.hpp"
+#include "capture_scale.hpp"
 #include "pixels.hpp"
 #include <cassert>
 #include <iostream>
 int main(){
+    int retry=DesktopCapture::nextRetryMs(0);
+    assert(retry==500);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==1000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==2000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==4000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==5000);
+    retry=DesktopCapture::nextRetryMs(retry); assert(retry==5000);
+    auto same=scalePasses(3840,2160,3840,2160);
+    assert(same.size()==1 && same[0].width==3840 && same[0].height==2160);
+    auto half=scalePasses(3840,2160,1920,1080);
+    assert(half.size()==1 && half[0].width==1920 && half[0].height==1080);
+    auto quarter=scalePasses(3840,2160,960,540);
+    assert(quarter.size()==2 && quarter[0].width==1920 && quarter[0].height==1080 && quarter[1].width==960 && quarter[1].height==540);
+    auto deep=scalePasses(1920,1080,240,135);
+    assert(deep.size()==3 && deep[0].width==960 && deep[0].height==540 && deep[1].width==480 && deep[1].height==270 && deep[2].width==240 && deep[2].height==135);
+    auto deeper=scalePasses(3840,2160,240,135);
+    assert(deeper.size()==4);
+    auto targetsDiffer=[&](const std::vector<ScalePass>& passes){
+        assert(!passes.empty());
+        int previous=-2;
+        for(unsigned i=0;i<passes.size();++i){
+            const int target=scalePassScratch(i,static_cast<unsigned>(passes.size()));
+            assert(target!=previous);
+            assert(i+1u==passes.size()?target==-1:target==int(i%2));
+            previous=target;
+        }
+    };
+    assert(scalePassScratch(0,1)==-1);
+    assert(captureAllocateSlot(-1,false,false)==0);
+    assert(captureAllocateSlot(0,false,false)==1);
+    assert(captureAllocateSlot(1,false,false)==0);
+    assert(captureAllocateSlot(0,false,true)==-1);
+    assert(captureAllocateSlot(1,true,false)==-1);
+    assert(capturePresentSlot(1,0,true)==0);
+    assert(capturePresentSlot(1,0,false)==1);
+    assert(capturePresentSlot(-1,0,false)==0);
+    assert(capturePresentSlot(-1,-1,true)==-1);
+    targetsDiffer(same);targetsDiffer(half);targetsDiffer(quarter);targetsDiffer(deep);targetsDiffer(deeper);
     PanelLayout p{"test",0,0,1800,900,0};
     auto plan=[&](float x,float z){return adaptive::project(p,{{x,0,z},0,0},{},{},800,600,60,0);};
     assert(plan(0,-4).visible);

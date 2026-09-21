@@ -1,0 +1,25 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["studio", "scripts", "tests"]
+
+[tool.ruff.lint]
+# Pyflakes, syntax errors, and the usual function-size limits.
+# Compact one-line statements stay until the worker is reformatted.
+select = ["E9", "F", "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 5
+max-branches = 12
+max-returns = 6
+max-statements = 50
+
+[tool.mypy]
+python_version = "3.11"
+files = ["studio", "scripts"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
