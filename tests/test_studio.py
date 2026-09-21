@@ -42,14 +42,24 @@ class FakeHypr:
     def __init__(self):
         self.outputs={"eDP-1":{"name":"eDP-1","width":1920,"height":1080,"x":0,"y":0,"scale":1}}
         self.fail=False
+        self.workspaces=[]
+    def move_workspace(self, command):
+        identity, target = re.search(r'workspace=(-?\d+), monitor="([^"]+)"', command).groups()
+        for workspace in self.workspaces:
+            if workspace["id"] == int(identity):
+                workspace["monitor"] = target
     def __call__(self,*args):
         if args==("-j","monitors"): return json.dumps(list(self.outputs.values()))
+        if args==("-j","workspaces"): return json.dumps(self.workspaces)
         if args[:2]==("output","create"):
             name=args[3]; self.outputs[name]={"name":name,"width":1920,"height":1080,"x":1920,"y":0,"scale":1};return "ok"
         if args[:2]==("output","remove"):
             del self.outputs[args[2]];return "ok"
         if args[0]=="eval":
             if self.fail: raise RuntimeError("Injected compositor failure")
+            if 'hl.dsp.workspace.move' in args[1]:
+                self.move_workspace(args[1])
+                return "ok"
             name,w,h,x,y=re.search(r'output="([^"]+)", mode="(\d+)x(\d+)@60", position="(-?\d+)x(-?\d+)"',args[1]).groups()
             if name in self.outputs:
                 self.outputs[name].update(width=int(w),height=int(h),x=int(x),y=int(y),scale=float(re.search(r"scale=([0-9.]+)",args[1])[1]))
@@ -145,6 +155,108 @@ class LayoutTests(unittest.TestCase):
                 manager.reconcile_laptop_workspaces(monitors,disabling=True)
                 self.assertEqual(sum(c.args[0]=="eval" for c in manager.runner.call_args_list),3)
             finally:manager.lock.close()
+
+    def test_stop_returns_all_xr_workspaces_after_restoring_laptop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            manager.apply(default_layout())
+            panel=fake.outputs.pop("eDP-1")
+            fake.outputs["DP-1"]={**panel,"name":"DP-1","description":"VITURE"}
+            names=sorted(manager.owned)
+            fake.workspaces=[{"id":identity,"name":label,"monitor":names[i % len(names)],"windows":2}
+                             for i,(identity,label) in enumerate([(3,"3"),(4,"4"),(-1337,"work"),(-99,"special:notes")])]
+            expected=copy.deepcopy(fake.workspaces)
+            manager.laptop.stop=Mock(side_effect=lambda:fake.outputs.update({"eDP-1":panel}))
+            process=Mock();process.poll.return_value=None;manager.viewer=process
+            try:
+                manager.stop_viewer()
+                process.terminate.assert_called_once()
+                self.assertEqual(fake.workspaces,[{**w,"monitor":"eDP-1"} for w in expected])
+                self.assertEqual(set(fake.outputs),{"eDP-1","DP-1"})
+                self.assertEqual(json.loads(manager.journal.read_text()),[])
+                self.assertFalse(manager.owned)
+                self.assertIsNone(manager.applied)
+                self.assertEqual(manager.load(),default_layout())
+                manager.stop_viewer()  # Repeated release is harmless.
+            finally:manager.lock.close()
+
+    def test_release_failure_keeps_outputs_and_journal_for_retry(self):
+        for cause in ("missing-display", "migration-failure", "migration-ignored", "removal-failure"):
+            with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temp:
+                fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+                manager.apply(default_layout())
+                owned=set(manager.owned)
+                fake.workspaces=[{"id":3,"monitor":sorted(owned)[0],"windows":1}]
+                panel=fake.outputs.pop("eDP-1") if cause=="missing-display" else None
+                fake.fail=cause=="migration-failure"
+                def runner(*args):
+                    if cause=="migration-ignored" and args[0]=="eval":return "ok"
+                    if cause=="removal-failure" and args[:2]==("output","remove"):
+                        raise RuntimeError("Removal failed")
+                    return fake(*args)
+                manager.runner=runner
+                try:
+                    with self.assertRaisesRegex(RuntimeError,"Workspace release"):
+                        manager.stop_viewer()
+                    self.assertEqual(manager.owned,owned)
+                    self.assertEqual(set(json.loads(manager.journal.read_text())),owned)
+                    fake.fail=False;manager.runner=fake
+                    if panel:fake.outputs["eDP-1"]=panel
+                    manager.stop_viewer()
+                    self.assertFalse(manager.owned)
+                    self.assertEqual(fake.workspaces[0]["monitor"],"eDP-1")
+                finally:manager.lock.close()
+
+    def test_crash_recovery_releases_journaled_workspaces(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            manager.apply(default_layout())
+            fake.workspaces=[{"id":3,"monitor":sorted(manager.owned)[0],"windows":2}]
+            manager.lock.close()  # Simulate a dead worker with outputs still alive.
+            recovered=Manager(temp,"/unused",fake)
+            try:
+                self.assertFalse(recovered.owned)
+                self.assertEqual(set(fake.outputs),{"eDP-1"})
+                self.assertEqual(fake.workspaces,[{"id":3,"monitor":"eDP-1","windows":2}])
+            finally:recovered.lock.close()
+
+    def test_viewer_exit_releases_workspaces(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            manager.apply(default_layout())
+            fake.workspaces=[{"id":3,"monitor":sorted(manager.owned)[0],"windows":1}]
+            manager.viewer=Mock();manager.viewer.poll.return_value=1
+            manager.sdk.status=Mock(return_value={})
+            try:
+                status=manager.status()
+                self.assertFalse(status["viewing"])
+                self.assertEqual(status["active"],0)
+                self.assertEqual(fake.workspaces[0]["monitor"],"eDP-1")
+            finally:manager.lock.close()
+
+    def test_internal_viewer_handoff_keeps_applied_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();renderer=Path(temp)/"renderer";renderer.touch()
+            manager=Manager(temp,renderer,fake)
+            manager.apply(default_layout());owned=set(manager.owned)
+            process=Mock();process.poll.return_value=None
+            try:
+                with patch("backend.subprocess.Popen",return_value=process), patch("backend.time.sleep"):
+                    manager.start()
+                self.assertEqual(manager.owned,owned)
+                self.assertIsNotNone(manager.applied)
+            finally:manager.cleanup();manager.lock.close()
+
+    def test_layout_shrink_moves_workspaces_to_surviving_xr_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            layout=default_layout();manager.apply(layout)
+            fake.workspaces=[{"id":4,"monitor":manager.prefix+layout["monitors"][-1]["id"],"windows":1}]
+            layout["monitors"]=layout["monitors"][:1]
+            try:
+                manager.apply(layout)
+                self.assertEqual(fake.workspaces[0]["monitor"],manager.prefix+layout["monitors"][0]["id"])
+            finally:manager.cleanup();manager.lock.close()
 
     def test_explicit_workspace_degrees_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -343,7 +455,7 @@ class LayoutTests(unittest.TestCase):
                     self.assertIn("--pose-socket",args)
                     self.assertEqual(len([line for line in (Path(temp)/"viewer.tsv").read_text().splitlines() if not line.startswith("#")]),3)
                     manager.stop_viewer()
-                    self.assertEqual(len(manager.owned),3)
+                    self.assertFalse(manager.owned)
             finally:
                 manager.cleanup();manager.lock.close()
 

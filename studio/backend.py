@@ -423,12 +423,21 @@ class Manager:
         except Exception as exc:
             failures.append(str(exc))
 
-    def stop_viewer(self):
+    def stop_viewer(self, *, release_outputs=True):
         failures: list[str] = []
         self.halt_viewer(failures)
         released = self.release_glasses(failures)
         self.finish_stereo_restore(failures, released)
         self.direct = False
+        self.presenting = False
+        if release_outputs:
+            try:
+                self.remove(set(self.owned))
+                self.applied = None
+                self.output_geometry = {}
+                self.internal_workspaces = {}
+            except Exception as exc:
+                failures.append("Workspace release: " + str(exc))
         self.restoration_error = "; ".join(failures)
         if failures:
             raise RuntimeError("XR display restoration needs retry: " + self.restoration_error)
@@ -471,10 +480,44 @@ class Manager:
         position = f'{original["x"]}x{original["y"]}'
         self.runner("eval", "hl.monitor({output=" + json.dumps(name) + ", mode=" + json.dumps(mode) + ", position=" + json.dumps(position) + ", scale=" + str(original["scale"]) + "})")
 
+    def relocate_workspaces(self, names, removing, monitors):
+        glasses = set(detect(monitors)["displays"])
+        targets = [m for m in monitors if m["name"] not in names
+                   and not m.get("disabled", False) and m.get("dpmsStatus", True)
+                   and m.get("width", 0) > 0]
+        # During layout edits keep workspaces in XR. On exit prefer the
+        # laptop/desktop over the glasses' restored 2D output.
+        laptop_names = {m["name"] for m in internal(monitors)}
+        targets.sort(key=lambda m: (m["name"] not in self.owned,
+                                    m["name"] in glasses,
+                                    m["name"] not in laptop_names))
+        if not targets:
+            raise RuntimeError("No reachable display for XR workspaces; restore a display and retry Stop")
+        target = targets[0]["name"]
+        workspaces = json.loads(self.runner("-j", "workspaces"))
+        for workspace in workspaces:
+            if workspace.get("monitor") not in removing:
+                continue
+            # Numeric IDs also preserve named and special workspace identity.
+            identity = int(workspace["id"])
+            self.runner("eval", 'hl.dispatch(hl.dsp.workspace.move({workspace='
+                        + str(identity) + ', monitor=' + json.dumps(target) + '}))')
+        remaining = json.loads(self.runner("-j", "workspaces"))
+        stranded = [w for w in remaining if w.get("monitor") in removing and w.get("windows", 0) > 0]
+        if stranded:
+            raise RuntimeError("XR windows have not reached the desktop; retry Stop")
+
     def remove(self, names):
-        existing = {m["name"] for m in self.monitors()}
+        names = set(names)
+        if not names:
+            return
+        monitors = self.monitors()
+        existing = {m["name"] for m in monitors}
+        removing = names & existing
+        if removing:
+            self.relocate_workspaces(names, removing, monitors)
         failures = []
-        for name in names:
+        for name in sorted(names):
             try:
                 if name in existing:
                     self.runner("output", "remove", name)
@@ -486,11 +529,7 @@ class Manager:
             raise RuntimeError("Some outputs could not be removed: " + "; ".join(failures))
 
     def cleanup(self):
-        try:
-            self.stop_viewer()
-        finally:
-            self.remove(list(self.owned))
-            self.applied = None
+        self.stop_viewer()
 
     def persist_applied(self, layout):
         self.applied = json.loads(json.dumps(layout))
@@ -711,7 +750,7 @@ class Manager:
             raise RuntimeError("Renderer not installed. Run make install-studio")
         args = self.viewer_command(present, direct)
         if not direct:
-            self.stop_viewer()
+            self.stop_viewer(release_outputs=False)
         self.direct = direct
         self.presenting = present
         self.rotate_viewer_log()
@@ -749,7 +788,8 @@ class Manager:
         saved_output = self.original_output if self.stereo_active else None
         self.ensure_sdk()
         try:
-            self.stop_viewer()
+            # Keep the applied monitors; this is a handoff into the stereo viewer.
+            self.stop_viewer(release_outputs=False)
         except Exception as exc:
             # A stranded side-by-side mode must not block the next session once a display is back.
             self.display_event("stereo-restore-skipped", str(exc))
@@ -1112,7 +1152,7 @@ def action_spectator(manager, request):
 
 def action_stop_viewer(manager, _request):
     manager.stop_viewer()
-    return {"message": "Viewer closed; virtual desktops kept running"}
+    return {"message": "Viewer closed; workspaces returned to the desktop"}
 
 
 def action_start(manager, _request):
