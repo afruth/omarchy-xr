@@ -193,7 +193,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         const auto view=viewRotation();
         gaze.update(fresh ? targeting::query(targeting::viewRay(view,{panX,panY,panZ}),geometry,cx,cy,(right-left)/900,distance,workspace) : std::nullopt,fresh);
         selection.validate(geometry);
-        const auto previous=selection.output;if(!panGestureActive && !zoomGaze && monotonicSeconds()>=recenterUntil)selection.observe(gaze.current);
+        const auto previous=selection.output;if(!panGestureActive && monotonicSeconds()>=recenterUntil)selection.observe(gaze.current);
         if(gaze.current && selection.output!=previous)selectionAnchor=baseView();
     };
     auto focusSelected = [&](bool fitHeight,float zoom) {

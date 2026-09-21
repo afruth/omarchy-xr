@@ -167,6 +167,13 @@ int main() {
     auto panRange=navigation::gazePanLimits(gazed,gazePose,panDepth,28,16.f/9,origin,true);
     assert(panRange.x>=origin.x && panRange.y>=origin.y);
     assert(std::abs(std::clamp(origin.x,-panRange.x,panRange.x)-origin.x)<1e-6);
+    targeting::Selection picked;
+    picked.observe(first);
+    targeting::Hit other=*first;other.output="other";
+    picked.observe(other);
+    assert(picked.output=="other");
+    assert(locked->output==first->output);
+    assert(std::abs(locked->u-first->u)<1e-5 && std::abs(locked->v-first->v)<1e-5);
     // Gaze must see empty space through the retained gutter, not a stretched panel.
     spatial::Workspace gutterWrap;gutterWrap.follow=true;gutterWrap.degrees=90;gutterWrap.gap=30.f/900;
     std::vector<PanelLayout> neighbours{{"a",0,0,1920,1080},{"b",1950,0,1920,1080}};
