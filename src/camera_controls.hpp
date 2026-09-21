@@ -136,7 +136,7 @@ inline targeting::Vec applyPanLimits(const PanelLayout& p,const spatial::Pose& p
     return {std::clamp(focus.x,-limits.x,limits.x),std::clamp(focus.y,-limits.y,limits.y),0};
 }
 inline bool lockZoomGaze(std::optional<targeting::Hit>& locked,const std::optional<targeting::Hit>& current){
-    if(locked)return true;
+    if(locked && (!current || current->output==locked->output))return true;
     if(!current)return false;
     locked=current;
     return true;

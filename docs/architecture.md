@@ -199,7 +199,8 @@ Focused navigation holds workspace geometry distance fixed and changes camera
 translation and rotation. Wheel, swipe, and `zoom_in`/`zoom_out` zoom along the
 head-directed hit captured at the start of a zoom gesture via `gazeFocus` and
 `panFocus`, so that look point stays on the heading axis. The captured UV is held
-across zero-delta frames until pan, fit, or recenter. `panLimits` does not snap
+across zero-delta frames until pan, fit, or recenter; a later zoom on a different
+looked-at monitor recaptures that hit. `panLimits` does not snap
 an on-panel origin to the monitor center or pull it into the pan envelope when
 pan begins. With no hit, zoom uses the selected monitor center, then workspace
 depth. Fit-target still faces the selected monitor's center; `frontFocus` aligns

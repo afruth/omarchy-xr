@@ -169,11 +169,29 @@ int main() {
     assert(std::abs(std::clamp(origin.x,-panRange.x,panRange.x)-origin.x)<1e-6);
     targeting::Selection picked;
     picked.observe(first);
-    targeting::Hit other=*first;other.output="other";
+    targeting::Hit other=*first;other.output="other";other.u=.2f;other.v=.8f;
     picked.observe(other);
     assert(picked.output=="other");
     assert(locked->output==first->output);
     assert(std::abs(locked->u-first->u)<1e-5 && std::abs(locked->v-first->v)<1e-5);
+    // A later zoom on a new look recaptures that panel's UV instead of
+    // dolling into its center while the previous lock is still held.
+    assert(navigation::lockZoomGaze(locked,other));
+    assert(locked->output=="other");
+    assert(std::abs(locked->u-.2f)<1e-5 && std::abs(locked->v-.8f)<1e-5);
+    targeting::Hit walked=other;walked.u=.9f;walked.v=.1f;
+    assert(navigation::lockZoomGaze(locked,walked));
+    assert(std::abs(locked->u-.2f)<1e-5 && std::abs(locked->v-.8f)<1e-5);
+    PanelLayout next{"other",1944,0,1920,1080};
+    const auto nextPose=spatial::pose((next.x+next.width/2)/900,0,next.width/900,2,5,0,0);
+    const auto nextOrigin=navigation::gazeFocus(next,*locked);
+    auto nextLook=navigation::panFocus(nextPose,{},2,nextOrigin.x,nextOrigin.y);
+    auto nextCenter=navigation::panFocus(nextPose,{},2,0,0);
+    const auto nextPoint=spatial::vertex(nextPose,nextOrigin.x,nextOrigin.y);
+    auto nextOnAxis=targeting::rotate(nextLook.rotation,targeting::add(nextPoint,nextLook.pan));
+    auto nextFromCenter=targeting::rotate(nextCenter.rotation,targeting::add(nextPoint,nextCenter.pan));
+    assert(std::abs(nextOnAxis.x)<1e-5 && std::abs(nextOnAxis.y)<1e-5);
+    assert(std::abs(nextFromCenter.x)>1e-3);
     // Gaze must see empty space through the retained gutter, not a stretched panel.
     spatial::Workspace gutterWrap;gutterWrap.follow=true;gutterWrap.degrees=90;gutterWrap.gap=30.f/900;
     std::vector<PanelLayout> neighbours{{"a",0,0,1920,1080},{"b",1950,0,1920,1080}};

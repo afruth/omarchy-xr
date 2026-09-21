@@ -200,8 +200,9 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         recenterUntil=0;panCamera=false;
         if(fitHeight){zoomGaze.reset();focusFromGaze=false;}
         const bool captured=!zoomGaze;
+        const bool recapture=zoomGaze && gaze.current && gaze.current->output!=zoomGaze->output;
         if(!fitHeight && zoom!=0 && navigation::lockZoomGaze(zoomGaze,gaze.current)){
-            if(captured){
+            if(captured || recapture){
                 const auto previous=selection.output;
                 selection.observe(zoomGaze);
                 if(selection.output!=previous)selectionAnchor=baseView();
@@ -223,7 +224,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             if(zoom!=0 && zoomGaze && zoomGaze->output==p.output){
                 const auto origin=navigation::gazeFocus(p,*zoomGaze);
                 focusX=origin.x;focusY=origin.y;
-                if(captured)focusAnchor=baseView();
+                if(captured || recapture)focusAnchor=baseView();
                 focusFromGaze=true;
             }
             focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
