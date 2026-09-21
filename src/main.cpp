@@ -195,11 +195,17 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     };
     auto focusSelected = [&](bool fitHeight,float zoom) {
         recenterUntil=0;panCamera=false;
+        const bool towardGaze=!fitHeight && zoom!=0 && gaze.current;
+        if(towardGaze){
+            const auto previous=selection.output;
+            selection.observe(gaze.current);
+            if(selection.output!=previous)selectionAnchor=baseView();
+        }
         const auto found=std::find_if(geometry.begin(),geometry.end(),[&](const auto& p){return p.output==selection.output;});
         if(found==geometry.end())return false;
         const auto& p=*found;
-        // Keep workspace geometry fixed; move the camera along the selected
-        // monitor's normal. Zoom must not change its workspace bend or yaw.
+        // Keep workspace geometry fixed; move the camera along the look
+        // point's local normal. Zoom must not change its workspace bend or yaw.
         targetDistance=distance;
         const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,p.width/900,(right-left)/900,distance,workspace,p.curvature);
         if(focusOutput!=p.output){
@@ -207,7 +213,13 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             focusDepth=navigation::viewingDistance(pose,{panX,panY,panZ});
         }
         if(fitHeight){focusX=focusY=0;focusAnchor=selectionAnchor;focusDepth=navigation::frontHeightDistance(p,pose,fov);}
-        else focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
+        else {
+            if(towardGaze && gaze.current->output==p.output){
+                const auto origin=navigation::gazeFocus(p,*gaze.current);
+                focusX=origin.x;focusY=origin.y;focusAnchor=baseView();
+            }
+            focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
+        }
         // Stay in front of a curved monitor's nearest edge, even at high zoom.
         const float sag=spatial::bendZ(p.width/1800,pose.surfaceBend);
         focusDepth=std::max(focusDepth,sag+.15f);

@@ -187,7 +187,7 @@ existing XR output and restores its position/workspace afterward. It compares
 frame-only protocol polling with polling during presentation waits. Results are
 workload dependent, not a full end-to-end latency benchmark.
 
-### Persistent selection and monitor-centered zoom
+### Persistent selection and gaze-directed zoom
 
 `targeting::Selection` retains the last hit output through gaps and stale tracking,
 separately from transient `Tracker::current`. A new hit replaces it; removal from
@@ -196,9 +196,12 @@ the retained identity. The head-view anchor is captured on selection, so looking
 at the keyboard before zoom does not anchor the monitor at the keyboard.
 
 Focused navigation holds workspace geometry distance fixed and changes camera
-translation and rotation. `frontFocus` aligns the selected monitor's center normal
-with the anchored camera and positions its center on that camera's axis. Intrinsic
-monitor curvature is preserved; front-facing height fit includes its edge depth.
+translation and rotation. Wheel, swipe, and `zoom_in`/`zoom_out` zoom along the
+current head-directed hit via `gazeFocus` and `panFocus`, so the looked-at point
+stays on the view axis. With no hit, zoom uses the selected monitor center, then
+workspace depth. Fit-target still faces the selected monitor's center; `frontFocus`
+aligns that center normal with the anchored camera. Intrinsic monitor curvature is
+preserved; front-facing height fit includes its edge depth.
 Rotation and translation ease together. Live head tracking remains relative to the
 anchor. Zoom stays in front of curved edges; Ctrl+Up restores workspace overview.
 Tests cover side-monitor normals, projected fit bounds, curved surfaces, retained

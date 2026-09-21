@@ -443,8 +443,9 @@ dwell delay. Gaps, looking away, and stale tracking preserve the last selected m
 monitor never repeats selection or steers the mouse. Mouse motion never changes
 the gaze target. Workspace selection uses normal Omarchy behavior, including any
 configured one-time cursor warp. Ctrl+Down centers the selected monitor face-on and fits its height.
-Three-finger zoom approaches that same monitor along its normal without changing
-the workspace bend. Ctrl+Up returns to the full workspace view.
+Three-finger zoom approaches the looked-at point on that monitor along its local
+normal without changing the workspace bend. With no look hit, zoom uses the
+selected monitor center, then the workspace. Ctrl+Up returns to the full workspace view.
 
 There is no XR pointer reticle. The native desktop cursor is captured with the
 desktop, so its visible update rate depends on capture delivery. Requires `make install-controls` and

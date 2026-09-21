@@ -101,6 +101,10 @@ inline FrontFocus panFocus(const spatial::Pose& pose,tracking::Quaternion anchor
     if(pose.spherical)local.latitude+=y*pose.surfaceBend;
     return frontFocus(local,anchor,depth);
 }
+// Head-directed hit UV (top-left) to panFocus meters from the panel center.
+inline targeting::Vec gazeFocus(const PanelLayout& panel,const targeting::Hit& hit){
+    return {(hit.u-.5f)*panel.width/900,(.5f-hit.v)*panel.height/900,0};
+}
 inline float visibleArc(float depth,float halfFov,float bend){
     if(bend<=1e-6f)return depth*std::tan(halfFov);
     const float r=1/bend,a=r-depth;
