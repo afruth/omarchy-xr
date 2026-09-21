@@ -116,9 +116,8 @@ public:
         updatePan();
         const auto now = bootSeconds();
         if (now != heartbeat) {
-            const auto body = session + ' ' + std::to_string(now) + '\n';
-            writeFile(path + ".active", body);
-            if (!mirror.empty()) writeFile(mirror + ".active", body);
+            writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');
+            if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
             heartbeat = now;
         }
         const auto filePath = existing("");

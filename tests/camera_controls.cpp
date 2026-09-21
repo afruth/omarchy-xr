@@ -2,7 +2,10 @@
 #include "live_controls.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <optional>
@@ -241,5 +244,27 @@ int main() {
     }
     assert(!std::filesystem::exists(path+".active"));
     std::filesystem::remove_all(temp);
+    char mirrorDir[]="/tmp/xr-mirror-test-XXXXXX";assert(mkdtemp(mirrorDir));
+    const std::string mirrorPose=std::string(mirrorDir)+"/pose.sock",mirror=std::string(mirrorDir)+"/mirror";
+    const char* savedMirror=std::getenv("OMARCHY_XR_MIRROR_STATE");
+    const std::string savedMirrorCopy=savedMirror?savedMirror:"";
+    setenv("OMARCHY_XR_MIRROR_STATE",mirror.c_str(),1);
+    {
+        LiveControls input(mirrorPose);
+        AsyncFile::instance().flush();
+        auto stamp=[&](const std::string& file){
+            std::ifstream in(file);std::string owner;long value=0;
+            assert(in>>owner>>value);assert(owner==std::to_string(getpid()));return value;
+        };
+        timespec boot{};assert(clock_gettime(CLOCK_BOOTTIME,&boot)==0);
+        const auto wall=std::time(nullptr);
+        const auto runtime=stamp(mirrorPose+".controls.active"),mirrored=stamp(mirror+".active");
+        assert(runtime<=boot.tv_sec && boot.tv_sec-runtime<=2);
+        assert(mirrored<=wall && wall-mirrored<=2 && mirrored>1000000000L && mirrored>runtime+1000);
+    }
+    if(savedMirror)setenv("OMARCHY_XR_MIRROR_STATE",savedMirrorCopy.c_str(),1);
+    else unsetenv("OMARCHY_XR_MIRROR_STATE");
+    assert(!std::filesystem::exists(mirror+".active"));
+    std::filesystem::remove_all(mirrorDir);
     std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup passed\n";
 }

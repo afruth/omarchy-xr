@@ -258,7 +258,7 @@ class PosePublisher:
                     self.socket.sendto(packet, self.path)
                     previous = packet
                 except OSError:
-                    pass
+                    self.stop_event.wait(0.25)
                 continue
             with self.wake:
                 if self.generation != seen:

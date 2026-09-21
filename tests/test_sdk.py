@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import errno
 import socket
 import time
 import unittest
@@ -87,6 +88,31 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual([float(v) for v in packet[2:5]],[15,-25,35])
                 self.assertEqual(packet[5],"1")
             finally:publisher.close()
+        session.close()
+
+    def test_missing_pose_socket_does_not_busy_loop(self):
+        session, _, _ = self.make_session()
+        publisher = PosePublisher(session, "/tmp/omarchy-xr-missing-pose.sock")
+        attempts = []
+        class MissingSocket:
+            def sendto(self, packet, path):
+                attempts.append(time.monotonic())
+                raise OSError(errno.ENOENT, "missing")
+            def close(self):
+                pass
+        real = publisher.socket
+        publisher.socket = MissingSocket()
+        try:
+            session.on_pose((C.c_float * 7)(1, 2, 3, 1, 0, 0, 0), 1)
+            time.sleep(0.6)
+            self.assertGreaterEqual(len(attempts), 1)
+            self.assertLessEqual(len(attempts), 4)
+            if len(attempts) >= 2:
+                self.assertGreater(min(b - a for a, b in zip(attempts, attempts[1:])), 0.2)
+        finally:
+            publisher.close()
+            real.close()
+        self.assertFalse(publisher.thread.is_alive())
         session.close()
 
     def test_start_failure_cleans_initialized_handle(self):
