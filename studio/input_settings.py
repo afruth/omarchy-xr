@@ -1,5 +1,6 @@
 """Validated, data-only XR control preferences (never executable Lua)."""
 import json
+from pathlib import Path
 import re
 
 from atomic_file import atomic_write
@@ -49,15 +50,14 @@ def save_controls(directory,value,runner):
     path=directory/'controls-settings.tsv'
     content=str(value['fingers'])+'\n'+''.join(value[k]+'\n' for k in ACTIONS)
     profile=directory/'controls-settings.json'
-    previous={p:p.read_bytes() if p.exists() else None for p in (path,profile)}
+    previous: dict[Path, bytes | None]={p:p.read_bytes() if p.exists() else None for p in (path,profile)}
     atomic_write(path, content)
     atomic_write(profile, json.dumps(value, indent=2)+'\n')
     try:
         runner('eval','omarchy_xr_controls.refresh()')
     except Exception:
-        for p,content in previous.items():
-            if content is None:p.unlink(missing_ok=True)
-            else:
-                atomic_write(p, content.decode())
+        for item,saved in previous.items():
+            if saved is None:item.unlink(missing_ok=True)
+            else:atomic_write(item, saved.decode())
         raise
     return value

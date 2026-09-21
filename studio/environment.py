@@ -4,9 +4,20 @@ import json
 import math
 import os
 from pathlib import Path
+from typing import Any
 import shutil
 import subprocess
 import tempfile
+
+
+def _magick(args):
+    try:
+        prefix = ['magick']
+        if args[0] == 'identify':
+            prefix.append(args.pop(0))
+        return subprocess.run([*prefix, '-limit', 'thread', '2', '-limit', 'memory', '256MiB', '-limit', 'map', '512MiB', *args], check=True, capture_output=True, text=True, timeout=120).stdout
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('Could not decode panorama: ' + exc.stderr[-300:]) from exc
 
 
 def atomic(path, text):
@@ -22,7 +33,7 @@ class Environment:
         self.library = Path(library) if library else Path(os.environ.get('XDG_DATA_HOME', str(Path.home()/'.local/share'))) / 'omarchy-xr/environments'
         self.library.mkdir(parents=True, exist_ok=True)
         self.profile = self.state/'environment.json'
-        self.config = {'id':'', 'brightness':25, 'rotation':0}
+        self.config: dict[str, Any] = {'id':'', 'brightness':25, 'rotation':0}
         if self.profile.exists():
             try:
                 value = json.loads(self.profile.read_text())
@@ -52,7 +63,7 @@ class Environment:
             raise ValueError('Environment image is unavailable. Import it again.')
         for key, low, high in (('brightness',0,100),('rotation',-180,180)):
             number = value.get(key)
-            if type(number) not in (int,float) or not math.isfinite(number) or not low <= number <= high:
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not low <= number <= high:
                 raise ValueError('Invalid environment ' + key)
 
     def snapshot(self):
@@ -70,47 +81,53 @@ class Environment:
         atomic(self.state/'environment.tsv', f'{self.config["brightness"]} {self.config["rotation"]} {json.dumps(path,ensure_ascii=False)}\n')
 
     def import_image(self, source, resolution=4096, name=None):
-        if type(resolution) is not int or resolution not in (4096,8192):
+        source = self.import_source(source, resolution)
+        identity = self.import_identity(source, resolution)
+        target = self.library / identity
+        if (target / 'asset.json').is_file():
+            return identity
+        with tempfile.TemporaryDirectory(prefix='.import-', dir=self.library) as directory:
+            self.write_import(Path(directory), source, resolution, {"identity": identity, "title": name or source.stem.replace('_', ' '), "target": target})
+        return identity
+
+    def import_source(self, source, resolution):
+        if type(resolution) is not int or resolution not in (4096, 8192):
             raise ValueError('Choose 4K or 8K')
         if not shutil.which('magick'):
             raise RuntimeError('Image import requires ImageMagick: sudo pacman -S imagemagick')
         source = Path(source).expanduser().resolve()
-        if not source.is_file() or source.suffix.lower() not in ('.jpg','.jpeg','.png','.bmp'):
+        if not source.is_file() or source.suffix.lower() not in ('.jpg', '.jpeg', '.png', '.bmp'):
             raise ValueError('Choose a 2:1 JPEG, PNG or BMP panorama')
-        if source.stat().st_size > 512*1024*1024:
+        if source.stat().st_size > 512 * 1024 * 1024:
             raise ValueError('Image exceeds the 512 MB import limit')
+        return source
+
+    def import_identity(self, source, resolution):
         digest = hashlib.sha256()
         with source.open('rb') as stream:
-            for chunk in iter(lambda:stream.read(1024*1024),b''): digest.update(chunk)
-        identity = digest.hexdigest()[:24] + '-' + str(resolution)
-        target = self.library/identity
-        if (target/'asset.json').is_file(): return identity
-        with tempfile.TemporaryDirectory(prefix='.import-',dir=self.library) as directory:
-            work = Path(directory)
-            # Use a controlled filename: ImageMagick treats brackets and colons as syntax.
-            image = work/('source'+source.suffix.lower())
-            shutil.copyfile(source,image)
-            def run(args):
-                try:
-                    prefix = ['magick']
-                    if args[0] == 'identify': prefix.append(args.pop(0))
-                    return subprocess.run([*prefix,'-limit','thread','2','-limit','memory','256MiB','-limit','map','512MiB',*args],check=True,capture_output=True,text=True,timeout=120).stdout
-                except subprocess.CalledProcessError as exc:
-                    raise ValueError('Could not decode panorama: '+exc.stderr[-300:]) from exc
-            dimensions = run(['identify','-ping','-format','%w %h',str(image)]).split()
-            if len(dimensions) != 2:
-                raise ValueError('Choose a single panoramic image')
-            width,height = map(int,dimensions)
-            if width != height*2 or width > 40000 or height > 20000:
-                raise ValueError('Panorama must have a 2:1 aspect ratio, at most 40000 × 20000')
-            output_width = min(resolution,width)
-            output_width -= output_width % 2
-            if output_width < 512: raise ValueError('Panorama must be at least 512 × 256')
-            run(['-define',f'jpeg:size={output_width}x{output_width//2}',str(image),'-auto-orient','-resize',f'{output_width}x{output_width//2}!','-colorspace','sRGB','-alpha','off','-depth','8','BMP3:'+str(work/'sky.bmp')])
-            run([str(work/'sky.bmp'),'-resize','320x160!','-quality','85',str(work/'thumbnail.jpg')])
-            image.unlink()
-            metadata = {'id':identity,'name':name or source.stem.replace('_',' '),'width':output_width,'height':output_width//2}
-            (work/'asset.json').write_text(json.dumps(metadata))
-            if target.exists(): shutil.rmtree(target)
-            work.rename(target)
-        return identity
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()[:24] + '-' + str(resolution)
+
+    def write_import(self, work, source, resolution, record):
+        identity, title, target = record["identity"], record["title"], record["target"]
+        # Use a controlled filename: ImageMagick treats brackets and colons as syntax.
+        image = work / ('source' + source.suffix.lower())
+        shutil.copyfile(source, image)
+        dimensions = _magick(['identify', '-ping', '-format', '%w %h', str(image)]).split()
+        if len(dimensions) != 2:
+            raise ValueError('Choose a single panoramic image')
+        width, height = map(int, dimensions)
+        if width != height * 2 or width > 40000 or height > 20000:
+            raise ValueError('Panorama must have a 2:1 aspect ratio, at most 40000 × 20000')
+        output_width = min(resolution, width)
+        output_width -= output_width % 2
+        if output_width < 512:
+            raise ValueError('Panorama must be at least 512 × 256')
+        _magick(['-define', f'jpeg:size={output_width}x{output_width // 2}', str(image), '-auto-orient', '-resize', f'{output_width}x{output_width // 2}!', '-colorspace', 'sRGB', '-alpha', 'off', '-depth', '8', 'BMP3:' + str(work / 'sky.bmp')])
+        _magick([str(work / 'sky.bmp'), '-resize', '320x160!', '-quality', '85', str(work / 'thumbnail.jpg')])
+        image.unlink()
+        (work / 'asset.json').write_text(json.dumps({'id': identity, 'name': title, 'width': output_width, 'height': output_width // 2}))
+        if target.exists():
+            shutil.rmtree(target)
+        work.rename(target)

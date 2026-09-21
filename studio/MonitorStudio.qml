@@ -9,6 +9,7 @@ import qs.Commons
 import "MonitorSnap.js" as MonitorSnap
 import "MonitorPresets.js" as MonitorPresets
 import "CurvatureAngles.js" as CurvatureAngles
+import "json_equal.js" as JsonEqual
 
 Item {
     id: root
@@ -21,6 +22,7 @@ Item {
     property bool loaded: false
     property bool dirty: false
     property int selected: 0
+    property int dragIndex: -1
     property var dragSnap: null
     property var controlDraft: ({fingers:3,fit_all:"CTRL + Up",fit_target:"CTRL + Down",recenter:"",zoom_in:"",zoom_out:""})
     property bool controlsDirty: false
@@ -37,15 +39,6 @@ Item {
         var settings=Object.assign({},environmentSettings);settings[key]=value;
         environmentSettings=settings;
         send("set_environment");
-    }
-    FileDialog {
-        id: environmentFile
-        title: "Import spherical panorama"
-        nameFilters: ["Panoramas (*.jpg *.jpeg *.png *.bmp)"]
-        onAccepted: {
-            root.imagePath=root.localPath(selectedFile);
-            root.send("import_environment");
-        }
     }
     property var builtInSetups: []
     function supportsSetup(setup) {
@@ -77,6 +70,7 @@ Item {
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
     property var performance: ({})
+    property var captureRows: []
     property string viewerExit: ""
     property string controlsHint: ""
     property var glasses: ({})
@@ -90,7 +84,9 @@ Item {
     readonly property bool canStart: loaded && !busy && !glasses.recovering && !!sdk.available && (directOutput || (!!glasses.displays && glasses.displays.length === 1))
     function selectTab(index) {
         activeTab = Math.max(0, Math.min(3, Number(index)));
-        scroll.contentItem.contentY = 0;
+        var surface = panelBody.item;
+        if (surface)
+            surface.scrollView.contentItem.contentY = 0;
         Qt.callLater(fit);
     }
     function notify(message, failed) {
@@ -143,8 +139,8 @@ Item {
             spectatorEnabled: spectatorEnabled,
             performance: performance,
             graphicsLimits: graphicsLimits,
-            scrollHeight: scroll.contentHeight,
-            viewportHeight: scroll.availableHeight,
+            scrollHeight: panelBody.item ? panelBody.item.scrollView.contentHeight : 0,
+            viewportHeight: panelBody.item ? panelBody.item.scrollView.availableHeight : 0,
             controls: controlDraft,
             controlsDirty: controlsDirty,
             monitors: monitors,
@@ -211,7 +207,6 @@ Item {
     }
     function changed() {
         dirty = true;
-        canvas.requestPaint();
     }
     function edit(key, value) {
         if (!monitors.length)
@@ -220,8 +215,11 @@ Item {
             resizeMonitor(key === "width" ? value : current.width, key === "height" ? value : current.height);
             return;
         }
+        var stored = (key === "curvature" || key === "scale") ? value : Math.round(value);
+        if (monitors[selected][key] === stored)
+            return;
         var copy = JSON.parse(JSON.stringify(monitors));
-        copy[selected][key] = (key === "curvature" || key === "scale") ? value : Math.round(value);
+        copy[selected][key] = stored;
         monitors = copy;
         changed();
     }
@@ -236,15 +234,22 @@ Item {
             notify(String(exception.message));
         }
     }
-    function moveMonitor(x, y) {
-        var snap = MonitorSnap.place(monitors, selected, x, y, spacing, viewScale);
-        dragSnap = snap;
-        if (snap.x !== current.x || snap.y !== current.y) {
-            var copy = JSON.parse(JSON.stringify(monitors));
-            copy[selected].x = snap.x; copy[selected].y = snap.y;
-            monitors = copy;
-            changed();
-        } else canvas.requestPaint();
+    function previewMonitor(index, x, y) {
+        dragIndex = index;
+        dragSnap = MonitorSnap.preview(monitors, index, x, y, spacing, viewScale, dragSnap);
+    }
+    function finishMonitorDrag() {
+        var index = dragIndex;
+        var snap = dragSnap;
+        if (index >= 0 && snap && monitors[index]) {
+            var next = MonitorSnap.commit(monitors, index, snap);
+            if (next !== monitors) {
+                monitors = next;
+                changed();
+            }
+        }
+        dragIndex = -1;
+        dragSnap = null;
     }
     function setCount(count) {
         count = Math.max(1, Math.min(16, count));
@@ -289,7 +294,8 @@ Item {
         fit();
     }
     function fit() {
-        if (!monitors.length || canvas.width < 1)
+        var view = panelBody.item ? panelBody.item.monitorMap : null;
+        if (!monitors.length || !view || view.width < 1)
             return;
         var l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
         monitors.forEach(function (m) {
@@ -298,11 +304,10 @@ Item {
             r = Math.max(r, m.x + m.width);
             b = Math.max(b, m.y + m.height);
         });
-        viewScale = Math.min((canvas.width - 80) / (r - l), (canvas.height - 80) / (b - t));
+        viewScale = Math.min((view.width - 80) / (r - l), (view.height - 80) / (b - t));
         viewScale = Math.max(.001, viewScale);
-        offsetX = (canvas.width - (r - l) * viewScale) / 2 - l * viewScale;
-        offsetY = (canvas.height - (b - t) * viewScale) / 2 - t * viewScale;
-        canvas.requestPaint();
+        offsetX = (view.width - (r - l) * viewScale) / 2 - l * viewScale;
+        offsetY = (view.height - (b - t) * viewScale) / 2 - t * viewScale;
     }
     function hit(x, y) {
         for (var i = monitors.length - 1; i >= 0; i--) {
@@ -312,17 +317,18 @@ Item {
         }
         return -1;
     }
-    onSelectedChanged: canvas.requestPaint()
-    onViewScaleChanged: canvas.requestPaint()
-    onOffsetXChanged: canvas.requestPaint()
-    onOffsetYChanged: canvas.requestPaint()
+    function repaintGrid() {
+        var surface = panelBody.item;
+        if (surface)
+            surface.gridCanvas.requestPaint();
+    }
     Connections {
         target: Color
         function onBackgroundChanged() {
-            canvas.requestPaint();
+            root.repaintGrid();
         }
         function onForegroundChanged() {
-            canvas.requestPaint();
+            root.repaintGrid();
         }
     }
 
@@ -355,18 +361,25 @@ Item {
                         if(picked) root.setupName=picked.name;
                     }
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
-                    if (response.performance) root.performance=response.performance;
+                    if (response.performance) {
+                        var nextCaptures = response.performance.captures || [];
+                        if (!JsonEqual.same(root.captureRows, nextCaptures))
+                            root.captureRows = nextCaptures;
+                        if (!JsonEqual.same(root.performance, response.performance))
+                            root.performance = response.performance;
+                    }
                     root.viewerExit = response.viewerExit || "";
                     root.controlsHint = response.controlsHint || "";
                     if (root.performance.geometryDistance > 0) root.geometryDistance=root.performance.geometryDistance;
                     root.spectatorEnabled = !!response.spectatorEnabled;
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
-                    if (response.laptopDisplay) root.laptopDisplay=response.laptopDisplay;
+                    if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
+                        root.laptopDisplay = response.laptopDisplay;
                     if (replyAction !== "status" || !response.ok)
                         root.error = !response.ok;
                     var oldRecovery = root.glasses.recoveryMessage || "";
                     var oldSDK = (root.glasses.sdk || {}).message || "";
-                    if (response.glasses)
+                    if (response.glasses && !JsonEqual.same(root.glasses, response.glasses))
                         root.glasses = response.glasses;
                     if (response.restorationError)
                         root.notify(response.restorationError, true);
@@ -437,6 +450,7 @@ Item {
     Timer {
         interval: 1000
         repeat: true
+
         running: root.busy
         onTriggered: if (root.busySinceMs > 0 && Date.now() - root.busySinceMs > 20000) root.backendSlow = true
     }
@@ -507,12 +521,41 @@ Item {
         implicitWidth: 1100
         implicitHeight: 820
         minimumSize: Qt.size(780, 600)
-        onVisibleChanged: if (!visible && !root.closingFromHost && root.shell)
-            root.shell.hide("afruth.omarchy-xr")
+        onVisibleChanged: {
+            if (!visible) {
+                root.dragIndex = -1;
+                root.dragSnap = null;
+                if (!root.closingFromHost && root.shell)
+                    root.shell.hide("afruth.omarchy-xr");
+            }
+        }
+        // Hiding unloads the editor. The backend Process stays on the root, so XR keeps running.
+        Loader {
+            id: panelBody
+            anchors.fill: parent
+            active: window.visible
+            sourceComponent: studioSurface
+            onLoaded: Qt.callLater(root.fit)
+        }
+    }
+    Component {
+        id: studioSurface
         FocusScope {
             id: frame
+            property alias scrollView: scroll
+            property alias monitorMap: layoutView
+            property alias gridCanvas: grid
             anchors.fill: parent
             focus: true
+            FileDialog {
+                id: environmentFile
+                title: "Import spherical panorama"
+                nameFilters: ["Panoramas (*.jpg *.jpeg *.png *.bmp)"]
+                onAccepted: {
+                    root.imagePath = root.localPath(selectedFile);
+                    root.send("import_environment");
+                }
+            }
             Keys.onEscapePressed: root.hide()
             Shortcut {
                 sequence: "Ctrl+1"
@@ -999,17 +1042,18 @@ Item {
                                 Layout.preferredHeight: Layout.minimumHeight
                                 spacing: Style.space(16)
                                 Rectangle {
+                                    id: layoutView
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
                                     color: Color.background
                                     border.color: Qt.alpha(Color.foreground, .18)
                                     radius: Style.cornerRadius
                                     clip: true
+                                    onWidthChanged: root.fit()
+                                    onHeightChanged: root.fit()
                                     Canvas {
-                                        id: canvas
+                                        id: grid
                                         anchors.fill: parent
-                                        onWidthChanged: root.fit()
-                                        onHeightChanged: root.fit()
                                         onPaint: {
                                             var c = getContext("2d");
                                             c.reset();
@@ -1017,78 +1061,99 @@ Item {
                                             c.fillRect(0, 0, width, height);
                                             c.strokeStyle = Qt.alpha(Color.foreground, .1);
                                             c.lineWidth = 1;
+                                            c.beginPath();
                                             for (var gx = 0; gx < width; gx += 24) {
-                                                c.beginPath();
                                                 c.moveTo(gx, 0);
                                                 c.lineTo(gx, height);
-                                                c.stroke();
                                             }
                                             for (var gy = 0; gy < height; gy += 24) {
-                                                c.beginPath();
                                                 c.moveTo(0, gy);
                                                 c.lineTo(width, gy);
-                                                c.stroke();
                                             }
-                                            root.monitors.forEach(function (m, i) {
-                                                var x = root.offsetX + m.x * root.viewScale, y = root.offsetY + m.y * root.viewScale, w = m.width * root.viewScale, h = m.height * root.viewScale;
-                                                c.fillStyle = Qt.alpha(Color.accent, i === root.selected ? .23 : .08);
-                                                c.fillRect(x, y, w, h);
-                                                c.strokeStyle = i === root.selected ? Color.accent : Qt.alpha(Color.foreground, .68);
-                                                c.lineWidth = i === root.selected && root.dragSnap && (root.dragSnap.snapX || root.dragSnap.snapY) ? 5 : i === root.selected ? 3 : 1;
-                                                c.strokeRect(x, y, w, h);
-                                                c.fillStyle = Color.foreground;
-                                                c.font = "bold 16px monospace";
-                                                c.fillText(String(i + 1), x + 10, y + 23);
-                                                if (w > 115 && h > 60) {
-                                                    c.font = "12px monospace";
-                                                    c.fillText(m.width + " × " + m.height, x + 10, y + 44);
-                                                }
-                                            });
+                                            c.stroke();
                                         }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                                            preventStealing: true
-                                            enabled: root.loaded && !root.busy
-                                            property real startX
-                                            property real startY
-                                            property real originalX
-                                            property real originalY
-                                            property int dragging: -1
-                                            onPressed: function (mouse) {
-                                                root.dragSnap = null;
-                                                startX = mouse.x;
-                                                startY = mouse.y;
-                                                dragging = mouse.button === Qt.LeftButton ? root.hit(mouse.x, mouse.y) : -1;
-                                                if (dragging >= 0) {
-                                                    root.selected = dragging;
-                                                    originalX = root.current.x;
-                                                    originalY = root.current.y;
-                                                } else {
-                                                    originalX = root.offsetX;
-                                                    originalY = root.offsetY;
-                                                }
+                                    }
+                                    Repeater {
+                                        model: root.monitors
+                                        delegate: Rectangle {
+                                            id: monitorTile
+                                            required property var modelData
+                                            required property int index
+                                            readonly property bool snapped: index === root.dragIndex && root.dragSnap && (root.dragSnap.snapX || root.dragSnap.snapY)
+                                            readonly property real poseX: index === root.dragIndex && root.dragSnap ? root.dragSnap.x : modelData.x
+                                            readonly property real poseY: index === root.dragIndex && root.dragSnap ? root.dragSnap.y : modelData.y
+                                            x: root.offsetX + poseX * root.viewScale
+                                            y: root.offsetY + poseY * root.viewScale
+                                            width: modelData.width * root.viewScale
+                                            height: modelData.height * root.viewScale
+                                            color: Qt.alpha(Color.accent, index === root.selected ? .23 : .08)
+                                            border.color: index === root.selected ? Color.accent : Qt.alpha(Color.foreground, .68)
+                                            border.width: snapped ? 5 : index === root.selected ? 3 : 1
+                                            Label {
+                                                x: 10
+                                                y: 4
+                                                text: String(monitorTile.index + 1)
+                                                font.bold: true
+                                                font.pixelSize: 16
+                                                font.family: "monospace"
+                                                color: Color.foreground
                                             }
-                                            onPositionChanged: function (mouse) {
-                                                if (!pressed)
-                                                    return;
-                                                if (dragging >= 0) {
-                                                    root.moveMonitor(originalX + (mouse.x - startX) / root.viewScale,
-                                                                     originalY + (mouse.y - startY) / root.viewScale);
-                                                } else {
-                                                    root.offsetX = originalX + mouse.x - startX;
-                                                    root.offsetY = originalY + mouse.y - startY;
-                                                }
+                                            Label {
+                                                x: 10
+                                                y: 26
+                                                visible: monitorTile.width > 115 && monitorTile.height > 60
+                                                text: monitorTile.modelData.width + " × " + monitorTile.modelData.height
+                                                font.pixelSize: 12
+                                                font.family: "monospace"
+                                                color: Color.foreground
                                             }
-                                            onReleased: { dragging=-1; root.dragSnap=null; canvas.requestPaint(); }
-                                            onCanceled: { dragging=-1; root.dragSnap=null; canvas.requestPaint(); }
-                                            onWheel: function (wheel) {
-                                                if (!(wheel.modifiers & Qt.ControlModifier)) { wheel.accepted=false; return; }
-                                                var old = root.viewScale;
-                                                root.viewScale = Math.max(.001, Math.min(1, old * (wheel.angleDelta.y > 0 ? 1.15 : 1 / 1.15)));
-                                                root.offsetX = wheel.x - (wheel.x - root.offsetX) * root.viewScale / old;
-                                                root.offsetY = wheel.y - (wheel.y - root.offsetY) * root.viewScale / old;
+                                        }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                        preventStealing: true
+                                        enabled: root.loaded && !root.busy
+                                        property real startX
+                                        property real startY
+                                        property real originalX
+                                        property real originalY
+                                        property int dragging: -1
+                                        onPressed: function (mouse) {
+                                            root.dragIndex = -1;
+                                            root.dragSnap = null;
+                                            startX = mouse.x;
+                                            startY = mouse.y;
+                                            dragging = mouse.button === Qt.LeftButton ? root.hit(mouse.x, mouse.y) : -1;
+                                            if (dragging >= 0) {
+                                                root.selected = dragging;
+                                                originalX = root.monitors[dragging].x;
+                                                originalY = root.monitors[dragging].y;
+                                            } else {
+                                                originalX = root.offsetX;
+                                                originalY = root.offsetY;
                                             }
+                                        }
+                                        onPositionChanged: function (mouse) {
+                                            if (!pressed)
+                                                return;
+                                            if (dragging >= 0) {
+                                                root.previewMonitor(dragging,
+                                                    originalX + (mouse.x - startX) / root.viewScale,
+                                                    originalY + (mouse.y - startY) / root.viewScale);
+                                            } else {
+                                                root.offsetX = originalX + mouse.x - startX;
+                                                root.offsetY = originalY + mouse.y - startY;
+                                            }
+                                        }
+                                        onReleased: { root.finishMonitorDrag(); dragging = -1; }
+                                        onCanceled: { root.finishMonitorDrag(); dragging = -1; }
+                                        onWheel: function (wheel) {
+                                            if (!(wheel.modifiers & Qt.ControlModifier)) { wheel.accepted=false; return; }
+                                            var old = root.viewScale;
+                                            root.viewScale = Math.max(.001, Math.min(1, old * (wheel.angleDelta.y > 0 ? 1.15 : 1 / 1.15)));
+                                            root.offsetX = wheel.x - (wheel.x - root.offsetX) * root.viewScale / old;
+                                            root.offsetY = wheel.y - (wheel.y - root.offsetY) * root.viewScale / old;
                                         }
                                     }
                                 }
@@ -1132,7 +1197,7 @@ Item {
                                         Layout.fillWidth: true
                                         minimum: 1; maximum: 100; step: 1; integer: true
                                         value: root.current.brightness === undefined ? 100 : root.current.brightness
-                                        onMoved: function(value) { root.edit("brightness",value); }
+                                        onReleased: function(value) { root.edit("brightness",value); }
                                     }
                                     Ui.NumberField {
                                         label: "Width (pixels)"
@@ -1161,7 +1226,7 @@ Item {
                                         from: -100000
                                         to: 100000
                                         stepSize: 20
-                                        value: root.current.x
+                                        value: root.dragIndex === root.selected && root.dragSnap ? root.dragSnap.x : root.current.x
                                         fieldWidth: 190
                                         onModified: function (value) {
                                             root.edit("x", value);
@@ -1172,7 +1237,7 @@ Item {
                                         from: -100000
                                         to: 100000
                                         stepSize: 20
-                                        value: root.current.y
+                                        value: root.dragIndex === root.selected && root.dragSnap ? root.dragSnap.y : root.current.y
                                         fieldWidth: 190
                                         onModified: function (value) {
                                             root.edit("y", value);
@@ -1516,7 +1581,7 @@ Item {
                                         : "Start XR to measure performance."
                                 }
                                 Repeater {
-                                    model:root.performance.captures || []
+                                    model: root.captureRows
                                     Hint {
                                         required property var modelData
                                         text:modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight+(modelData.importMs !== undefined ? " · import "+Number(modelData.importMs).toFixed(1)+" ms" : "")

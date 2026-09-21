@@ -17,6 +17,7 @@ PLUGIN_FILES = (
     "studio/MonitorStudio.qml",
     "studio/RequestState.qml",
     "studio/MonitorSnap.js",
+    "studio/json_equal.js",
     "studio/MonitorPresets.js",
     "studio/CurvatureAngles.js",
     "studio/AngleField.qml",

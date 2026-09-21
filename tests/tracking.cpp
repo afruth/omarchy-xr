@@ -7,7 +7,15 @@ Vec transform(const std::array<float,16>& m,Vec v) {
     return {m[0]*v[0]+m[4]*v[1]+m[8]*v[2],m[1]*v[0]+m[5]*v[1]+m[9]*v[2],m[2]*v[0]+m[6]*v[1]+m[10]*v[2]};
 }
 void equal(Vec a,Vec b) {for(int i=0;i<3;++i) assert(near(a[i],b[i]));}
+void packetParsing();
+void prediction();
 int main() {
+    packetParsing();
+    prediction();
+    std::cout<<"SDK reference camera: six directions, 60 combined poses, yaw-only recenter, wrap and freshness passed\n";
+}
+
+void packetParsing() {
     tracking::Camera c;
     assert(!c.fresh(10));
     assert(c.accept("euler-nwu-v1 10 0 0 123",10));
@@ -64,6 +72,9 @@ int main() {
     assert(near(predicted.view.w,predictedView.w) && near(predicted.view.y,predictedView.y));
     assert(near(predicted.predictionMs,30));
     assert(!predicted.predict(10.06,11));
+}
+
+void prediction() {
     // The default cap is 20 ms, and a horizon of zero switches prediction off.
     tracking::Camera capped;
     assert(capped.accept("euler-nwu-v1 10 0 0 0",10) && capped.accept("euler-nwu-v1 10.01 0 0 10",10.01));
@@ -97,7 +108,7 @@ int main() {
         assert(wrapped.accept("euler-nwu-v1 "+std::to_string(t)+" 0 0 "+std::to_string(std::remainder(178+i,360.0)),t+0.001));
     }
     assert(wrapped.predict(40.06,40.04));
-    predictedView=tracking::conjugate(tracking::orientation(0,0,std::remainder(182+100*0.02-178,360.0)));
+    auto predictedView=tracking::conjugate(tracking::orientation(0,0,std::remainder(182+100*0.02-178,360.0)));
     assert(std::abs(wrapped.view.y-predictedView.y)<1e-4);
     tracking::Camera gapped;
     assert(gapped.accept("euler-nwu-v1 50 0 0 0",50) && gapped.accept("euler-nwu-v1 50.2 0 0 5",50.2));
@@ -108,5 +119,4 @@ int main() {
     for(const char* bad:{"","tracking-v2 12 3 30 6","tracking-v1 31 3 30 6","tracking-v1 -1 3 30 6","tracking-v1 12 30 30 6",
                          "tracking-v1 12 3 30 1","tracking-v1 12 3 30 9","tracking-v1 12 3 30 6 junk","tracking-v1 nan 3 30 6"})
         assert(!tracking::parsePrediction(bad));
-    std::cout<<"SDK reference camera: six directions, 60 combined poses, yaw-only recenter, wrap and freshness passed\n";
 }

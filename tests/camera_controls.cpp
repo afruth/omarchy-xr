@@ -10,7 +10,21 @@
 #include <iomanip>
 #include <optional>
 
+void easeZoom();
+void cylinderFit();
+void gazeZoom();
+void adjacentPanelZoom();
+void gutterAndInput();
 int main() {
+    easeZoom();
+    cylinderFit();
+    gazeZoom();
+    adjacentPanelZoom();
+    gutterAndInput();
+    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup passed\n";
+}
+
+void easeZoom() {
     float at30=10,at120=10;
     for(int i=0;i<30;++i)at30=navigation::easeDistance(at30,2,1.f/30);
     for(int i=0;i<120;++i)at120=navigation::easeDistance(at120,2,1.f/120);
@@ -87,6 +101,9 @@ int main() {
     for(int i=0;i<1000;++i)limited=navigation::zoomDepth(limited,-.1f,overview*2);
     assert(limited==overview*2);
     assert(navigation::zoomDepth(limited,.1f,overview*2)<limited);
+}
+
+void cylinderFit() {
     spatial::Workspace cylinder;cylinder.degrees=180;cylinder.follow=true;
     auto cylinderPose=spatial::pose(2,1,2,8,5,cylinder,0);
     const auto camera=navigation::frontFocus(cylinderPose,{},3);
@@ -112,6 +129,9 @@ int main() {
     spatial::Pose plane{{0,0,-5},0,0};
     auto edge=navigation::panLimits(PanelLayout{"p",0,0,1920,1080},plane,1,28,16.f/9);
     assert(std::abs(edge.x+std::tan(14*spatial::pi/180)*16/9-1920.f/1800-64.f/900)<1e-5);
+}
+
+void gazeZoom() {
     // Offset gaze zoom is not the monitor center: panLimits is 0 while the
     // panel still fits, and that clamp must not eat an on-panel origin.
     PanelLayout gazed{"gaze",0,0,1920,1080};
@@ -185,6 +205,11 @@ int main() {
     targeting::Hit walked=other;walked.u=.9f;walked.v=.1f;
     assert(navigation::lockZoomGaze(locked,walked));
     assert(std::abs(locked->u-.2f)<1e-5 && std::abs(locked->v-.8f)<1e-5);
+}
+
+void adjacentPanelZoom() {
+    targeting::Hit lockedHit;lockedHit.output="other";lockedHit.u=.2f;lockedHit.v=.8f;
+    std::optional<targeting::Hit> locked=lockedHit;
     PanelLayout next{"other",1944,0,1920,1080};
     const auto nextPose=spatial::pose((next.x+next.width/2)/900,0,next.width/900,2,5,0,0);
     const auto nextOrigin=navigation::gazeFocus(next,*locked);
@@ -195,6 +220,9 @@ int main() {
     auto nextFromCenter=targeting::rotate(nextCenter.rotation,targeting::add(nextPoint,nextCenter.pan));
     assert(std::abs(nextOnAxis.x)<1e-5 && std::abs(nextOnAxis.y)<1e-5);
     assert(std::abs(nextFromCenter.x)>1e-3);
+}
+
+void gutterAndInput() {
     // Gaze must see empty space through the retained gutter, not a stretched panel.
     spatial::Workspace gutterWrap;gutterWrap.follow=true;gutterWrap.degrees=90;gutterWrap.gap=30.f/900;
     std::vector<PanelLayout> neighbours{{"a",0,0,1920,1080},{"b",1950,0,1920,1080}};
@@ -266,5 +294,4 @@ int main() {
     else unsetenv("OMARCHY_XR_MIRROR_STATE");
     assert(!std::filesystem::exists(mirror+".active"));
     std::filesystem::remove_all(mirrorDir);
-    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup passed\n";
 }

@@ -8,11 +8,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libsdl2-dev libgl1-mesa-dev libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev lua5.4 xvfb xauth
+        run: |
+          sudo apt-get update && sudo apt-get install -y g++ make pkg-config libsdl2-dev libgl1-mesa-dev libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev lua5.4 lua-check xvfb xauth \
+            qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-window qml6-module-qttest qml6-module-qtqml
+          python3 -m venv "$RUNNER_TEMP/lint"
+          "$RUNNER_TEMP/lint/bin/pip" install 'ruff==0.16.8' 'mypy==2.3.1'
+          echo "$RUNNER_TEMP/lint/bin" >> "$GITHUB_PATH"
       - name: Build and check CLI
         run: make check
       - name: Sanitizer unit tests
         run: make check-san
+      - name: Lint
+        run: make check-lint
+      - name: QML UI tests
+        run: xvfb-run -a make check-ui
       - name: Software rendering smoke test
         run: |
           xvfb-run -a make check-environment

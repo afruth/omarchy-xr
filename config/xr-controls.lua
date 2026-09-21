@@ -6,11 +6,15 @@ local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
 local CONTROLS_VERSION = 2
+local setHoverTimer
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
-if omarchy_xr_controls.hover_timer then
-    omarchy_xr_controls.hover_timer:set_enabled(false)
+local function retireHoverTimer()
+    local timer=omarchy_xr_controls.hover_timer
+    if not timer then return end
+    timer:set_enabled(false)
     omarchy_xr_controls.hover_timer=nil
 end
+retireHoverTimer()
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
 local active = false
 local lastTap, tapBlockedUntil=nil,0
@@ -60,6 +64,12 @@ local swipe
 local function commitZoom()
     if swipe and swipe.pending~=0 then publish(-swipe.pending*.004);swipe.pending=0 end
 end
+local function finishSwipe(e)
+    local elapsed=math.max(1,(e.time_ms or swipe.started)-swipe.started)
+    local flick=not swipe.live and elapsed<=220 and math.abs(swipe.net)>=35
+        and math.abs(swipe.net)/elapsed>=.35 and math.abs(swipe.net)>=swipe.travel*.8
+    if flick then publish(0,swipe.net<0 and 2 or 1) else commitZoom() end
+end
 local gesture = {
     start = function(e)
         cancelTap()
@@ -77,12 +87,7 @@ local gesture = {
     finish = function(e)
         cancelTap()
         if not swipe then return end
-        if active and not e.cancelled then
-            local elapsed=math.max(1,(e.time_ms or swipe.started)-swipe.started)
-            local flick=not swipe.live and elapsed<=220 and math.abs(swipe.net)>=35
-                and math.abs(swipe.net)/elapsed>=.35 and math.abs(swipe.net)>=swipe.travel*.8
-            if flick then publish(0,swipe.net<0 and 2 or 1) else commitZoom() end
-        end
+        if active and not e.cancelled then finishSwipe(e) end
         swipe=nil
     end,
 }
@@ -109,6 +114,12 @@ local panGesture={
     end,
     finish=function(e) cancelTap();panActive=false;publishPan() end,
 }
+local function recordTap(now)
+    if lastTap and now-lastTap>=40 and now-lastTap<=400 then
+        lastTap=nil;publish(0,3);return
+    end
+    if not lastTap or now-lastTap>400 or now<lastTap then lastTap=now end
+end
 local taps={}
 local ok,touchpads=pcall(require,"hypr.xr-touchpads")
 if ok and #touchpads>0 then
@@ -118,11 +129,7 @@ if ok and #touchpads>0 then
         if not active or swipe or panActive then lastTap=nil;return end
         local now=tapTime()
         if not now or now<tapBlockedUntil then lastTap=nil;return end
-        if lastTap and now-lastTap>=40 and now-lastTap<=400 then
-            lastTap=nil;publish(0,3)
-        elseif not lastTap or now-lastTap>400 or now<lastTap then
-            lastTap=now
-        end
+        recordTap(now)
     end,
         {description="XR: three-finger double tap recenter",device={inclusive=true,list=touchpads}})
     taps[1]:set_enabled(false)
@@ -148,6 +155,15 @@ local function configure(nextFingers,nextKeys)
     if omarchy_xr_controls then omarchy_xr_controls.bindings=bindings;omarchy_xr_controls.fingers=fingers end
 end
 configure(fingers,keys)
+local function settingKeys(lines, count)
+    if #lines~=6 or not count or count%1~=0 or count<3 or count>5 then return nil end
+    local nextKeys={}
+    for i=2,6 do
+        if #lines[i]>100 or lines[i]:find("[^%w_ +]") then return nil end
+        nextKeys[#nextKeys+1]=lines[i]
+    end
+    return nextKeys
+end
 local function readSettings()
     local file=io.open(state.."/omarchy-xr/controls-settings.tsv","r")
     if not file then return end
@@ -155,12 +171,38 @@ local function readSettings()
     if text==settingsText then return end
     local lines={};for line in text:gmatch("(.-)\n") do lines[#lines+1]=line end
     local count=tonumber(lines[1])
-    if #lines~=6 or not count or count%1~=0 or count<3 or count>5 then return end
-    local nextKeys={};for i=2,6 do
-        if #lines[i]>100 or lines[i]:find("[^%w_ +]") then return end
-        nextKeys[#nextKeys+1]=lines[i]
-    end
+    local nextKeys=settingKeys(lines, count)
+    if not nextKeys then return end
     configure(count,nextKeys);settingsText=text
+end
+local function adoptSession(owner)
+    session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
+    -- Preserve accumulated input across a Hyprland config reload.
+    local previous = io.open(path, "r")
+    if not previous then return end
+    local saved = numbers(previous:read("*l")); previous:close()
+    if saved[1] == owner and saved[5] then
+        serial, total, fit_serial, fit_mode = saved[2], saved[3], saved[4], saved[5]
+    end
+end
+local function restorePan()
+    local previous=io.open(path..".pan","r")
+    if not previous then return end
+    local saved=numbers(previous:read("*l")); previous:close()
+    if saved[1] and tostring(saved[1])==session and saved[5] then panSerial,panId,panX,panY=saved[2],saved[3],saved[4],saved[5] end
+end
+local function applyLive(live)
+    active = live
+    swipe=nil;panActive=false;cancelTap()
+    if active then publishPan() end
+    hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
+    for _,binding in ipairs(taps) do binding:set_enabled(active) end
+    for _,binding in ipairs(bindings) do binding:set_enabled(active) end
+    hl.gesture({fingers=fingers, direction="vertical", action=active and gesture or "unset"})
+end
+local function writeControlsVersion()
+    local versionFile=io.open(runtime_root.."/controls.version","w")
+    if versionFile then versionFile:write(CONTROLS_VERSION.."\n"); versionFile:close() end
 end
 local function refresh()
     readSettings()
@@ -168,36 +210,11 @@ local function refresh()
     local owner, stamp
     if file then owner, stamp = file:read("*n", "*n"); file:close() end
     local live = fresh(stamp)
-    if live and tostring(owner) ~= session then
-        session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
-        -- Preserve accumulated input across a Hyprland config reload.
-        local previous = io.open(path, "r")
-        if previous then
-            local saved = numbers(previous:read("*l")); previous:close()
-            if saved[1] == owner and saved[5] then
-                serial, total, fit_serial, fit_mode = saved[2], saved[3], saved[4], saved[5]
-            end
-        end
-    end
-    if live and not active then
-        local previous=io.open(path..".pan","r")
-        if previous then
-            local saved=numbers(previous:read("*l")); previous:close()
-            if saved[1] and tostring(saved[1])==session and saved[5] then panSerial,panId,panX,panY=saved[2],saved[3],saved[4],saved[5] end
-        end
-    end
-    if live ~= active then
-        active = live
-        swipe=nil;panActive=false;cancelTap()
-        if active then publishPan() end
-        hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
-        for _,binding in ipairs(taps) do binding:set_enabled(active) end
-        for _,binding in ipairs(bindings) do binding:set_enabled(active) end
-        hl.gesture({fingers=fingers, direction="vertical", action=active and gesture or "unset"})
-    end
+    if live and tostring(owner) ~= session then adoptSession(owner) end
+    if live and not active then restorePan() end
+    if live ~= active then applyLive(live) end
     if active and panActive then publishPan() end
-    local versionFile=io.open(runtime_root.."/controls.version","w")
-    if versionFile then versionFile:write(CONTROLS_VERSION.."\n"); versionFile:close() end
+    writeControlsVersion()
     if setHoverTimer then setHoverTimer(active) end
 end
 local timer = hl.timer(refresh, {timeout=250, type="repeat"})
@@ -207,24 +224,12 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
-local function selectGazeWorkspace()
-    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;return end
-    local file=io.open(path..".hover","r")
-    if not file then return end
-    local line=file:read("*l");file:close()
-    if not line then return end
+local function hoverTarget(line)
     local owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
-    if not owner then owner,serialText,mode,name=line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ") end
-    if owner~=session then return end
-    local serialNumber=tonumber(serialText)
-    if not serialNumber then return end
-    if gazeOwner~=owner then
-        gazeOwner=owner;gazeSerial=serialNumber;gazeTarget=nil;return
-    end
-    if serialNumber==gazeSerial then return end
-    gazeSerial=serialNumber
-    if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
-    if gazeTarget==name then return end
+    if owner then return owner,serialText,mode,name end
+    return line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ")
+end
+local function focusMonitor(name)
     for _,monitor in ipairs(hl.get_monitors()) do
         if monitor.name==name then
             local workspace=monitor.active_workspace
@@ -236,9 +241,31 @@ local function selectGazeWorkspace()
         end
     end
 end
+local function noteHover(owner, serialNumber)
+    if owner~=session or not serialNumber then return false end
+    if gazeOwner~=owner then
+        gazeOwner=owner;gazeSerial=serialNumber;gazeTarget=nil;return false
+    end
+    if serialNumber==gazeSerial then return false end
+    gazeSerial=serialNumber
+    return true
+end
+local function selectGazeWorkspace()
+    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;return end
+    local file=io.open(path..".hover","r")
+    if not file then return end
+    local line=file:read("*l");file:close()
+    if not line then return end
+    local owner,serialText,mode,name=hoverTarget(line)
+    local serialNumber=tonumber(serialText)
+    if not noteHover(owner, serialNumber) then return end
+    if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
+    if gazeTarget==name then return end
+    focusMonitor(name)
+end
 local function updatePointer() selectGazeWorkspace() end
 local hoverTimer
-function setHoverTimer(enabled)
+setHoverTimer = function(enabled)
     if enabled then
         if not hoverTimer then hoverTimer=hl.timer(updatePointer,{timeout=33,type="repeat"}) end
     elseif hoverTimer then

@@ -8,7 +8,35 @@ import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"studio"))
 from backend import Manager, default_layout, validate, add_gutters, serve, effective_scale
+from sdk import SDK
 import io
+
+def save_two_setups(test, manager):
+    layout = default_layout()
+    layout.update(curvature=72, spacing=30, fps=30)
+    layout["monitors"][0]["curvature"] = 49
+    layout = add_gutters(layout)
+    manager.save_setup("Coding / focus", layout)
+    item = manager.setups()["items"][0]
+    test.assertEqual(item["layout"], layout)
+    # No outputs are created when selecting a setup before startup.
+    manager.use_setup(item["id"])
+    test.assertFalse(manager.owned)
+    test.assertEqual(manager.load(), layout)
+    manager.apply(layout)
+    other = copy.deepcopy(layout)
+    other["monitors"] = other["monitors"][:2]
+    other["monitors"][0]["width"] = 1280
+    other["curvature"] = 10
+    manager.save_setup("Reading", other)
+    return layout, item, other
+
+
+def reject_setup_names(test, manager, layout):
+    for name in ("", "  ", "x" * 81, "a\nb", None, "coding / FOCUS"):
+        with test.assertRaises(ValueError):
+            manager.save_setup(name, layout)
+
 
 class FakeHypr:
     def __init__(self):
@@ -202,23 +230,7 @@ class LayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             manager=Manager(temp,"/unused",FakeHypr())
             try:
-                layout=default_layout()
-                layout.update(curvature=72, spacing=30, fps=30)
-                layout["monitors"][0]["curvature"]=49
-                layout=add_gutters(layout)
-                manager.save_setup("Coding / focus",layout)
-                item=manager.setups()["items"][0]
-                self.assertEqual(item["layout"],layout)
-                # No outputs are created when selecting a setup before startup.
-                manager.use_setup(item["id"])
-                self.assertFalse(manager.owned)
-                self.assertEqual(manager.load(),layout)
-                manager.apply(layout)
-                other=copy.deepcopy(layout)
-                other["monitors"]=other["monitors"][:2]
-                other["monitors"][0]["width"]=1280
-                other["curvature"]=10
-                manager.save_setup("Reading",other)
+                layout, item, other = save_two_setups(self, manager)
                 second=manager.setups()["items"][1]
                 process=Mock();process.poll.return_value=None
                 manager.viewer=process;manager.direct=True
@@ -232,8 +244,7 @@ class LayoutTests(unittest.TestCase):
                 self.assertEqual(len(manager.setups()["items"]),2)
                 self.assertEqual(manager.setups()["items"][1]["name"],"Reading renamed")
                 before=(Path(temp)/"setups.json").read_text()
-                for name in ("", "  ", "x"*81, "a\nb", None, "coding / FOCUS"):
-                    with self.assertRaises(ValueError):manager.save_setup(name,layout)
+                reject_setup_names(self, manager, layout)
                 with self.assertRaises(ValueError):manager.use_setup("missing")
                 with self.assertRaises(ValueError):manager.save_setup("New",layout,"missing")
                 self.assertEqual((Path(temp)/"setups.json").read_text(),before)
@@ -391,7 +402,7 @@ class LayoutTests(unittest.TestCase):
                 nonlocal count
                 count+=1
                 if phase=="family" and count<3:return []
-                return [{**original,"availableModes":["1920x1080@60.00Hz" if phase=="family" else "1920x1080@120.00Hz"]}]
+                return [{**original,"description":"CVT VITURE","availableModes":["1920x1080@60.00Hz" if phase=="family" else "1920x1080@120.00Hz"]}]
             def restore_rate():
                 nonlocal phase
                 self.assertGreaterEqual(count,3)
@@ -570,10 +581,25 @@ class LayoutTests(unittest.TestCase):
             first.original_output={"name":"DP-1","width":1920,"height":1080,"refreshRate":60,"x":0,"y":0,"scale":1}
             first.record_stereo()
             first.lock.close()
-            with patch.object(Manager,"stop_viewer") as stop:
+            with patch.object(SDK,"connect",return_value=None), patch.object(Manager,"stop_viewer") as stop:
                 second=Manager(temp,"/unused",FakeHypr())
                 stop.assert_called_once()
                 self.assertTrue(second.stereo_active)
+                second.lock.close()
+
+    def test_startup_restore_error_is_not_repeated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first=Manager(temp,"/unused",FakeHypr())
+            first.stereo_active=True
+            first.original_output={"name":"DP-1","width":1920,"height":1080,"refreshRate":120,"x":0,"y":0,"scale":1}
+            first.record_stereo()
+            first.lock.close()
+            def fail(self):
+                self.restoration_error="The glasses were not asked to leave side-by-side mode"
+                raise RuntimeError("XR display restoration needs retry: "+self.restoration_error)
+            with patch.object(SDK,"connect",return_value=None), patch.object(Manager,"stop_viewer",fail):
+                second=Manager(temp,"/unused",FakeHypr())
+                self.assertEqual(second.restoration_error,"The glasses were not asked to leave side-by-side mode")
                 second.lock.close()
 
     def test_bad_journal_keeps_the_worker_available(self):

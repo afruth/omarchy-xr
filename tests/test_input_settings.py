@@ -1,4 +1,4 @@
-import sys,tempfile,unittest,json
+import sys,tempfile,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'studio'))
 from input_settings import DEFAULTS,validate_controls,save_controls,load_controls

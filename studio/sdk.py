@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Any
 import subprocess
 import sys
 import time
@@ -17,10 +18,10 @@ class SDK:
         self.pose_socket = Path(pose_socket) if pose_socket else self.directory / "pose.sock"
         self.process = None
         self.log = None
-        self.started = 0
+        self.started = 0.0
         self.pending = False
         self.pid = None
-        self.state = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
+        self.state: dict[str, Any] = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
 
     def library(self):
         configured = os.environ.get("VITURE_SDK_LIBRARY")
@@ -122,11 +123,15 @@ class SDK:
                 pass
             failure = ""
             if self.process.poll() is not None:
-                failure = self.state.get("message") if self.state.get("error") else "SDK process stopped. Connect again to retry."
+                message = self.state.get("message")
+                failure = message if isinstance(message, str) else "SDK process stopped. Connect again to retry."
             elif self.pid not in self.devices():
                 failure = "Glasses unplugged. Reconnect the cable, then choose Connect glasses."
-            elif boot_time() - max(self.started, self.state.get("heartbeat", 0)) > 20:
-                failure = "SDK timed out. Connect again to retry."
+            else:
+                heartbeat = self.state.get("heartbeat", 0)
+                stamp = float(heartbeat) if isinstance(heartbeat, (int, float)) and not isinstance(heartbeat, bool) else 0.0
+                if boot_time() - max(self.started, stamp) > 20:
+                    failure = "SDK timed out. Connect again to retry."
             if failure:
                 self.disconnect()
                 self.state.update(message=failure, error=True)

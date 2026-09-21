@@ -159,6 +159,19 @@ check-ui:
 	QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_CONTROLS_STYLE=Basic $(QMLTESTRUNNER) -input tests/qml -import studio
 .PHONY: check-ui
 
+# Python, Lua, and QML gates. ruff, mypy, and luacheck come from the environment.
+RUFF ?= ruff
+MYPY ?= mypy
+LUACHECK ?= luacheck
+QMLLINT ?= /usr/lib/qt6/bin/qmllint
+check-lint:
+	$(RUFF) check studio scripts tests
+	$(MYPY)
+	$(LUACHECK) config/xr-controls.lua tests/controls.lua
+	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml
+	python3 scripts/function_length.py
+.PHONY: check-lint
+
 # Requires a GL-capable graphical session (or xvfb-run on CI).
 $(BUILD)/test-environment: tests/environment.cpp src/environment.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -Isrc $< -o $@ $(shell pkg-config --libs sdl2 gl)

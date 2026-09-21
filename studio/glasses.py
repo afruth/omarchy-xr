@@ -71,7 +71,7 @@ def detect(monitors, usb=Path("/sys/bus/usb/devices")):
 class Recovery:
     def __init__(self):
         self.process = None
-        self.started = 0
+        self.started = 0.0
         self.worker = None
         self.signaled = False
         self.message = ""
@@ -87,43 +87,65 @@ class Recovery:
         self.process = subprocess.Popen(
             ["pkexec", "/bin/sh", "-c", RESET_SCRIPT, "omarchy-xr-reset", candidates[0]],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.started = 0
+        self.started = 0.0
         self.worker = None
         self.signaled = False
         self.message = "Authorize the administrator prompt; then wait for USB-C to reconnect."
 
     def status(self):
-        if self.process is not None and self.worker is None:
-            self.worker = worker_pid(self.process.pid)
-            if self.worker:
-                self.started = time.monotonic()
-        if self.process is not None and self.started and not self.signaled and time.monotonic() - self.started > 120:
-            try:
-                os.kill(self.worker, signal.SIGTERM)
-            except OSError:
-                pass
-            self.signaled = True
+        self.note_worker()
+        self.signal_timeout()
         if self.process is not None and self.signaled:
-            code = self.process.poll()
-            if code is None:
-                try:
-                    code = self.process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    code = None
-            if code is None:
-                self.message = "USB-C recovery timed out. You can retry."
-            else:
-                self.process = None
-                self.message = "USB-C recovery timed out. You can retry."
+            self.finish_timeout()
         elif self.process is not None:
-            code = self.process.poll()
-            if code is not None:
-                self.process = None
-                if code == 0:
-                    self.message = "USB-C reinitialized. Waiting for video; if absent, unplug and reconnect the glasses."
-                elif code in (126, 127):
-                    self.message = "Recovery was cancelled or authorization failed. You can retry."
-                else:
-                    self.message = "USB-C recovery failed. Unplug the glasses and reconnect; a full shutdown may be needed."
+            self.finish_exit()
         return {"recovering": self.process is not None, "recoveryMessage": self.message,
                 "canReset": self.process is None and len(controllers()) == 1 and bool(shutil.which("pkexec"))}
+
+    def note_worker(self):
+        if self.process is None or self.worker is not None:
+            return
+        self.worker = worker_pid(self.process.pid)
+        if self.worker:
+            self.started = time.monotonic()
+
+    def signal_timeout(self):
+        worker = self.worker
+        if self.process is None or worker is None or not self.started or self.signaled:
+            return
+        if time.monotonic() - self.started <= 120:
+            return
+        try:
+            os.kill(worker, signal.SIGTERM)
+        except OSError:
+            pass
+        self.signaled = True
+
+    def finish_timeout(self):
+        process = self.process
+        if process is None:
+            return
+        code = process.poll()
+        if code is None:
+            try:
+                code = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                code = None
+        self.message = "USB-C recovery timed out. You can retry."
+        if code is not None:
+            self.process = None
+
+    def finish_exit(self):
+        process = self.process
+        if process is None:
+            return
+        code = process.poll()
+        if code is None:
+            return
+        self.process = None
+        if code == 0:
+            self.message = "USB-C reinitialized. Waiting for video; if absent, unplug and reconnect the glasses."
+        elif code in (126, 127):
+            self.message = "Recovery was cancelled or authorization failed. You can retry."
+        else:
+            self.message = "USB-C recovery failed. Unplug the glasses and reconnect; a full shutdown may be needed."

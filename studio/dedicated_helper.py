@@ -40,28 +40,51 @@ def headset_edid(data):
     return bytes(base+ext)
 
 
-def main():
-    if os.geteuid()!=0:
-        raise RuntimeError('Dedicated output handoff requires administrator authorization')
-    if len(sys.argv)!=2 or not re.fullmatch(r'DP-[0-9]+',sys.argv[1]):
-        raise ValueError('Expected one DisplayPort connector name')
-    name=sys.argv[1]
-    candidates=[p for p in Path('/sys/class/drm').glob('card*-'+name) if (p/'status').read_text().strip()=='connected']
-    if len(candidates)!=1:raise RuntimeError('Expected one connected matching display')
-    connector=candidates[0]
-    edid=headset_edid((connector/'edid').read_bytes())
-    card=connector.name.split('-')[0]
-    minor=(Path('/sys/class/drm')/card/'dev').read_text().strip().split(':')[1]
-    override=Path('/sys/kernel/debug/dri')/minor/name/'edid_override'
-    if not override.is_file():raise RuntimeError('Kernel EDID override interface is unavailable')
-    lock=Path('/run/omarchy-xr-display.lock').open('w')
-    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+def claim_connector(name):
+    candidates = [path for path in Path('/sys/class/drm').glob('card*-' + name) if (path / 'status').read_text().strip() == 'connected']
+    if len(candidates) != 1:
+        raise RuntimeError('Expected one connected matching display')
+    connector = candidates[0]
+    edid = headset_edid((connector / 'edid').read_bytes())
+    card = connector.name.split('-')[0]
+    minor = (Path('/sys/class/drm') / card / 'dev').read_text().strip().split(':')[1]
+    override = Path('/sys/kernel/debug/dri') / minor / name / 'edid_override'
+    if not override.is_file():
+        raise RuntimeError('Kernel EDID override interface is unavailable')
+    return connector, edid, override
+
+
+def clear_own_override(override):
     # Refuse to discard someone else's existing override.
-    previous=override.read_bytes()
-    if previous.strip() not in (b'',b'unset') and not own_override(previous):
+    previous = override.read_bytes()
+    if previous.strip() not in (b'', b'unset') and not own_override(previous):
         raise RuntimeError('An EDID override already exists; leaving it untouched')
     if own_override(previous):
         override.write_text('reset')
+
+
+def restore_connector(status, override):
+    for label, action in (
+        ('disable', lambda: status.write_text('off')),
+        ('wait', lambda: time.sleep(.3)),
+        ('reset', lambda: override.write_text('reset')),
+        ('detect', lambda: status.write_text('detect')),
+    ):
+        try:
+            action()
+        except Exception as exc:
+            print(f'restore {label}: {exc}', file=sys.stderr, flush=True)
+
+
+def main():
+    if os.geteuid() != 0:
+        raise RuntimeError('Dedicated output handoff requires administrator authorization')
+    if len(sys.argv) != 2 or not re.fullmatch(r'DP-[0-9]+', sys.argv[1]):
+        raise ValueError('Expected one DisplayPort connector name')
+    connector, edid, override = claim_connector(sys.argv[1])
+    lock = Path('/run/omarchy-xr-display.lock').open('w')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    clear_own_override(override)
     status=connector/'status'
     shutting_down=False
     def stop(*_):
@@ -90,16 +113,7 @@ def main():
             if line.strip()=='stop':break
     finally:
         if touched:
-            for label, action in (
-                ('disable', lambda: status.write_text('off')),
-                ('wait', lambda: time.sleep(.3)),
-                ('reset', lambda: override.write_text('reset')),
-                ('detect', lambda: status.write_text('detect')),
-            ):
-                try:
-                    action()
-                except Exception as exc:
-                    print(f'restore {label}: {exc}', file=sys.stderr, flush=True)
+            restore_connector(status, override)
         lock.close()
 
 if __name__=='__main__':

@@ -40,6 +40,27 @@ function place(monitors, index, x, y, spacing, scale) {
     return best || {x:moving.x,y:moving.y,snapX:false,snapY:false,blocked:true};
 }
 
+// `hold` is the last accepted preview. A blocked move keeps that pose
+// instead of jumping back to the position stored on the monitor.
+function preview(monitors, index, x, y, spacing, scale, hold) {
+    var base = monitors;
+    if (hold) {
+        base = monitors.slice();
+        base[index] = Object.assign({}, monitors[index], {x:hold.x, y:hold.y});
+    }
+    return place(base, index, x, y, spacing, scale);
+}
+
+// Same array when the position is unchanged, so a drag that snaps back
+// does not rebuild the layout model.
+function commit(monitors, index, snap) {
+    var moving = monitors[index];
+    if (!moving || !snap || (snap.x === moving.x && snap.y === moving.y)) return monitors;
+    var copy = monitors.slice();
+    copy[index] = Object.assign({}, moving, {x:snap.x, y:snap.y});
+    return copy;
+}
+
 // Preserve each pair's original left/right or above/below relationship.
 // Solving these acyclic constraints in coordinate order propagates growth
 // through neighbours without depending on monitor IDs or array order.
