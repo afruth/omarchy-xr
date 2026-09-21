@@ -20,6 +20,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace {
@@ -165,6 +166,8 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     targeting::Selection selection;
     std::string focusOutput;
     float focusDepth=5,focusX=0,focusY=0;
+    std::optional<targeting::Hit> zoomGaze;
+    bool focusFromGaze=false;
     bool panGestureActive=false,panCamera=false;
     float smoothFocusX=0,smoothFocusY=0;
     std::string panOutput;
@@ -178,7 +181,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     };
     auto maxZoomDepth = [&] {return overviewDepth()*2.f;};
     auto fit = [&] {
-        recenterUntil=0;panCamera=false;
+        recenterUntil=0;panCamera=false;zoomGaze.reset();focusFromGaze=false;
         focusOutput.clear();focusX=focusY=0;targetRotation={};
         targetDistance=distance;
         targetPanX=targetPanY=yaw=pitch=0;
@@ -190,16 +193,19 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         const auto view=viewRotation();
         gaze.update(fresh ? targeting::query(targeting::viewRay(view,{panX,panY,panZ}),geometry,cx,cy,(right-left)/900,distance,workspace) : std::nullopt,fresh);
         selection.validate(geometry);
-        const auto previous=selection.output;if(!panGestureActive && monotonicSeconds()>=recenterUntil)selection.observe(gaze.current);
+        const auto previous=selection.output;if(!panGestureActive && !zoomGaze && monotonicSeconds()>=recenterUntil)selection.observe(gaze.current);
         if(gaze.current && selection.output!=previous)selectionAnchor=baseView();
     };
     auto focusSelected = [&](bool fitHeight,float zoom) {
         recenterUntil=0;panCamera=false;
-        const bool towardGaze=!fitHeight && zoom!=0 && gaze.current;
-        if(towardGaze){
-            const auto previous=selection.output;
-            selection.observe(gaze.current);
-            if(selection.output!=previous)selectionAnchor=baseView();
+        if(fitHeight){zoomGaze.reset();focusFromGaze=false;}
+        const bool captured=!zoomGaze;
+        if(!fitHeight && zoom!=0 && navigation::lockZoomGaze(zoomGaze,gaze.current)){
+            if(captured){
+                const auto previous=selection.output;
+                selection.observe(zoomGaze);
+                if(selection.output!=previous)selectionAnchor=baseView();
+            }
         }
         const auto found=std::find_if(geometry.begin(),geometry.end(),[&](const auto& p){return p.output==selection.output;});
         if(found==geometry.end())return false;
@@ -209,14 +215,16 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         targetDistance=distance;
         const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,p.width/900,(right-left)/900,distance,workspace,p.curvature);
         if(focusOutput!=p.output){
-            focusOutput=p.output;focusX=focusY=0;focusAnchor=selectionAnchor;
+            focusOutput=p.output;focusX=focusY=0;focusAnchor=selectionAnchor;focusFromGaze=false;
             focusDepth=navigation::viewingDistance(pose,{panX,panY,panZ});
         }
         if(fitHeight){focusX=focusY=0;focusAnchor=selectionAnchor;focusDepth=navigation::frontHeightDistance(p,pose,fov);}
         else {
-            if(towardGaze && gaze.current->output==p.output){
-                const auto origin=navigation::gazeFocus(p,*gaze.current);
-                focusX=origin.x;focusY=origin.y;focusAnchor=baseView();
+            if(zoom!=0 && zoomGaze && zoomGaze->output==p.output){
+                const auto origin=navigation::gazeFocus(p,*zoomGaze);
+                focusX=origin.x;focusY=origin.y;
+                if(captured)focusAnchor=baseView();
+                focusFromGaze=true;
             }
             focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
         }
@@ -224,8 +232,8 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         const float sag=spatial::bendZ(p.width/1800,pose.surfaceBend);
         focusDepth=std::max(focusDepth,sag+.15f);
         int viewportW,viewportH;dimensions(viewportW,viewportH);
-        const auto limits=navigation::panLimits(p,pose,focusDepth,fov,float(viewportW/(stereo?2:1))/std::max(viewportH,1));
-        focusX=std::clamp(focusX,-limits.x,limits.x);focusY=std::clamp(focusY,-limits.y,limits.y);
+        const auto limited=navigation::applyPanLimits(p,pose,focusDepth,fov,float(viewportW/(stereo?2:1))/std::max(viewportH,1),{focusX,focusY,0},focusFromGaze);
+        focusX=limited.x;focusY=limited.y;
         const auto target=navigation::panFocus(pose,focusAnchor,focusDepth,focusX,focusY);
         targetRotation=target.rotation;targetPanX=target.pan.x;targetPanY=target.pan.y;targetPanZ=target.pan.z;
         return true;
@@ -251,7 +259,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             }
             focusDepth=navigation::viewingDistance(zoomPose,{panX,panY,panZ});
             tracking.camera.recenter(monotonicSeconds());yaw=pitch=0;
-            selectionAnchor=focusAnchor={};focusOutput=p.output;focusX=focusY=0;targetDistance=distance;
+            selectionAnchor=focusAnchor={};focusOutput=p.output;focusX=focusY=0;zoomGaze.reset();focusFromGaze=false;targetDistance=distance;
             const auto target=navigation::frontFocus(pose,{},focusDepth);
             navigationRotation=navigation::preserveView(previousView,baseView());
             targetRotation=target.rotation;
@@ -279,6 +287,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             int w,h;dimensions(w,h);
             auto limits=navigation::panLimits(p,pose,depth,fov,float(w/(stereo?2:1))/std::max(h,1));
             if(limits.x==0 && limits.y==0){panOutput.clear();return;}
+            zoomGaze.reset();focusFromGaze=false;
             if(focusOutput!=p.output)focusX=focusY=0;
             if(!panCamera){smoothFocusX=focusX;smoothFocusY=focusY;}
             panCamera=true;
@@ -423,7 +432,9 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
         if(controls.panStarted || controls.panX || controls.panY)
             panSelected(float(controls.panX),float(controls.panY),controls.panStarted);
         sampleTarget();
+        bool zoomedThisFrame=false;
         auto zoomBy = [&](float amount) {
+            zoomedThisFrame=true;
             if(!focusSelected(false,amount)) {
                 targetDistance=distance;
                 targetPanZ=distance-navigation::zoomDepth(distance-targetPanZ,amount,maxZoomDepth());
@@ -453,6 +464,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
                 if (event.motion.state&SDL_BUTTON_MMASK) { panX+=event.motion.xrel*distance*.0015f; panY-=event.motion.yrel*distance*.0015f; targetPanX=panX;targetPanY=panY; }
             }
         }
+        if(!zoomedThisFrame)zoomGaze.reset();
         const double cameraTime=monotonicSeconds();
         const float cameraDt=float(cameraTime-lastCameraTime);lastCameraTime=cameraTime;
         if(std::abs(std::log(distance/targetDistance))>1e-5f)

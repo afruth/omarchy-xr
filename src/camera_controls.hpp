@@ -1,6 +1,7 @@
 #pragma once
 #include "spacing.hpp"
 #include "targeting.hpp"
+#include <optional>
 
 namespace navigation {
 // Calibrating heading must not change the rendered view on the first frame.
@@ -121,6 +122,17 @@ inline PanLimits panLimits(const PanelLayout& p,const spatial::Pose& pose,float 
     const float buffer=64.f/900;
     auto limit=[&](float size,float view){return size>view ? size-view+buffer : 0.f;};
     return {limit(p.width/1800,vx),limit(p.height/1800,vy)};
+}
+inline targeting::Vec applyPanLimits(const PanelLayout& p,const spatial::Pose& pose,float depth,float fov,float aspect,targeting::Vec focus,bool onPanelGaze){
+    if(onPanelGaze)return focus;
+    const auto limits=panLimits(p,pose,depth,fov,aspect);
+    return {std::clamp(focus.x,-limits.x,limits.x),std::clamp(focus.y,-limits.y,limits.y),0};
+}
+inline bool lockZoomGaze(std::optional<targeting::Hit>& locked,const std::optional<targeting::Hit>& current){
+    if(locked)return true;
+    if(!current)return false;
+    locked=current;
+    return true;
 }
 // Conservative projected bounds include both workspace and monitor curvature.
 inline bool fits(const std::vector<PanelLayout>& panels,float cx,float cy,float span,
