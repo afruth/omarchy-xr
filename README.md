@@ -24,12 +24,15 @@ make install-helper # one-time administrator setup for dedicated stereo
 make install-controls # optional live touchpad and keyboard controls
 omarchy-shell shell rescanPlugins
 omarchy plugin enable afruth.omarchy-xr
+omarchy bar put afruth.omarchy-xr
 make studio
 ```
 
 You can also launch **XR Monitor Studio** from the application launcher after
-installation. The installer copies only this project's plugin files and binary
-into your user configuration; it never edits `/usr/share/omarchy`.
+installation, or click its icon on the Omarchy top bar. `make install-studio`
+copies only this project's plugin files and binary into your user configuration
+and registers that bar icon; it never edits `/usr/share/omarchy`. Move the icon
+with `omarchy bar move afruth.omarchy-xr --section right`.
 
 Studio has three tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3**):
 - **Controls**: start/close stereo, recenter, fit, and zoom, with live connection status.
@@ -57,8 +60,11 @@ Studio has three tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3**):
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
 
-Closing the Studio window hides the editor and leaves monitors running. Reopen it
-to stop them. The helper cleans up on orderly shutdown; a journal permits stale
+Hide, Escape, or closing the Studio window parks the editor as an icon on the
+Omarchy top bar and leaves virtual monitors and any running viewer up. Hide is
+not Stop. Click the top-bar icon, launch **XR Monitor Studio**, or run
+`omarchy-shell shell summon afruth.omarchy-xr '{}'` to reopen the editor; Stop
+still lives there. The helper cleans up on orderly shutdown; a journal permits stale
 outputs to be removed on its next start after a crash. It only manages its uniquely
 named `OMXR-…` outputs. It will not remove unrelated monitors.
 

@@ -6,7 +6,17 @@
   "author": "Andreas Fruth",
   "license": "MIT",
   "description": "Create and arrange virtual monitors for a live spatial desktop.",
-  "kinds": ["panel"],
-  "entryPoints": {"panel": "studio/MonitorStudio.qml"},
-  "keepLoaded": true
+  "kinds": ["panel", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "studio/MonitorStudio.qml",
+    "barWidget": "studio/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "XR Monitor Studio",
+    "description": "Reopen the editor from the top bar. Hide keeps virtual monitors and the viewer running.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
 }

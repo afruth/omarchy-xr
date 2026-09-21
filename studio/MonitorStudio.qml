@@ -120,6 +120,7 @@ Item {
     readonly property real totalPixels: monitors.reduce(function (sum, m) {
         return sum + m.width * m.height;
     }, 0)
+    readonly property bool opened: window.visible
     function open(payload) {
         window.visible = true;
         if (!backend.running)
@@ -598,7 +599,7 @@ Item {
                     }
                     Action {
                         text: "Hide"
-                        tooltipText: "Keep your XR session running"
+                        tooltipText: "Park on the top bar; XR stays running"
                         onClicked: root.hide()
                     }
                 }
