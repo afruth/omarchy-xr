@@ -1,6 +1,7 @@
 #pragma once
 #include "spacing.hpp"
 #include "targeting.hpp"
+#include <optional>
 
 namespace navigation {
 // Calibrating heading must not change the rendered view on the first frame.
@@ -101,6 +102,10 @@ inline FrontFocus panFocus(const spatial::Pose& pose,tracking::Quaternion anchor
     if(pose.spherical)local.latitude+=y*pose.surfaceBend;
     return frontFocus(local,anchor,depth);
 }
+// Head-directed hit UV (top-left) to panFocus meters from the panel center.
+inline targeting::Vec gazeFocus(const PanelLayout& panel,const targeting::Hit& hit){
+    return {(hit.u-.5f)*panel.width/900,(.5f-hit.v)*panel.height/900,0};
+}
 inline float visibleArc(float depth,float halfFov,float bend){
     if(bend<=1e-6f)return depth*std::tan(halfFov);
     const float r=1/bend,a=r-depth;
@@ -117,6 +122,24 @@ inline PanLimits panLimits(const PanelLayout& p,const spatial::Pose& pose,float 
     const float buffer=64.f/900;
     auto limit=[&](float size,float view){return size>view ? size-view+buffer : 0.f;};
     return {limit(p.width/1800,vx),limit(p.height/1800,vy)};
+}
+inline PanLimits gazePanLimits(const PanelLayout& p,const spatial::Pose& pose,float depth,float fov,float aspect,targeting::Vec focus,bool keepGaze){
+    auto limits=panLimits(p,pose,depth,fov,aspect);
+    if(keepGaze){
+        limits.x=std::max(limits.x,std::abs(focus.x));
+        limits.y=std::max(limits.y,std::abs(focus.y));
+    }
+    return limits;
+}
+inline targeting::Vec applyPanLimits(const PanelLayout& p,const spatial::Pose& pose,float depth,float fov,float aspect,targeting::Vec focus,bool onPanelGaze){
+    const auto limits=gazePanLimits(p,pose,depth,fov,aspect,focus,onPanelGaze);
+    return {std::clamp(focus.x,-limits.x,limits.x),std::clamp(focus.y,-limits.y,limits.y),0};
+}
+inline bool lockZoomGaze(std::optional<targeting::Hit>& locked,const std::optional<targeting::Hit>& current){
+    if(locked && (!current || current->output==locked->output))return true;
+    if(!current)return false;
+    locked=current;
+    return true;
 }
 // Conservative projected bounds include both workspace and monitor curvature.
 inline bool fits(const std::vector<PanelLayout>& panels,float cx,float cy,float span,

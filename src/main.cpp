@@ -20,6 +20,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace {
@@ -165,6 +166,8 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     targeting::Selection selection;
     std::string focusOutput;
     float focusDepth=5,focusX=0,focusY=0;
+    std::optional<targeting::Hit> zoomGaze;
+    bool focusFromGaze=false;
     bool panGestureActive=false,panCamera=false;
     float smoothFocusX=0,smoothFocusY=0;
     std::string panOutput;
@@ -178,7 +181,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     };
     auto maxZoomDepth = [&] {return overviewDepth()*2.f;};
     auto fit = [&] {
-        recenterUntil=0;panCamera=false;
+        recenterUntil=0;panCamera=false;zoomGaze.reset();focusFromGaze=false;
         focusOutput.clear();focusX=focusY=0;targetRotation={};
         targetDistance=distance;
         targetPanX=targetPanY=yaw=pitch=0;
@@ -195,25 +198,43 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
     };
     auto focusSelected = [&](bool fitHeight,float zoom) {
         recenterUntil=0;panCamera=false;
+        if(fitHeight){zoomGaze.reset();focusFromGaze=false;}
+        const bool captured=!zoomGaze;
+        const bool recapture=zoomGaze && gaze.current && gaze.current->output!=zoomGaze->output;
+        if(!fitHeight && zoom!=0 && navigation::lockZoomGaze(zoomGaze,gaze.current)){
+            if(captured || recapture){
+                const auto previous=selection.output;
+                selection.observe(zoomGaze);
+                if(selection.output!=previous)selectionAnchor=baseView();
+            }
+        }
         const auto found=std::find_if(geometry.begin(),geometry.end(),[&](const auto& p){return p.output==selection.output;});
         if(found==geometry.end())return false;
         const auto& p=*found;
-        // Keep workspace geometry fixed; move the camera along the selected
-        // monitor's normal. Zoom must not change its workspace bend or yaw.
+        // Keep workspace geometry fixed; move the camera along the look
+        // point's local normal. Zoom must not change its workspace bend or yaw.
         targetDistance=distance;
         const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,p.width/900,(right-left)/900,distance,workspace,p.curvature);
         if(focusOutput!=p.output){
-            focusOutput=p.output;focusX=focusY=0;focusAnchor=selectionAnchor;
+            focusOutput=p.output;focusX=focusY=0;focusAnchor=selectionAnchor;focusFromGaze=false;
             focusDepth=navigation::viewingDistance(pose,{panX,panY,panZ});
         }
         if(fitHeight){focusX=focusY=0;focusAnchor=selectionAnchor;focusDepth=navigation::frontHeightDistance(p,pose,fov);}
-        else focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
+        else {
+            if(zoom!=0 && zoomGaze && zoomGaze->output==p.output){
+                const auto origin=navigation::gazeFocus(p,*zoomGaze);
+                focusX=origin.x;focusY=origin.y;
+                if(captured || recapture)focusAnchor=baseView();
+                focusFromGaze=true;
+            }
+            focusDepth=navigation::zoomDepth(focusDepth,zoom,maxZoomDepth());
+        }
         // Stay in front of a curved monitor's nearest edge, even at high zoom.
         const float sag=spatial::bendZ(p.width/1800,pose.surfaceBend);
         focusDepth=std::max(focusDepth,sag+.15f);
         int viewportW,viewportH;dimensions(viewportW,viewportH);
-        const auto limits=navigation::panLimits(p,pose,focusDepth,fov,float(viewportW/(stereo?2:1))/std::max(viewportH,1));
-        focusX=std::clamp(focusX,-limits.x,limits.x);focusY=std::clamp(focusY,-limits.y,limits.y);
+        const auto limited=navigation::applyPanLimits(p,pose,focusDepth,fov,float(viewportW/(stereo?2:1))/std::max(viewportH,1),{focusX,focusY,0},focusFromGaze);
+        focusX=limited.x;focusY=limited.y;
         const auto target=navigation::panFocus(pose,focusAnchor,focusDepth,focusX,focusY);
         targetRotation=target.rotation;targetPanX=target.pan.x;targetPanY=target.pan.y;targetPanZ=target.pan.z;
         return true;
@@ -239,7 +260,7 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             }
             focusDepth=navigation::viewingDistance(zoomPose,{panX,panY,panZ});
             tracking.camera.recenter(monotonicSeconds());yaw=pitch=0;
-            selectionAnchor=focusAnchor={};focusOutput=p.output;focusX=focusY=0;targetDistance=distance;
+            selectionAnchor=focusAnchor={};focusOutput=p.output;focusX=focusY=0;zoomGaze.reset();focusFromGaze=false;targetDistance=distance;
             const auto target=navigation::frontFocus(pose,{},focusDepth);
             navigationRotation=navigation::preserveView(previousView,baseView());
             targetRotation=target.rotation;
@@ -267,13 +288,14 @@ int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace
             int w,h;dimensions(w,h);
             auto limits=navigation::panLimits(p,pose,depth,fov,float(w/(stereo?2:1))/std::max(h,1));
             if(limits.x==0 && limits.y==0){panOutput.clear();return;}
+            zoomGaze.reset();
             if(focusOutput!=p.output)focusX=focusY=0;
             if(!panCamera){smoothFocusX=focusX;smoothFocusY=focusY;}
             panCamera=true;
             focusOutput=p.output;focusDepth=depth;focusAnchor=baseView();targetDistance=distance;
         }
         int w,h;dimensions(w,h);
-        const auto limits=navigation::panLimits(p,pose,focusDepth,fov,float(w/(stereo?2:1))/std::max(h,1));
+        const auto limits=navigation::gazePanLimits(p,pose,focusDepth,fov,float(w/(stereo?2:1))/std::max(h,1),{focusX,focusY,0},focusFromGaze);
         const float speed=2*focusDepth*std::tan(fov*pi/360)/400;
         focusX=std::clamp(focusX-dx*speed,-limits.x,limits.x);
         focusY=std::clamp(focusY+dy*speed,-limits.y,limits.y);
