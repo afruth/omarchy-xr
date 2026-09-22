@@ -466,35 +466,18 @@ Item {
         running: root.busy
         onTriggered: if (root.busySinceMs > 0 && Date.now() - root.busySinceMs > 20000) root.backendSlow = true
     }
-    component HelpTip: Ui.PanelToolTip {
+    component HelpTip: PassiveToolTip {
         id: tip
-        readonly property real edge: 8
+        boundaryItem: window.contentItem
         readonly property real cap: Math.min(420, Math.max(1, window.width - 40))
         width: Math.min(cap, Math.ceil(tooltipMetrics.width + 24))
         implicitWidth: width
         TextMetrics { id: tooltipMetrics; text: tip.text; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
-        x: {
-            var show = visible;
-            var originX = parent ? parent.x : 0;
-            if (!parent || !parent.window || !show || !window.contentItem)
-                return 0;
-            var origin = parent.mapToItem(window.contentItem, originX - parent.x, 0);
-            var preferred = origin.x + (parent.width - width) / 2;
-            var limit = Math.max(edge, window.width - width - edge);
-            return Math.min(Math.max(preferred, edge), limit) - origin.x;
-        }
-        y: {
-            var show = visible;
-            var originY = parent ? parent.y : 0;
-            if (!parent || !parent.window || !show || !window.contentItem)
-                return 0;
-            var origin = parent.mapToItem(window.contentItem, 0, originY - parent.y);
-            var box = implicitHeight;
-            var preferred = origin.y - box - 3;
-            if (preferred < edge)
-                preferred = origin.y + parent.height + 3;
-            var limit = Math.max(edge, window.height - box - edge);
-            return Math.min(Math.max(preferred, edge), limit) - origin.y;
+        padding: 0
+        background: Ui.BorderSurface {
+            color: Color.tooltip.background
+            borderSpec: Border.localOrSurfaceSpec("tooltip", "border", Color.tooltip.border, Color.tooltip.border, Style.normalBorderWidth)
+            radius: Style.cornerRadius
         }
         contentItem: Text {
             text: tip.text
@@ -523,7 +506,8 @@ Item {
         Accessible.description: helpText
         HoverHandler { id: labelHover }
         HelpTip {
-            visible: label.visible && label.helpText !== "" && labelHover.hovered
+            target: label
+            active: labelHover.hovered
             text: label.helpText
         }
     }
@@ -531,7 +515,8 @@ Item {
         id: action
         property string helpText: ""
         HelpTip {
-            visible: action.visible && action.helpText !== "" && (action.hot || action.activeFocus)
+            target: action
+            active: action.hot
             text: action.helpText
         }
         focusable: true
