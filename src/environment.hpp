@@ -30,6 +30,7 @@ class SkyEnvironment {
 public:
     std::string error;
     bool loadingImage() const {return loader.valid() || bool(pixels);}
+    bool visible() const {return texture && !requested.empty() && brightness>0;}
     explicit SkyEnvironment(const std::string& path):configPath(path) {glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxSize);}
     void update(double now) {
         if(!configPath.empty() && now>=nextCheck) {

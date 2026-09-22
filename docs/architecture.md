@@ -322,7 +322,10 @@ step at a time after two seconds below 45%. The latch margin uses the sum of bot
 Halos and drop shadows are four feathered bands per panel drawn through `HaloShader`, a GLSL 1.20
 program that fades alpha with the distance from the panel edge; the twelve-ring immediate-mode
 version remains as the fallback when the program cannot be built. Panel copies carry one mipmap
-level, since the quality buckets always leave them 1.25-1.9x denser than the screen. When one flat
-opaque panel covers an entire eye (`occlusion::panelCoversEye`, corner quad in eye space), that eye
-skips the full-screen sky draw; curved surfaces never qualify, because their edges bow inward on
-screen. The governor decides on the 80th percentile of the last thirty frames, not single spikes.
+level, since the quality buckets always leave them 1.25-1.9x denser than the screen. When one
+opaque panel covers an entire eye, that eye skips the full-screen sky draw. `occlusion::panelCoversEye`
+projects the same tessellated grid the renderer draws, clips each quad against the near plane, and
+requires that no boundary edge (including the near-plane cut) touches the viewport square and that
+the viewport centre lies in one quad: a connected patch can only leave part of the viewport
+uncovered where its boundary passes through, so this is exact for flat, curved and wrap-around
+panels alike. The governor decides on the 80th percentile of the last thirty frames, not single spikes.

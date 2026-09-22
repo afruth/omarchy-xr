@@ -692,8 +692,9 @@ struct View {
         for (const auto& p:panels) if (p.visible) drawHalo(halo, p, cx, cy, span(), distance, workspace);
         for (size_t i=0;i<panels.size();++i) if (panels[i].visible) drawPanel(panels[i], i, cx, cy, span(), distance, workspace);
     }
-    // One opaque flat panel filling this eye makes the full-screen sky draw pointless.
+    // One opaque panel filling this eye makes the full-screen sky draw pointless.
     bool skyHidden(float eyePosition, float tanV, float tanH) const {
+        if (!environment->visible()) return false;
         const auto view=currentView();
         for (const auto& p:panels) {
             if (!p.visible) continue;
