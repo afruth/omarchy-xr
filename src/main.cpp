@@ -451,7 +451,8 @@ struct View {
     }
     void describePrediction(const char* source) const {
         const auto& p=tracking.camera.prediction;
-        std::cout << "Tracking: prediction up to " << p.horizonMs << " ms, fading in from " << p.restSpeed << " to " << p.fullSpeed << " deg/s, " << p.samples << " samples (" << source << ")" << std::endl;
+        std::cout << "Tracking: prediction up to " << p.horizonMs << " ms, fading in from " << p.restSpeed << " to " << p.fullSpeed << " deg/s, " << p.samples << " samples; filter "
+                  << (p.minCutoff>0 ? "min cutoff " : "off, min cutoff ") << p.minCutoff << " Hz, beta " << p.beta << " (" << source << ")" << std::endl;
     }
     void reloadTracking(double now) {
         if (trackingPath.empty() || now<nextTrackingCheck) return;
@@ -463,7 +464,7 @@ struct View {
         trackingLoaded=true; trackingVersion=version;
         std::ifstream file(trackingPath); std::string line; std::getline(file, line);
         if (const auto parsed=tracking::parsePrediction(line)) { tracking.camera.prediction=*parsed; describePrediction("tracking.tsv"); }
-        else std::cerr << "Ignoring invalid tracking.tsv; expected: tracking-v1 <horizonMs 0..30> <restSpeed> <fullSpeed> <samples 2..8>" << std::endl;
+        else std::cerr << "Ignoring invalid tracking.tsv; expected: tracking-v2 <horizonMs 0..30> <restSpeed> <fullSpeed> <samples 2..8> <minCutoffHz> <beta>" << std::endl;
     }
     void predictPose() {
         timespec now{}; clock_gettime(CLOCK_MONOTONIC, &now);
@@ -803,6 +804,7 @@ struct View {
             << ",\"zoomDepth\":" << (focusOutput.empty()?distance-panZ:focusDepth) << ",\"maxZoomDepth\":" << maxZoomDepth() << ",\"panX\":" << focusX << ",\"panY\":" << focusY
             << ",\"spectator\":" << (spectator?"true":"false") << ",\"spectatorFrames\":" << (spectator?spectator->frames:0) << ",\"spectatorError\":" << std::quoted(spectatorError)
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
+            << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;

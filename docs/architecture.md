@@ -290,14 +290,26 @@ takes angular velocity from a least-squares fit over the newest unbroken run of 
 two-point difference, which multiplies sensor jitter by horizon/dt. Prediction fades in with head
 speed: a still head is shown exactly as measured, a fast turn gets the whole horizon.
 
-The four values are read from an optional `tracking.tsv` beside the viewer layout
+Before prediction, each sample passes a One-Euro filter per axis (Casiez, Roussel, Vogel 2012)
+on unwrapped angles: a low-pass whose cutoff rises with head speed, so a still head is smoothed
+hard and a turn barely at all. The rise is scaled by motion coherence, the net displacement over
+the path length of the last 200 ms, which is near one for a deliberate turn and near zero for a
+tremor or a shaken pair of glasses; a shake therefore stays smoothed however fast it is, and the
+predictor, which would overshoot at every reversal, is scaled down by the same factor. The
+velocity fit uses the device clock once its unit has been learned from the first samples, so USB
+timing jitter does not enter the estimate.
+
+The values are read from an optional `tracking.tsv` beside the viewer layout
 (`~/.local/state/omarchy-xr/`), checked every 250 ms, so they can be tuned while wearing the glasses:
 
-    tracking-v1 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8>
+    tracking-v2 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8> <minCutoffHz 0..30> <beta 0..5>
 
-The default is `tracking-v1 20 2 20 5`. A lower horizon, higher speeds or more samples give a
-steadier image; the opposite gives less lag. `0` for the horizon disables prediction. Removing the
-file restores the defaults, and an invalid line is ignored with a message in `viewer.log`.
+The default is `tracking-v2 20 2 20 5 1 0.3` (a `tracking-v1` line with the first four values
+keeps the default filter). A lower horizon, higher speeds, more samples, a lower cutoff or a lower
+beta give a steadier image; the opposite gives less lag. `0` for the horizon disables prediction
+and `0` for the cutoff disables the filter. Removing the file restores the defaults, and an invalid
+line is ignored with a message in `viewer.log`. `pose.sock.stats` reports the live `filterCutoffHz`
+and `motionCoherence`.
 
 Each missed vblank adds 1 ms of latch margin (`MissPenalty`, at most 6 ms, draining at 1 ms per
 20 s), so the pose stays on the late latch and the margin converges. The pose is sampled at the
