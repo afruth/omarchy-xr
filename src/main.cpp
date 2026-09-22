@@ -17,6 +17,8 @@
 #include "load_governor.hpp"
 #include "halo_shader.hpp"
 #include "sky_cull.hpp"
+#include "dwell.hpp"
+#include "theme.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -120,7 +122,7 @@ void drawHaloBands(HaloShader& halo,const spatial::Pose& pose,float x0,float y0,
     halo.patch(x0-margin,y0,margin,h);surface(pose,x0-margin,y0,margin,h,offset);
     halo.patch(x0+w,y0,margin,h);surface(pose,x0+w,y0,margin,h,offset);
 }
-void drawHalo(HaloShader& halo,const Panel& panel,float cx,float cy,float span,float distance,spatial::Workspace workspace) {
+void drawHalo(HaloShader& halo,const theme::Rgb& accent,const Panel& panel,float cx,float cy,float span,float distance,spatial::Workspace workspace) {
     const auto& p=panel.layout;const float w=p.width/900,h=p.height/900;
     const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,w,span,distance,workspace,p.curvature);
     const float extent=std::min(w,h)*(.012f+.018f*panel.halo);
@@ -129,7 +131,11 @@ void drawHalo(HaloShader& halo,const Panel& panel,float cx,float cy,float span,f
     const float shadow=std::min(w,h)*.045f,drop=shadow*.3f;
     if(halo.ready()){
         halo.use(0,0,0,.18f,w/2,h/2,shadow,0,-drop);drawHaloBands(halo,pose,-w/2,-h/2-drop,w,h,shadow,-.035f);
-        halo.use(.35f,.65f,1.f,.025f+.18f*panel.halo,w/2,h/2,extent,0,0);drawHaloBands(halo,pose,-w/2,-h/2,w,h,extent,-.025f);
+        // Unselected: a faint feathered glow. Selected: the theme accent, a solid ten-pixel rim
+        // that fades out over the halo extent, so the chosen monitor reads at a glance.
+        const float rim=10.f/900*panel.halo;
+        halo.use(accent[0],accent[1],accent[2],.03f+.85f*panel.halo,w/2,h/2,extent,0,0,rim);
+        drawHaloBands(halo,pose,-w/2,-h/2,w,h,extent+rim,-.025f);
         halo.stop();
     } else drawHaloRings(pose,w,h,extent,shadow,panel.halo);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
@@ -180,9 +186,15 @@ struct View {
     unsigned skyCulled=0;
     GpuTimers gpuTimers;
     MissPenalty missPenalty;
-    std::filesystem::file_time_type layoutVersion{}, trackingVersion{};
-    bool trackingLoaded=false;
-    std::string trackingPath;
+    std::filesystem::file_time_type layoutVersion{}, trackingVersion{}, gazeVersion{};
+    bool trackingLoaded=false, gazeLoaded=false;
+    std::string trackingPath, gazePath;
+    double nextGazeCheck=0;
+    gaze::Dwell dwell;
+    theme::Accent accent;
+    unsigned pointerSerial=0;
+    float pointerX=0, pointerY=0;
+    std::string dwellOutput;
     View(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace, float spacing, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& layoutPath, int fps, bool spectatorEnabled)
         : panels(panels), smoke(smoke), workspace(workspace), spacing(spacing), display(display), posePath(posePath), direct(direct), stereo(stereo), ipd(ipd), fov(fov), layoutPath(layoutPath), fps(fps), spectatorEnabled(spectatorEnabled), tracking(posePath) {}
     void drawable(int& w, int& h) const { if (output) { w=output->width(); h=output->height(); } else SDL_GL_GetDrawableSize(window, &w, &h); }
@@ -245,9 +257,16 @@ struct View {
         const auto view=currentView();
         gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), geometry, cx, cy, span(), distance, workspace) : std::nullopt, fresh);
         selection.validate(geometry);
-        const auto previous=selection.output;
-        if (!panGestureActive && monotonicSeconds()>=recenterUntil) selection.observe(gaze.current);
-        if (gaze.current && selection.output!=previous) selectionAnchor=baseView();
+        // A glance never selects: the look point has to rest on one area with the head settled.
+        const double now=monotonicSeconds();
+        const auto settled=dwell.update(gaze.current, tracking.camera.headSpeed(), now);
+        if (settled && !panGestureActive && now>=recenterUntil) {
+            const auto previous=selection.output;
+            selection.observe(gaze.current);
+            if (selection.output!=previous) selectionAnchor=baseView();
+            if (dwell.settings.pointer) { ++pointerSerial; pointerX=settled->pixelX; pointerY=settled->pixelY; }
+            std::cout << "Gaze: settled on " << settled->output << " at " << int(settled->pixelX) << "," << int(settled->pixelY) << std::endl;
+        }
     }
     bool focusSelected(bool fitHeight, float zoom) {
         recenterUntil=0; panCamera=false;
@@ -373,6 +392,8 @@ struct View {
         }
     }
     void fitTarget() {
+        // An explicit command targets what is looked at now; it does not wait for a dwell.
+        if (gaze.current) { const auto previous=selection.output; selection.observe(gaze.current); if (selection.output!=previous) selectionAnchor=baseView(); }
         if (focusSelected(true, 0)) std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl;
         else std::cout << "Camera: no selected monitor; fit ignored" << std::endl;
     }
@@ -465,6 +486,22 @@ struct View {
         std::ifstream file(trackingPath); std::string line; std::getline(file, line);
         if (const auto parsed=tracking::parsePrediction(line)) { tracking.camera.prediction=*parsed; describePrediction("tracking.tsv"); }
         else std::cerr << "Ignoring invalid tracking.tsv; expected: tracking-v2 <horizonMs 0..30> <restSpeed> <fullSpeed> <samples 2..8> <minCutoffHz> <beta>" << std::endl;
+    }
+    void reloadGaze(double now) {
+        if (gazePath.empty() || now<nextGazeCheck) return;
+        nextGazeCheck=now+.25;
+        std::error_code missing;
+        const auto version=std::filesystem::last_write_time(gazePath, missing);
+        if (missing) { if (gazeLoaded) { dwell.settings={}; gazeLoaded=false; describeGaze("defaults"); } return; }
+        if (gazeLoaded && version==gazeVersion) return;
+        gazeLoaded=true; gazeVersion=version;
+        std::ifstream file(gazePath); std::string line; std::getline(file, line);
+        if (const auto parsed=gaze::parseSettings(line)) { dwell.settings=*parsed; describeGaze("gaze.tsv"); }
+        else std::cerr << "Ignoring invalid gaze.tsv; expected: gaze-v1 <dwellMs 100..10000> <settleSpeed deg/s> <radiusPx> <pointer 0|1>" << std::endl;
+    }
+    void describeGaze(const char* source) const {
+        const auto& g=dwell.settings;
+        std::cout << "Gaze: dwell " << g.dwellMs << " ms below " << g.settleSpeed << " deg/s within " << g.radiusPx << " px, pointer " << (g.pointer ? "follows" : "off") << " (" << source << ")" << std::endl;
     }
     void predictPose() {
         timespec now{}; clock_gettime(CLOCK_MONOTONIC, &now);
@@ -690,7 +727,7 @@ struct View {
         else ++skyCulled;
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
-        for (const auto& p:panels) if (p.visible) drawHalo(halo, p, cx, cy, span(), distance, workspace);
+        for (const auto& p:panels) if (p.visible) drawHalo(halo, accent.rgb, p, cx, cy, span(), distance, workspace);
         for (size_t i=0;i<panels.size();++i) if (panels[i].visible) drawPanel(panels[i], i, cx, cy, span(), distance, workspace);
     }
     // One opaque panel filling this eye makes the full-screen sky draw pointless.
@@ -805,6 +842,7 @@ struct View {
             << ",\"spectator\":" << (spectator?"true":"false") << ",\"spectatorFrames\":" << (spectator?spectator->frames:0) << ",\"spectatorError\":" << std::quoted(spectatorError)
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
             << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
+            << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
@@ -853,6 +891,8 @@ struct View {
         // Optional, live-reloaded stabilisation settings; see tracking::Prediction.
         trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
         describePrediction("defaults");
+        gazePath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"gaze.tsv").string();
+        describeGaze("defaults");
     }
     bool tick() {
         const double frameStarted=monotonicSeconds();
@@ -862,6 +902,8 @@ struct View {
         const double workStarted=monotonicSeconds();
         reconnectCaptures();
         reloadTracking(workStarted);
+        reloadGaze(workStarted);
+        accent.update(workStarted);
         tracking.update();
         predictPose();
         reloadLayout();
@@ -874,7 +916,7 @@ struct View {
         int w, h; drawable(w, h);
         if (w<=0 || h<=0) { SDL_Delay(16); return true; }
         // Share exactly the halo target; the compositor consumes monitor transitions only.
-        controls->publishHover(direct && !selection.output.empty(), selection.output, 0, 0);
+        controls->publishHover(direct && !selection.output.empty(), selection.output, 0, 0, pointerSerial, pointerX, pointerY);
         projectPanels(viewportWidth, viewportHeight, lastCameraTime);
         collectGpu();
         const bool timeCapture=gpuTimers.begin(GpuTimers::Capture);

@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 2
+local CONTROLS_VERSION = 3
 local setHoverTimer
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 local function retireHoverTimer()
@@ -224,10 +224,41 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
+-- v3 appends a pointer serial and the dwelled monitor pixel; older lines carry no pointer.
 local function hoverTarget(line)
-    local owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
+    local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
+    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
+    owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
     if owner then return owner,serialText,mode,name end
     return line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ")
+end
+-- A dwell warps the desktop pointer to the look point once and focuses the window under it.
+-- Hyprland's follow-mouse may already focus it; the explicit dispatch covers the other policies.
+local pointerSerialSeen
+local function warpPointer(name,px,py)
+    for _,monitor in ipairs(hl.get_monitors()) do
+        if monitor.name==name then
+            local scale=monitor.scale or 1
+            local x,y=monitor.x+px/scale,monitor.y+py/scale
+            hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+.5),y=math.floor(y+.5)}))
+            local ok,windows=pcall(hl.get_windows,{monitor=name,mapped=true})
+            if ok and windows then
+                local best
+                for _,w in ipairs(windows) do
+                    local at,size=w.at,w.size
+                    if type(at)=="table" and type(size)=="table" then
+                        local wx,wy=at.x or at[1],at.y or at[2]
+                        local ww,wh=size.x or size[1],size.y or size[2]
+                        if wx and x>=wx and x<wx+ww and y>=wy and y<wy+wh and not w.hidden then
+                            if not best or w.floating then best=w end
+                        end
+                    end
+                end
+                if best and not best.active then pcall(function() hl.dispatch(hl.dsp.focus({window=best})) end) end
+            end
+            return
+        end
+    end
 end
 local function focusMonitor(name)
     for _,monitor in ipairs(hl.get_monitors()) do
@@ -251,14 +282,19 @@ local function noteHover(owner, serialNumber)
     return true
 end
 local function selectGazeWorkspace()
-    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;return end
+    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;return end
     local file=io.open(path..".hover","r")
     if not file then return end
     local line=file:read("*l");file:close()
     if not line then return end
-    local owner,serialText,mode,name=hoverTarget(line)
+    local owner,serialText,mode,name,pointerSerial,px,py=hoverTarget(line)
     local serialNumber=tonumber(serialText)
-    if not noteHover(owner, serialNumber) then return end
+    if not noteHover(owner, serialNumber) then pointerSerialSeen=pointerSerial;return end
+    if pointerSerial and pointerSerial~=pointerSerialSeen then
+        -- The first sample of a session only records the serial; a pre-existing dwell is not replayed.
+        if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py) end
+        pointerSerialSeen=pointerSerial
+    end
     if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
     if gazeTarget==name then return end
     focusMonitor(name)

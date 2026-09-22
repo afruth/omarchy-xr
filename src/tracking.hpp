@@ -135,6 +135,8 @@ struct Camera {
         }
         filterTime=t;
     }
+    // Filtered angular speed of the head in deg/s (one-hertz smoothed velocity magnitude).
+    double headSpeed() const { return std::sqrt(axes[0].velocity*axes[0].velocity+axes[1].velocity*axes[1].velocity+axes[2].velocity*axes[2].velocity); }
     double coherenceGate() const { const double g=std::clamp((coherence-0.6)/0.3,0.0,1.0); return g*g*(3-2*g); }
     // Extrapolate to a scanout time. A stale pose, a still head, a shaking head and a gap in the
     // samples are left as measured.

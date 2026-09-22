@@ -15,7 +15,7 @@ GEN_HEADERS = $(BUILD)/xdg-shell-client.h $(BUILD)/linux-dmabuf-client.h \
 	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h
 UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking \
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
-	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull
+	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json
@@ -94,6 +94,8 @@ $(BUILD)/test-load-governor.o: tests/load_governor.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-sky-cull.o: tests/sky_cull.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-dwell.o: tests/dwell.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -115,6 +117,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-vblank
 	./$(BUILD)/test-load-governor
 	./$(BUILD)/test-sky-cull
+	./$(BUILD)/test-dwell
 
 check: all run-units
 	lua tests/controls.lua

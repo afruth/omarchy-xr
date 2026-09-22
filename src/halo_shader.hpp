@@ -9,7 +9,7 @@
 // Fixed-function state stays in charge of transforms, blending and depth.
 class HaloShader {
     GLuint program=0;
-    GLint colorLoc=-1, halfLoc=-1, extentLoc=-1, centerLoc=-1, patchLoc=-1;
+    GLint colorLoc=-1, halfLoc=-1, extentLoc=-1, centerLoc=-1, patchLoc=-1, solidLoc=-1;
     bool failed=false;
     static GLuint compile(GLenum type, const char* source) {
         const GLuint shader=glCreateShader(type);
@@ -30,10 +30,10 @@ public:
         "local=vec2(patch.x+gl_MultiTexCoord0.x*patch.z,patch.y+(1.0-gl_MultiTexCoord0.y)*patch.w);}\n";
     static constexpr const char* fragment=
         "#version 120\n"
-        "uniform vec4 color;uniform vec2 halfSize;uniform vec2 center;uniform float extent;\n"
+        "uniform vec4 color;uniform vec2 halfSize;uniform vec2 center;uniform float extent;uniform float solid;\n"
         "varying vec2 local;\n"
         "void main(){vec2 d=max(abs(local-center)-halfSize,vec2(0.0));"
-        "float fade=clamp(1.0-max(d.x,d.y)/extent,0.0,1.0);"
+        "float fade=clamp(1.0-max(max(d.x,d.y)-solid,0.0)/extent,0.0,1.0);"
         "gl_FragColor=vec4(color.rgb,color.a*fade*fade);}\n";
     bool ready() {
         if (program || failed) return program!=0;
@@ -49,15 +49,16 @@ public:
         if (!program) { failed=true; std::cerr << "Halo shader unavailable; drawing ring halos\n"; return false; }
         colorLoc=glGetUniformLocation(program, "color"); halfLoc=glGetUniformLocation(program, "halfSize");
         extentLoc=glGetUniformLocation(program, "extent"); centerLoc=glGetUniformLocation(program, "center");
-        patchLoc=glGetUniformLocation(program, "patch");
+        patchLoc=glGetUniformLocation(program, "patch"); solidLoc=glGetUniformLocation(program, "solid");
         return true;
     }
     // Called while the GL context is current; a replacement context starts over.
     void release() { if (program) glDeleteProgram(program); program=0; failed=false; }
-    void use(float r, float g, float b, float peakAlpha, float halfW, float halfH, float extent, float centerX, float centerY) {
+    // solid: a band of full alpha at the edge before the quadratic fade over extent begins.
+    void use(float r, float g, float b, float peakAlpha, float halfW, float halfH, float extent, float centerX, float centerY, float solid=0) {
         glUseProgram(program);
         glUniform4f(colorLoc, r, g, b, peakAlpha); glUniform2f(halfLoc, halfW, halfH);
-        glUniform1f(extentLoc, extent); glUniform2f(centerLoc, centerX, centerY);
+        glUniform1f(extentLoc, extent); glUniform2f(centerLoc, centerX, centerY); glUniform1f(solidLoc, solid);
     }
     void patch(float x0, float y0, float w, float h) { glUniform4f(patchLoc, x0, y0, w, h); }
     void stop() { glUseProgram(0); }

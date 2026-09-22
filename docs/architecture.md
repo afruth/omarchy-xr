@@ -343,3 +343,22 @@ requires that no boundary edge (including the near-plane cut) touches the viewpo
 the viewport centre lies in one quad: a connected patch can only leave part of the viewport
 uncovered where its boundary passes through, so this is exact for flat, curved and wrap-around
 panels alike. The governor decides on the 80th percentile of the last thirty frames, not single spikes.
+
+### Gaze dwell, pointer and the selected monitor
+
+A glance never selects. `gaze::Dwell` fires once when the look point has rested within a small
+area of one monitor for the dwell time with the head settled (filtered speed below the settle
+speed); leaving the area, a miss, or a fast head resets it, and it re-arms only after the gaze
+leaves the area. Monitor selection (halo, workspace focus, zoom target) follows the dwell; the
+explicit fit command still targets what is looked at now. Settings live-reload from an optional
+`gaze.tsv` beside the layout: `gaze-v1 <dwellMs> <settleSpeed deg/s> <radiusPx> <pointer 0|1>`,
+default `gaze-v1 1000 10 120 1`.
+
+Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
+The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the
+window under it if it is not already active; halo transitions still only focus the workspace.
+Adapter version 3; the mirror mailbox keeps the older line.
+
+The selected monitor is outlined in the Omarchy theme's accent colour (`~/.local/state/omarchy/
+current/theme/colors.toml`, re-read when it changes): a solid ten-pixel rim that fades over the
+halo extent, eased in with the selection. Unselected monitors keep a faint glow in the same colour.

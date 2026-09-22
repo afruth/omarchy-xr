@@ -79,7 +79,7 @@ class LiveControls {
         panY = std::clamp(y - previousPanY, -1000., 1000.);
         previousPanX = x; previousPanY = y; panSerial = seq;
     }
-    unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0;
+    unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0, hoverPointerSerial = 0;
     long heartbeat = 0;
 public:
     double zoom = 0, panX = 0, panY = 0;
@@ -99,17 +99,21 @@ public:
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
         }
     }
-    void publishHover(bool enabled, const std::string& output, float u, float v) {
+    // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
+    // coordinates. The adapter warps the desktop pointer there exactly once per serial.
+    void publishHover(bool enabled, const std::string& output, float u, float v, unsigned pointerSerial=0, float pointerX=0, float pointerY=0) {
         if (path.empty()) return;
         const auto now = bootSeconds();
-        if (enabled == hoverEnabled && output == hoverOutput && now == hoverStamp) return;
-        hoverEnabled = enabled; hoverOutput = output; hoverStamp = now;
+        if (enabled == hoverEnabled && output == hoverOutput && pointerSerial == hoverPointerSerial && now == hoverStamp) return;
+        hoverEnabled = enabled; hoverOutput = output; hoverStamp = now; hoverPointerSerial = pointerSerial;
         const auto body = session + ' ' + std::to_string(++hoverSerial) + ' ' + (enabled ? '1' : '0') + ' ' +
             (output.empty() ? "-" : output) + ' ';
         std::ostringstream values;
-        values << body << std::setprecision(9) << u << ' ' << v << '\n';
-        writeFile(path + ".hover", "v2 " + values.str());
-        if (!mirror.empty()) writeFile(mirror + ".hover", values.str());
+        values << body << std::setprecision(9) << u << ' ' << v;
+        std::ostringstream pointer;
+        pointer << values.str() << ' ' << pointerSerial << ' ' << std::setprecision(9) << pointerX << ' ' << pointerY << '\n';
+        writeFile(path + ".hover", "v3 " + pointer.str());
+        if (!mirror.empty()) writeFile(mirror + ".hover", values.str() + '\n');
     }
     void update() {
         zoom = 0; fit = 0; if (path.empty()) return;

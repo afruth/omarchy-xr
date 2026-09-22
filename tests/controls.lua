@@ -39,7 +39,7 @@ assert(not bindings["CTRL + Up"].enabled and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + Up"].enabled and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==2 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==3 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -132,6 +132,26 @@ sample(1);assert(#focuses==0) -- don't replay a pre-reload sample
 sample(1);assert(#focuses==1 and focuses[1]=="5") -- same timing as halo, no dwell
 cursor=holdStill(sample, cursor, movements, focuses)
 assert(#focuses==1 and #movements==0)
+-- A v3 line carries a dwell serial: the pointer warps once per serial, to the monitor's global
+-- pixel, and the window under it is focused. Repeated samples with the same serial do nothing.
+local windowFocuses={}
+hl.get_windows=function(filter) return {
+ {address="0xa",at={x=2020,y=100},size={x=960,y=1080},mapped=true,active=false,floating=false},
+ {address="0xb",at={x=2980,y=100},size={x=960,y=1080},mapped=true,active=true,floating=false}} end
+local dispatch=hl.dispatch
+hl.dispatch=function(spec)
+ if spec.window then windowFocuses[#windowFocuses+1]=spec.window.address else dispatch(spec) end
+end
+local function dwell(pointerSerial,px,py,name)
+ serial=serial+1
+ files[path..".hover"]=string.format("v3 42 %d 1 %s 0 0 %d %g %g",serial,name or "OMXR-test-1",pointerSerial,px,py)
+ omarchy_xr_controls.hover()
+end
+dwell(0,0,0);assert(#movements==0)                        -- no dwell yet
+dwell(1,100,200);assert(#movements==1 and movements[1].x==2120 and movements[1].y==300 and windowFocuses[1]=="0xa")
+dwell(1,100,200);dwell(1,150,220);assert(#movements==1)  -- same serial: once
+dwell(2,1500,200);assert(#movements==2 and movements[2].x==3520 and #windowFocuses==1) -- window 0xb is already active
+hl.dispatch=dispatch
 sample(1,"OMXR-test-2");assert(#focuses==2 and focuses[2]=="name:work")
 omarchy_xr_controls.hover();assert(#focuses==2) -- duplicate sample
 sample(0);sample(1);assert(#focuses==3 and focuses[3]=="5") -- leave/re-enter
@@ -140,8 +160,9 @@ assert(#focuses==3)
 now=110;files["/proc/uptime"]="110";omarchy_xr_controls.refresh()
 assert(omarchy_xr_controls.hover_timer==nil and liveTimer.enabled==false)
 repeatSample(sample, 200)
-assert(#focuses==3 and #movements==0)
-print("Halo transitions select existing workspaces once; pointer motion stays independent; stale sessions cannot focus")
+dwell(9,100,100)
+assert(#focuses==3 and #movements==2) -- a stale session neither focuses nor warps
+print("Halo transitions select existing workspaces once; a dwell warps the pointer once and focuses the window under it; stale sessions cannot focus")
 end
 
 local function testSettings()
