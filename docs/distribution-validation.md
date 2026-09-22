@@ -1,7 +1,8 @@
 # Distribution validation — 22 September 2026
 
 Candidate: 0.3.0, Arch Linux x86_64. Source branch:
-`feature/distribution-packaging`, including merged notification PR #10.
+packaging merged in PR #11, including notification PR #10. The maintainer
+has authorized bundling the unchanged SDK runtime (see sdk-redistribution.md).
 
 Executed checks:
 
