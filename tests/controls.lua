@@ -147,23 +147,22 @@ local function dwell(pointerSerial,px,py,name)
  files[path..".hover"]=string.format("v3 42 %d 1 %s 0 0 %d %g %g",serial,name or "OMXR-test-1",pointerSerial,px,py)
  omarchy_xr_controls.hover()
 end
--- The hovered XR monitor's last-focused window goes to the pane mailbox, once per change; the
--- globally active window (usually on the laptop) plays no part.
-local lastWindow={at={x=2120,y=150},size={x=800,y=600}}
-local monitorsBefore=hl.get_monitors
-hl.get_monitors=function() return {
- {name="OMXR-test-1",x=2020,y=100,width=1920,height=1080,scale=1,transform=0,active_workspace={id=5,config_name="5",last_window=lastWindow}},
- {name="OMXR-test-2",x=3940,y=100,width=1920,height=1080,scale=1,transform=0,active_workspace={id=-1337,config_name="name:work"}}
-} end
+-- The hovered XR monitor's most recently focused mapped window (lowest focus history index) goes
+-- to the pane mailbox, once per change; the globally active window (on the laptop) plays no part.
+local paneWindows={
+ {address="0xa",at={x=2120,y=150},size={x=800,y=600},mapped=true,active=false,floating=false,focus_history_id=4},
+ {address="0xb",at={x=2980,y=100},size={x=960,y=1080},mapped=true,active=false,floating=false,focus_history_id=2}}
+local windowsBefore=hl.get_windows
+hl.get_windows=function(filter) if filter and filter.monitor=="OMXR-test-1" then return paneWindows end return {} end
 hl.get_active_window=function() return {monitor={name="eDP-1",x=0,y=0},at={x=10,y=10},size={x=100,y=100}} end
 sample(1,"OMXR-test-1")
-local paneSerial=files[path..".pane"]:match("^v1 42 (%d+) OMXR%-test%-1 100 50 800 600 %d+");assert(paneSerial)
+local paneSerial=files[path..".pane"]:match("^v1 42 (%d+) OMXR%-test%-1 960 0 960 1080 %d+");assert(paneSerial)
 omarchy_xr_controls.hover();assert(files[path..".pane"]:match("^v1 42 "..paneSerial.." "))   -- unchanged: not rewritten
-lastWindow={at={x=2200,y=200},size={x=600,y=400}}
-omarchy_xr_controls.hover();assert(files[path..".pane"]:match("^v1 42 "..(paneSerial+1).." OMXR%-test%-1 180 100 600 400 "))
-sample(1,"OMXR-test-2");assert(files[path..".pane"]:match("^v1 42 "..(paneSerial+2).." %- %d+"))  -- empty workspace
+paneWindows[1].focus_history_id=1
+omarchy_xr_controls.hover();assert(files[path..".pane"]:match("^v1 42 "..(paneSerial+1).." OMXR%-test%-1 100 50 800 600 "))
+sample(1,"OMXR-test-2");assert(files[path..".pane"]:match("^v1 42 "..(paneSerial+2).." %- %d+"))  -- no windows there
 sample(1,"OMXR-test-1")
-hl.get_monitors=monitorsBefore
+hl.get_windows=windowsBefore
 dwell(0,0,0);assert(#movements==0)                        -- no dwell yet
 dwell(1,100,200);assert(#movements==1 and movements[1].x==2120 and movements[1].y==300 and windowFocuses[1]=="0xa")
 dwell(1,100,200);dwell(1,150,220);assert(#movements==1)  -- same serial: once

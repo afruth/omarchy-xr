@@ -303,7 +303,7 @@ local function selectGazeWorkspace()
     focusMonitor(name)
 end
 -- The last-focused window on the selected XR monitor, for the pane zoom level; written on change
--- only. The globally active window is usually elsewhere (the laptop screen), so the workspace's
+-- only. The globally active window is usually elsewhere (the laptop screen), so the monitor's
 -- own focus history is what the pane fit needs.
 local paneSerial,paneLast=0,nil
 local function publishPane(name)
@@ -311,12 +311,19 @@ local function publishPane(name)
     local line="-"
     if name and name:match("^OMXR%-") then
         for _,m in ipairs(hl.get_monitors()) do
-            if m.name==name then
-                local ws=m.active_workspace
-                local win=ws and ws.last_window
-                if type(win)=="table" and type(win.at)=="table" and type(win.size)=="table" and m.x and m.y then
-                    local ax,ay=win.at.x or win.at[1],win.at.y or win.at[2]
-                    local sw,sh=win.size.x or win.size[1],win.size.y or win.size[2]
+            if m.name==name and m.x and m.y then
+                -- The most recently focused mapped window on this monitor: the lowest focus history index.
+                local ok,windows=pcall(hl.get_windows,{monitor=name,mapped=true})
+                local best,bestRank
+                if ok and windows then
+                    for _,w in ipairs(windows) do
+                        local rank=w.focus_history_id
+                        if type(w.at)=="table" and type(w.size)=="table" and not w.hidden and rank and (not bestRank or rank<bestRank) then best,bestRank=w,rank end
+                    end
+                end
+                if best then
+                    local ax,ay=best.at.x or best.at[1],best.at.y or best.at[2]
+                    local sw,sh=best.size.x or best.size[1],best.size.y or best.size[2]
                     if ax and ay and sw and sh then
                         line=string.format("%s %d %d %d %d",m.name,math.floor(ax-m.x+.5),math.floor(ay-m.y+.5),math.floor(sw+.5),math.floor(sh+.5))
                     end
