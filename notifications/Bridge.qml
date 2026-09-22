@@ -15,10 +15,10 @@ QtObject {
     function publish() {
         if (!ready || !service || !service.popupModel) return;
         var entries=[];
-        for (var i=0;i<Math.min(service.popupModel.count,1);i++) {
+        for (var i=0;i<Math.min(service.popupModel.count,32);i++) {
             var row=service.popupModel.get(i);
             entries.push({key:keyFor(row),app:String(row.app || "").slice(0,256),
-                summary:String(row.summary || "").slice(0,2048),body:String(row.body || "").slice(0,8192),urgency:Number(row.urgency || 0)});
+                summary:String(row.summary || "").slice(0,512),body:String(row.body || "").slice(0,2048),urgency:Number(row.urgency || 0)});
         }
         packetReady({version:1,generation:generation,time:Date.now(),palette:palette,
             count:service.popupModel.count,entries:entries});
@@ -29,7 +29,9 @@ QtObject {
         var request;
         try { request=JSON.parse(text); } catch(e) { return false; }
         if (!request || typeof request!=="object") return false;
-        var age=Date.now()-Number(request.time);
+        // The renderer sends fractional milliseconds; Date.now() truncates.
+        // Compare at the same precision so a same-millisecond request is valid.
+        var age=Date.now()-Math.floor(Number(request.time));
         if (request.generation!==generation || !isFinite(age) || age<0 || age>3000 || typeof request.key!=="string") return false;
         lastDismissal=text;
         for (var i=0;i<service.popupModel.count;i++) {

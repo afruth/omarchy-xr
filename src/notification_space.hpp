@@ -39,6 +39,21 @@ struct Scene {
     Vec camera(Vec world) const{return rotate(view,sub(world,eye));}
     Vec world(Vec cameraPoint) const{return add(eye,rotate(tracking::conjugate(view),cameraPoint));}
 };
+// Ray from the rendered view centre, intersecting the rounded card face.
+inline float gazeHit(const Scene& scene,Vec center,float width,float height) {
+    const auto b=facing(center,scene.eye);
+    const auto ray=rotate(tracking::conjugate(scene.view),{0,0,-1});
+    const float denom=dot(ray,b.forward);
+    if(denom<=.001f)return -1;
+    const float distance=dot(sub(center,scene.eye),b.forward)/denom;
+    if(distance<=0)return -1;
+    const auto hit=sub(add(scene.eye,mul(ray,distance)),center);
+    const float x=std::abs(dot(hit,b.right)),y=std::abs(dot(hit,b.up));
+    if(x>width/2 || y>height/2)return -1;
+    const float radius=std::min(.055f,height*.15f);
+    const float dx=std::max(0.f,x-width/2+radius),dy=std::max(0.f,y-height/2+radius);
+    return dx*dx+dy*dy<=radius*radius?distance:-1;
+}
 // Clip each rendered monitor facet against the pyramid from an eye through the
 // entire notification (including its bezel). Any surviving area is forbidden,
 // regardless of depth: the card must sit beside screens, never cover one.
@@ -175,13 +190,13 @@ public:
     int phase()const{return leg;}
     float travelRadius()const{return routeRadius;}
     Vec travelOrigin()const{return routeEye;}
-    void update(const Scene& scene,float width,float height,double now){
+    void update(const Scene& scene,float width,float height,double now,bool cardReading=false){
         const float dt=lastTime<0?0:float(std::clamp(now-lastTime,0.,.1));lastTime=now;
         const auto forward=rotate(tracking::conjugate(scene.view),{0,0,-1});
         if(!initialized){position=findPlace(scene,width,height);destination=position;heading=observedHeading=forward;observedEye=scene.eye;retargetAt=now+.3;movedAt=now;initialized=true;}
         if(dot(forward,observedHeading)<std::cos(.025f) || length(sub(scene.eye,observedEye))>.03f){observedHeading=forward;observedEye=scene.eye;movedAt=now;}
         const auto p=scene.camera(position);
-        const bool reading=p.z<0 && std::abs(p.x)<(-p.z)*.045f && std::abs(p.y)<(-p.z)*.045f;
+        const bool reading=cardReading || (p.z<0 && std::abs(p.x)<(-p.z)*.045f && std::abs(p.y)<(-p.z)*.045f);
         const bool turned=dot(forward,heading)<std::cos(.20f);
         const float targetDepth=-scene.camera(destination).z;
         const bool displaced=std::abs(targetDepth-scene.depth*.97f)>std::max(.4f,scene.depth*.18f);

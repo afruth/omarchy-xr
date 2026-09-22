@@ -19,7 +19,7 @@ inline std::array<space::Vec,32> outline(space::Vec center,const space::Basis& b
     return result;
 }
 inline void tint(const Color& c,float alpha,float light=1){glColor4f(c[0]*alpha*light,c[1]*alpha*light,c[2]*alpha*light,alpha);}
-inline void drawCard(GLuint texture,const Card& card,const space::Scene& scene,space::Vec center,float width,float height,float alpha){
+inline void drawCard(GLuint texture,const Card& card,const space::Scene& scene,space::Vec center,float width,float height,float alpha,bool highlighted=false){
     const auto b=space::facing(center,scene.eye);
     const auto front=outline(center,b,width+.035f,height+.035f,0),back=outline(center,b,width+.035f,height+.035f,.045f);
     glDisable(GL_TEXTURE_2D);
@@ -41,6 +41,11 @@ inline void drawCard(GLuint texture,const Card& card,const space::Scene& scene,s
     glTexCoord2f(1,1);vertex(local(center,b,width/2,-height/2,-.002f));
     glTexCoord2f(0,1);vertex(local(center,b,-width/2,-height/2,-.002f));
     glEnd();
+    if(highlighted) {
+        glDisable(GL_TEXTURE_2D);tint(card.accent,alpha);
+        const auto edge=outline(center,b,width+.055f,height+.055f,-.006f);
+        glLineWidth(3);glBegin(GL_LINE_LOOP);for(auto p:edge)vertex(p);glEnd();
+    }
 }
 inline void drawCue(const Card& card,const space::Scene& scene,space::Vec position,float alpha,double now){
     const auto cue=space::cue(scene,position);const float radius=space::length(space::sub(cue.center,scene.eye));

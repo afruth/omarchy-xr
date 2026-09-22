@@ -44,7 +44,7 @@ assert(not bindings["CTRL + Up"].enabled and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + Up"].enabled and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==4 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==5 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -193,7 +193,7 @@ files["/state/omarchy-xr/controls-settings.tsv"]="5\nALT + Up\nALT + Down\nCTRL 
 omarchy_xr_controls.refresh()
 assert(not bindings["CTRL + Up"] and bindings["ALT + Up"].enabled)
 assert(omarchy_xr_controls.fingers==5 and gestures[#gestures].fingers==5)
-assert(gestures[#gestures-1].fingers==3 and gestures[#gestures-1].action=="unset")
+assert(gestures[#gestures-1].fingers==3 and type(gestures[#gestures-1].action)=="table")
 bindings["CTRL + I"].callback();assert(files[path]:match("4\n$"))
 bindings["CTRL + O"].callback();assert(files[path]:match("5\n$"))
 print("Live hotkey replacement and swipe finger count passed")
@@ -263,3 +263,33 @@ local function testWorkspaceFocus()
     print("Workspace focus: coalescing, gaze suppression, hover acknowledgment, reload and expiry passed")
 end
 testWorkspaceFocus()
+
+local function testNotificationFlicks()
+    now=130;files["/proc/uptime"]="130";files[path..".active"]="42 130";omarchy_xr_controls.refresh()
+    files[path..".notification"]="v1 42 ab1234 130\n"
+    local before=files[path]
+    gstart(1000);gmove(1050,-60);assert(files[path]==before);gend(1100)
+    assert(files[path]:match("^v3 42 .* 6 ab1234 130\n$"))
+    gstart(2000);gmove(2050,60);gend(2100)
+    assert(files[path]:match("^v3 42 .* 7 ab1234 130\n$"))
+    before=files[path]
+    gstart(3000);gmove(3050,-60);gend(3100,true);assert(files[path]==before)
+    gstart(4000);gmove(4100,-10);gmove(4400,-80);gend(4500);assert(files[path]==before)
+    gstart(5000);gmove(5050,-60);files[path..".notification"]="v1 42 cdef 130\n";gend(5100)
+    assert(files[path]==before) -- cannot retarget halfway through a gesture
+    files[path..".notification"]="v1 42 ab1234 127\n"
+    gstart(6000);gmove(6050,-60);gend(6100);assert(files[path]==before) -- stale; three fingers are not zoom when set to five
+    files[path..".notification"]="v1 42 ab1234 130\n"
+    local five=gestures[#gestures].action
+    five.start({time_ms=7000});five.update({time_ms=7050,delta={y=-60}});five.finish({time_ms=7100})
+    assert(files[path]:match("^v2 .* 2\n$")) -- five fingers retain monitor fit even over an alert
+    dofile("config/xr-controls.lua")
+    gstart(8000);gmove(8050,-60);gend(8100);assert(files[path]:match("^v3 .* 6 ab1234 130\n$"))
+    files["/state/omarchy-xr/controls-settings.tsv"]="3\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
+    omarchy_xr_controls.refresh();files[path..".notification"]="v1 42 - 130\n"
+    gstart(9000);gmove(9050,60);gend(9100);assert(files[path]:match("^v2 .* 1\n$"))
+    gstart(10000);gmove(10100,-10);gend(10250)
+    assert(files[path]:match("^v2 ")) -- ordinary zoom still works after a notification action
+    print("Notification flicks: gaze identity, up/down, cancellation, slow swipes, stale gaze, three/five fingers and reload passed")
+end
+testNotificationFlicks()

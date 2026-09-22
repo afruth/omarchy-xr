@@ -700,6 +700,10 @@ struct View {
         if (controls->zoom) zoomBy(float(controls->zoom));
         if (controls->fit==1) flickOut();
         if (controls->fit==2) flickIn();
+        if (notificationHud && controls->fit>=6) {
+            placeNotification(monotonicSeconds());
+            notificationHud->flick(controls->notificationTarget,controls->fit==6);
+        }
         if (controls->fit==3) tracking.recenterRequested=true;
         if (controls->fit==4) zoomBy(-std::log(.9f));
         if (controls->fit==5) zoomBy(std::log(.9f));
@@ -914,6 +918,7 @@ struct View {
             << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
             << ",\"zoomLevel\":" << std::quoted(level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane")
             << ",\"notificationVisible\":" << (notificationHud && notificationHud->visible()?"true":"false")
+            << ",\"notificationHighlighted\":" << (notificationHud && !notificationHud->highlight().empty()?"true":"false")
             << ",\"notificationCount\":" << (notificationHud?notificationHud->count():0)
             << ",\"notificationInView\":" << (notificationHud && notificationHud->placement().onscreen?"true":"false")
             << ",\"activePane\":" << (controls->paneValid ? "\""+controls->paneOutput+"\"" : std::string("null"))
@@ -990,6 +995,7 @@ struct View {
         const float cameraDt=easeCamera();
         sampleTarget();
         placeNotification(workStarted);
+        controls->publishNotification(notificationHud?notificationHud->highlight():std::string{});
         showTracking();
         int viewportWidth, viewportHeight; drawable(viewportWidth, viewportHeight);
         int w, h; drawable(w, h);

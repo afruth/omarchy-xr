@@ -80,7 +80,8 @@ class LiveControls {
         previousPanX = x; previousPanY = y; panSerial = seq;
     }
     unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0, hoverPointerSerial = 0;
-    long heartbeat = 0;
+    long heartbeat = 0, notificationStamp = 0;
+    std::string notificationPublished;
     std::string paneSeen; timespec paneStamp{};
     timespec focusStamp{};
     unsigned long long focusSerial=0;
@@ -116,7 +117,7 @@ class LiveControls {
         paneOutput = name; paneX = float(x); paneY = float(y); paneW = float(w); paneH = float(h); paneValid = true;
     }
 public:
-    std::string focusOutput;
+    std::string focusOutput, notificationTarget;
     std::string paneOutput;
     float paneX = 0, paneY = 0, paneW = 0, paneH = 0;
     bool paneValid = false;
@@ -135,7 +136,7 @@ public:
             if (base.empty()) continue;
             unlink((base + ".pan").c_str()); unlink((base + ".pane").c_str()); unlink((base + ".active").c_str()); unlink(base.c_str());
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
-            unlink((base + ".focus").c_str());
+            unlink((base + ".focus").c_str());unlink((base + ".notification").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
@@ -154,8 +155,24 @@ public:
         writeFile(path + ".hover", "v3 " + pointer.str());
         if (!mirror.empty()) writeFile(mirror + ".hover", values.str() + '\n');
     }
+    void publishNotification(const std::string& identity) {
+        if(path.empty())return;
+        const auto now=bootSeconds();
+        if(identity==notificationPublished && now==notificationStamp)return;
+        notificationPublished=identity;notificationStamp=now;
+        std::string token;
+        constexpr char digits[]="0123456789abcdef";
+        for(unsigned char c:identity){token+=digits[c>>4];token+=digits[c&15];}
+        writeFile(path+".notification","v1 "+session+" "+(token.empty()?"-":token)+" "+std::to_string(now)+"\n");
+    }
+    static std::string decodeTarget(const std::string& token) {
+        if(token.empty() || token.size()>1100 || token.size()%2 || token.find_first_not_of("0123456789abcdef")!=std::string::npos)return {};
+        std::string identity;
+        for(size_t i=0;i<token.size();i+=2)identity+=char(std::stoul(token.substr(i,2),nullptr,16));
+        return identity;
+    }
     void update() {
-        zoom = 0; fit = 0; focusOutput.clear(); if (path.empty()) return;
+        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); if (path.empty()) return;
         updatePan();
         updatePane();
         updateFocus();
@@ -171,11 +188,19 @@ public:
         std::ifstream file(filePath);
         std::string first, owner, extra; unsigned long long nextSerial, nextFit; double total; int mode;
         if (!(file >> first)) return;
-        if (first == "v2") { if (!(file >> owner)) return; }
+        if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
-        if (!(file >> nextSerial >> total >> nextFit >> mode) || file >> extra || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 5 || nextSerial == serial) return;
-        if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit; }
+        if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 7 || nextSerial <= serial) return;
+        std::string target;long stamp=0;
+        if(first=="v3") {
+            std::string token;
+            if(!(file>>token>>stamp))return;
+            target=decodeTarget(token);
+        }
+        if(file>>extra)return;
+        if(mode>=6 && (first!="v3" || target.empty() || !stampFresh(stamp)))return;
+        if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit;notificationTarget=target; }
         else zoom = std::clamp(total - previousZoom, -4., 4.);
         serial = nextSerial; previousZoom = total;
     }

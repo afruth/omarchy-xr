@@ -8,46 +8,71 @@
 using namespace notifications;
 std::string packet(double stamp,const std::string& body="Hello &amp; welcome") {
     return "{\"version\":1,\"generation\":\"session\",\"time\":"+std::to_string(stamp)+
-        ",\"count\":2,\"entries\":[{\"key\":\"123:1\",\"app\":\"Chat\",\"summary\":\"Notification\",\"body\":\""+body+
-        "\",\"urgency\":1}],\"palette\":{\"background\":\"#16242d\",\"text\":\"#d6e2ee\",\"accent\":\"#8bc9eb\"}}";
+        ",\"count\":4,\"entries\":[{\"key\":\"123:1\",\"app\":\"Chat\",\"summary\":\"Notification\",\"body\":\""+body+
+        "\",\"urgency\":1},{\"key\":\"123:2\",\"app\":\"Build\",\"summary\":\"Tests passed\"},{\"key\":\"123:3\",\"app\":\"Mail\",\"summary\":\"New message\"},{\"key\":\"123:4\",\"app\":\"Download\",\"summary\":\"Complete\"}],\"palette\":{\"background\":\"#16242d\",\"text\":\"#d6e2ee\",\"accent\":\"#8bc9eb\"}}";
 }
 void content() {
-    const auto card=readCard(packet(10000),10001);assert(card && card->count==2 && card->key=="123:1");
-    assert(!readCard(packet(10000),14000) && !readCard(packet(10000),9000));
-    assert(!readCard("{",10000) && !readCard("null",10000) && !readCard("[]",10000));
-    assert(!readCard(std::string(300000,'x'),10000));
+    const auto cards=readCards(packet(10000),10001);assert(cards.size()==4 && cards[0].key=="123:1");
+    const auto& card=cards[0];
+    assert(readCards(packet(10000),14000).empty() && readCards(packet(10000),9000).empty());
+    assert(readCards("{",10000).empty() && readCards("null",10000).empty() && readCards("[]",10000).empty());
+    assert(readCards(std::string(1100000,'x'),10000).empty());
     assert(plainBody("<b>Hello</b><br>世界 &amp; &#x1f44b;<img src='https://example.test/x'>")=="Hello\n世界 & 👋");
     assert(plainBody("<im<img src='x'>g>")=="g>");
-    const auto encoded=parse(dismissal(*card,10020));assert(encoded);
+    const auto encoded=parse(dismissal(card,10020));assert(encoded);
     assert(string(encoded.get(),"key",128)=="123:1" && string(encoded.get(),"generation",128)=="session");
-    const auto image=rasterize(*card);assert(image->width==720 && image->height>80 && image->height<=310);
+    const auto image=rasterize(card);assert(image->width==720 && image->height>80 && image->height<=310);
     const auto tinted=color("#80112233",{});assert(std::abs(tinted[3]-128./255)<1e-9);
 }
-struct Motion {
-    HeadShake detector;double now=10;int dismissals=0;
-    void sample(double yaw,double pitch=0,double roll=0,bool fresh=true,const std::string& id="alert") {
-        now+=.01;if(detector.update(id,yaw,pitch,roll,now,fresh)) ++dismissals;
+void aim(Hud& overlay,space::Scene& scene,tracking::Camera& camera,double now,size_t layer=0) {
+    const auto d=space::normalize(space::sub(overlay.position(layer),scene.eye));
+    scene.view=tracking::conjugate(tracking::orientation(0,-std::asin(d.y)*180/spatial::pi,-std::atan2(d.x,-d.z)*180/spatial::pi));
+    camera.timestamp=now;overlay.update(camera,now);overlay.place(scene,now);
+}
+void gestures(Hud& overlay,space::Scene scene,tracking::Camera& camera,const std::string& directory) {
+    assert(overlay.highlight().empty());
+    const auto first=overlay.front();
+    assert(!overlay.flick(first,true) && !overlay.flick(first,false));
+    aim(overlay,scene,camera,12);
+    assert(overlay.highlight()==first);
+    assert(!overlay.flick("foreign",true));
+    aim(overlay,scene,camera,12,1);
+    assert(overlay.highlight()==readCards(packet(10000),10001)[1].identity());
+    aim(overlay,scene,camera,12);
+    for(int i=0;i<4;++i) {
+        aim(overlay,scene,camera,12+i*.02);
+        const auto previous=overlay.front();assert(overlay.flick(overlay.highlight(),false));
+        assert(overlay.count()==4 && overlay.front()!=previous);
     }
-    void rest(double yaw=0) {for(int i=0;i<60;i++)sample(yaw);}
-    void move(double from,double to,int steps=20,double pitch=0,double roll=0) {
-        for(int i=1;i<=steps;i++)sample(from+(to-from)*i/steps,pitch,roll);
+    assert(overlay.front()==first);
+    assert(!std::filesystem::exists(directory+"/notification-dismiss.json"));
+    aim(overlay,scene,camera,12.1);
+    assert(overlay.flick(first,true) && overlay.count()==3);
+    AsyncFile::instance().flush();
+    auto request=parse(readFile(directory+"/notification-dismiss.json"));
+    assert(request && string(request.get(),"key",128)=="123:1");
+    assert(!overlay.flick(first,true)); // one action cannot clear a second card
+    // A heartbeat with updated content must not resurrect the dismissed card or reset cycling.
+    {std::ofstream file(directory+"/notifications.json");file<<packet(wallMilliseconds(),"Updated");}
+    SDL_Delay(150);camera.timestamp=12.2;overlay.update(camera,12.2);assert(overlay.count()==3);
+    aim(overlay,scene,camera,12.3);assert(!overlay.highlight().empty());
+    overlay.update(camera,13);assert(overlay.highlight().empty()); // stale tracking
+    assert(!overlay.flick(overlay.front(),true));
+    aim(overlay,scene,camera,13.1);
+    scene.view=tracking::conjugate(tracking::orientation(0,0,180));overlay.place(scene,13.1);
+    assert(overlay.highlight().empty() && !overlay.flick(overlay.front(),true));
+    // Head motion alone never dismisses anything.
+    for(int i=0;i<150;++i) {
+        camera.timestamp=14+i*.01;camera.axes[1].raw=15*std::sin(i*.08);camera.axes[2].raw=15*std::sin(i*.12);
+        overlay.update(camera,camera.timestamp);
     }
-    void shake(double centre=0,double sign=1) {move(centre,centre+13*sign);move(centre+13*sign,centre-13*sign,35);move(centre-13*sign,centre,20);}
-};
-void gestures() {
-    for(double centre:{0.,179.,-179.})for(double sign:{-1.,1.}) {
-        Motion m;m.rest(centre);m.shake(centre,sign);assert(m.dismissals==1);
-        m.shake(centre,sign);assert(m.dismissals==1); // one continuous shake never clears the queue
-    }
-    Motion glance;glance.rest();glance.move(0,25);glance.move(25,0);assert(glance.dismissals==0);
-    Motion slow;slow.rest();slow.move(0,13,100);slow.move(13,-13,200);slow.move(-13,0,100);assert(slow.dismissals==0);
-    Motion nod;nod.rest();for(int i=0;i<150;i++)nod.sample(0,15*std::sin(i*.08));assert(nod.dismissals==0);
-    Motion drift;drift.rest();for(int i=0;i<500;i++)drift.sample(i*.03);assert(drift.dismissals==0);
-    Motion jitter;jitter.rest();for(int i=0;i<500;i++)jitter.sample(2*std::sin(i));assert(jitter.dismissals==0);
-    Motion stale;stale.rest();stale.move(0,13);stale.sample(-13,0,0,false);stale.move(-13,0);assert(stale.dismissals==0);
-    Motion startup;startup.shake();assert(startup.dismissals==0);
-    Motion none;none.rest();for(int i=0;i<150;i++)none.sample(13*std::sin(i*.08),0,0,true,"");assert(none.dismissals==0);
-    Motion changed;changed.rest();changed.move(0,13);changed.sample(-13,0,0,true,"new-alert");changed.move(-13,0);assert(changed.dismissals==0);
+    assert(overlay.count()==3);
+    // A desktop dismissal removes only that card from an otherwise live feed.
+    auto desktop=parse(packet(wallMilliseconds()));
+    json_object_array_del_idx(field(desktop.get(),"entries"),1,1);
+    {std::ofstream file(directory+"/notifications.json");file<<json_object_to_json_string(desktop.get());}
+    for(int i=0;i<100 && overlay.count()!=2;++i){SDL_Delay(10);overlay.update(camera,16);}
+    assert(overlay.count()==2);
 }
 void hud() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -58,7 +83,7 @@ void hud() {
         Hud overlay(temp);tracking::Camera camera;
         {std::ofstream file(std::string(temp)+"/notifications.json");file<<packet(wallMilliseconds());}
         for(int i=0;i<100 && !overlay.visible();i++){SDL_Delay(10);overlay.update(camera,10);}
-        assert(overlay.visible() && overlay.count()==2);
+        assert(overlay.visible() && overlay.count()==4);
         space::Scene scene;scene.tanV=.4f;scene.tanH=.4f*1280/720;
         overlay.place(scene,10);overlay.place(scene,11);
         auto projection=[&](float eye=0){
@@ -96,25 +121,16 @@ void hud() {
         assert(overlay.visible()); // cached content re-uploads after a lease/context replacement
         const char* capture=std::getenv("XR_NOTIFICATION_CAPTURE");
         if(capture) {
-            auto card=readCard(packet(wallMilliseconds()),wallMilliseconds());assert(card);auto bitmap=rasterize(*card);
+            auto cards=readCards(packet(wallMilliseconds()),wallMilliseconds());assert(!cards.empty());auto bitmap=rasterize(cards[0]);
             auto* image=cairo_image_surface_create_for_data(bitmap->pixels.data(),CAIRO_FORMAT_ARGB32,bitmap->width,bitmap->height,bitmap->width*4);
             assert(cairo_surface_write_to_png(image,capture)==CAIRO_STATUS_SUCCESS);cairo_surface_destroy(image);
         }
         assert(glGetError()==GL_NO_ERROR);
-        overlay.place(scene,12);
-        double time=20;
-        auto sample=[&](double yaw) {time+=.01;camera.timestamp=time;camera.axes[2].raw=yaw;overlay.update(camera,time);};
-        for(int i=0;i<60;i++)sample(0);
-        for(int i=1;i<=20;i++)sample(13.*i/20);
-        for(int i=1;i<=35;i++)sample(13.-26.*i/35);
-        for(int i=1;i<=20;i++)sample(-13.+13.*i/20);
-        assert(!overlay.visible());AsyncFile::instance().flush();
-        auto request=parse(readFile(std::string(temp)+"/notification-dismiss.json"));
-        assert(request && string(request.get(),"key",128)=="123:1");
+        gestures(overlay,scene,camera,temp);
         std::filesystem::remove(std::string(temp)+"/notifications.json");
         for(int i=0;i<100 && overlay.visible();i++){SDL_Delay(10);overlay.update(camera,12);}
         assert(!overlay.visible());overlay.release();
     }
     std::filesystem::remove_all(temp);SDL_GL_DeleteContext(context);SDL_DestroyWindow(window);SDL_Quit();
 }
-int main() {content();gestures();hud();std::cout<<"Notification content, shake rejection/recognition, 3D rendering and expiry passed\n";}
+int main() {content();hud();std::cout<<"Notification stack, gaze, flick dismissal/cycling, 3D rendering and expiry passed\n";}

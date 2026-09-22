@@ -20,7 +20,9 @@ Native.Service {
     FileView { id: feed; path: service.xrRuntime + "/notifications.json"; atomicWrites: true; printErrors: false }
     FileView {
         id: dismissal
-        path: service.xrRuntime + "/notification-dismiss.json"
+        // FileView cannot watch a missing parent directory. Arm it only after
+        // mkdir completes, otherwise the first XR dismissal is never observed.
+        path: bridge.ready ? service.xrRuntime + "/notification-dismiss.json" : ""
         watchChanges: true
         printErrors: false
         onLoaded: bridge.dismiss(text())

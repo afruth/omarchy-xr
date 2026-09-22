@@ -5,8 +5,9 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 4
+local CONTROLS_VERSION = 5
 local setHoverTimer
+local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 local function retireHoverTimer()
     local timer=omarchy_xr_controls.hover_timer
@@ -37,7 +38,7 @@ local function fresh(stamp)
 end
 local function numbers(line)
     if not line then return {} end
-    line=line:gsub("^v2%s+","")
+    line=line:gsub("^v[23]%s+","")
     local fields={}
     for value in line:gmatch("%S+") do fields[#fields+1]=tonumber(value) end
     return fields
@@ -53,33 +54,51 @@ local function cancelTap()
     lastTap=nil
     tapBlockedUntil=(tapTime() or 0)+250
 end
-local function publish(delta, mode)
+local function publish(delta, mode, target)
     if not active then return end
     total = total + (delta or 0)
     serial = serial + 1
-    if mode then fit_serial = serial; fit_mode = mode end
+    if mode then fit_serial = serial; fit_mode = mode
+    elseif fit_mode>=6 then fit_mode=0 end
     local file = io.open(path .. ".tmp", "w")
     if not file then return end
-    file:write(string.format("v2 %s %d %.9f %d %d\n", session, serial, total, fit_serial, fit_mode))
+    if target then
+        file:write(string.format("v3 %s %d %.9f %d %d %s %d\n", session, serial, total, fit_serial, fit_mode, target, math.floor(bootSeconds())))
+    else
+        file:write(string.format("v2 %s %d %.9f %d %d\n", session, serial, total, fit_serial, fit_mode))
+    end
     file:close()
     os.rename(path .. ".tmp", path)
+end
+local function notificationTarget()
+    local file=io.open(path..".notification","r")
+    if not file then return nil end
+    local line=file:read("*l") or "";file:close()
+    local owner,target,stamp=line:match("^v1 (%d+) ([%da-f]+) (%d+)%s*$")
+    if owner==session and fresh(tonumber(stamp)) then return target end
 end
 -- Buffer a short fast candidate so a flick fits without first jumping in zoom.
 -- Slow motion commits early; sustained motion becomes continuous at 220 ms.
 local swipe
 local function commitZoom()
-    if swipe and swipe.pending~=0 then publish(-swipe.pending*.004);swipe.pending=0 end
+    if swipe and not swipe.target and swipe.zoom and swipe.pending~=0 then publish(-swipe.pending*.004);swipe.pending=0 end
 end
 local function finishSwipe(e)
     local elapsed=math.max(1,(e.time_ms or swipe.started)-swipe.started)
     local flick=not swipe.live and elapsed<=220 and math.abs(swipe.net)>=35
         and math.abs(swipe.net)/elapsed>=.35 and math.abs(swipe.net)>=swipe.travel*.8
-    if flick then publish(0,swipe.net<0 and 2 or 1) else commitZoom() end
+    if swipe.target then
+        if flick and notificationTarget()==swipe.target then publish(0,swipe.net<0 and 6 or 7,swipe.target) end
+    elseif swipe.zoom then
+        if flick then publish(0,swipe.net<0 and 2 or 1) else commitZoom() end
+    end
 end
-local gesture = {
+local function makeGesture(count)
+return {
     start = function(e)
         cancelTap()
-        swipe={started=e.time_ms or 0,net=0,travel=0,pending=0,live=false}
+        swipe={started=e.time_ms or 0,net=0,travel=0,pending=0,live=false,
+            target=count==3 and notificationTarget() or nil,zoom=count==fingers}
         local dy=e.delta and e.delta.y or 0
         swipe.net=dy;swipe.travel=math.abs(dy);swipe.pending=dy
     end,
@@ -97,6 +116,13 @@ local gesture = {
         swipe=nil
     end,
 }
+end
+local gesture=makeGesture(3)
+local fiveGesture=makeGesture(5)
+local function registerVertical(enabled)
+    hl.gesture({fingers=3,direction="vertical",action=enabled and gesture or "unset"})
+    if fingers==5 then hl.gesture({fingers=5,direction="vertical",action=enabled and fiveGesture or "unset"}) end
+end
 -- Separate cumulative mailbox: pan and zoom never consume each other's deltas.
 local panSerial,panId,panX,panY,panActive=0,0,0,0,false
 local function publishPan()
@@ -143,10 +169,9 @@ end
 local keys={"CTRL + Up","CTRL + Down","","",""}
 local descriptions={"fit all monitors","fit selected monitor","recenter","zoom in","zoom out"}
 local bindings={}
-local fingers=3
 local settingsText
 local function configure(nextFingers,nextKeys)
-    if active then hl.gesture({fingers=fingers,direction="vertical",action="unset"}) end
+    if active then registerVertical(false) end
     swipe=nil;cancelTap()
     for _,binding in ipairs(bindings) do binding:remove() end
     bindings={};keys=nextKeys;fingers=nextFingers==4 and 3 or nextFingers
@@ -157,7 +182,7 @@ local function configure(nextFingers,nextKeys)
             binding:set_enabled(active);bindings[#bindings+1]=binding
         end
     end
-    if active then hl.gesture({fingers=fingers,direction="vertical",action=gesture}) end
+    if active then registerVertical(true) end
     if omarchy_xr_controls then omarchy_xr_controls.bindings=bindings;omarchy_xr_controls.fingers=fingers end
 end
 configure(fingers,keys)
@@ -212,7 +237,7 @@ local function applyLive(live)
     hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
     for _,binding in ipairs(taps) do binding:set_enabled(active) end
     for _,binding in ipairs(bindings) do binding:set_enabled(active) end
-    hl.gesture({fingers=fingers, direction="vertical", action=active and gesture or "unset"})
+    registerVertical(active)
 end
 local function writeControlsVersion()
     local versionFile=io.open(runtime_root.."/controls.version","w")
