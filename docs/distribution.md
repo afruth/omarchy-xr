@@ -7,8 +7,10 @@ open-source licence. Earlier MIT-licensed versions keep their existing terms.
 
 **Release status:** [v0.3.0 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.0)
 with the bundled SDK, Arch package, AUR recipe and SHA-256 checksums. The source
-repository is public. AUR publication requires the maintainer's account-linked
-SSH key; the marketplace listing is being submitted.
+repository is public. Installation uses GitHub releases directly and does not
+require AUR. The [marketplace submission](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
+has passed structure/compatibility validation and awaits maintainer review.
+AUR publication is deferred; its recipe remains available in the release.
 
 ## Install the published package
 
@@ -20,8 +22,7 @@ sudo pacman -U ./omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
-This installation path works before the AUR listing is available. The rest of
-this document applies to both the direct package and AUR installation.
+This is the supported package installation path. It does not require an AUR account.
 
 ## Install from AUR
 
@@ -56,24 +57,30 @@ packaged version is working.
 
 ## Install from the Omarchy marketplace
 
-Install `omarchy-xr-bin` first, then use the marketplace's standard command:
+Add the public plugin using Omarchy's standard command:
 
 ```sh
 omarchy plugin add https://github.com/afruth/omarchy-xr.git --enable
-omarchy-xr-setup --controls --notifications
 ```
 
-If you install the marketplace checkout first, its **Install XR runtime** button
-opens a terminal to run the AUR install and setup with visible prompts. Until
-the AUR entry is available, install the published package using the commands
-above instead.
+Open XR Monitor Studio from the bar, then choose **Utilities → Connection tools
+→ Install XR runtime**. The button opens a terminal, downloads the complete
+v0.3.0 package from GitHub, verifies its SHA-256 against the digest pinned in the
+plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
+It then runs setup as your desktop user to display the terms and enable controls
+and notifications. Neither an AUR account nor the vendor SDK download is needed.
+The package manager runs only after verification; a failed download or checksum
+stops installation. No downloaded script is executed.
+
+If you installed the package directly already, run
+`omarchy-xr-setup --controls --notifications` to finish setup.
 
 The checkout supplies QML and a small renderer launcher. The package supplies
 the compiled renderer, licensed SDK runtime, helper and udev rules. Setup
 preserves an existing marketplace git checkout and its edits. Omarchy's plugin
 installer does not install OS dependencies or run a build hook. Listing this
 plugin without documenting the companion package would leave an unusable UI.
-Do not install a second copy if the AUR setup already installed this plugin.
+Do not install a second copy if package setup already installed this plugin.
 
 Updates: the next viewer launch uses the updated system renderer automatically.
 Run `omarchy-xr-setup` again to refresh the package-installed UI. For a marketplace

@@ -1787,12 +1787,13 @@ Item {
                                     spacing: 8
                                     Action {
                                         text: sdkControls.sdk.available ? "Finish XR setup" : "Install XR runtime"
-                                        helpText: "Open a terminal to install the companion package, read its terms, and enable desktop integration"
+                                        helpText: "Download the verified GitHub release, install its bundled runtime, and read the setup terms"
                                         visible: !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false
                                         onClicked: {
-                                            var setup = "omarchy-xr-setup --controls --notifications";
-                                            var command = sdkControls.sdk.available ? setup : "yay -S --needed omarchy-xr-bin && " + setup;
-                                            Quickshell.execDetached(["omarchy", "launch", "terminal", "bash", "-lc", command]);
+                                            var command = sdkControls.sdk.available
+                                                ? ["omarchy-xr-setup"]
+                                                : ["python3", root.localPath(Qt.resolvedUrl("install_runtime.py"))];
+                                            Quickshell.execDetached(["omarchy", "launch", "terminal"].concat(command, ["--controls", "--notifications"]));
                                         }
                                     }
                                     Action {

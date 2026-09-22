@@ -23,7 +23,9 @@ omarchy-xr-setup --controls --notifications
 
 Run setup as your desktop user. It presents the terms and privacy notice before
 enabling the UI; the controls and notification integrations are optional.
-AUR publication as `omarchy-xr-bin` and the marketplace listing are in progress.
+No AUR account or listing is required. You can also add the [marketplace plugin](docs/distribution.md#install-from-the-omarchy-marketplace)
+and use its **Install XR runtime** button. The [marketplace submission](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
+is awaiting maintainer approval.
 See [installation, migration, updates and removal](docs/distribution.md).
 This release uses [reserved-rights end-user terms](LICENSE), not an open-source
 licence. Existing copies distributed under MIT retain those terms.

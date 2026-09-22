@@ -41,3 +41,8 @@ A fresh anonymous source clone passes the installed Omarchy plugin validator.
 The AUR recipe is ready; submission needs an account-linked SSH key. Marketplace
 submission does not imply maintainer approval. The component information and
 maintainer's bundling decision are recorded in sdk-redistribution.md.
+
+The marketplace install button now uses the checksum-pinned GitHub package
+without AUR. Tests cover installation-before-setup ordering, checksum failure
+without privileged execution, and pacman failure without enabling the plugin.
+The installer’s real download was checked against the pinned package digest.
