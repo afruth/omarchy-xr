@@ -67,7 +67,7 @@ Open XR Monitor Studio from the bar, then choose **Utilities → Setup & integra
 → Install XR runtime**. A missing runtime also produces a prominent install card
 on the **Controls** tab, so setup is visible before the first stereo attempt.
 The button opens a terminal, downloads the complete
-v0.3.1 package from GitHub, enforces its pinned size while
+v0.3.1 package from GitHub, enforces its pinned size of 2,933,400 bytes while
 streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
 It then runs setup as your desktop user to display the terms and enable controls
