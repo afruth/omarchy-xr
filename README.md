@@ -10,15 +10,21 @@ limit practical configurations. VITURE head tracking, stereo eye rendering, and 
 presentation are supported. Forwarding clicks/typing through the 3D panels
 is still pending.
 
-## Distribution preview
+## Install on Omarchy
 
-Packaging for Arch x86_64 and the Omarchy marketplace is in preparation.
-The release candidate includes the Gen1/Gen2 glasses runtime so end users do
-not need the vendor download form. Bundling is approved by the maintainer;
-the [redistribution notes](docs/sdk-redistribution.md) record the licence basis
-and available component information. Public release assets and listings are
-being prepared.
-See [installation, removal and release instructions](docs/distribution.md).
+[Download the 0.3.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.0).
+The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
+After checking the downloaded package against `SHA256SUMS`:
+
+```sh
+sudo pacman -U ./omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst
+omarchy-xr-setup --controls --notifications
+```
+
+Run setup as your desktop user. It presents the terms and privacy notice before
+enabling the UI; the controls and notification integrations are optional.
+AUR publication as `omarchy-xr-bin` and the marketplace listing are in progress.
+See [installation, migration, updates and removal](docs/distribution.md).
 This release uses [reserved-rights end-user terms](LICENSE), not an open-source
 licence. Existing copies distributed under MIT retain those terms.
 

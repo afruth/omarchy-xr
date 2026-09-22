@@ -5,15 +5,27 @@ Hyprland Lua controls. Runtime package: `omarchy-xr-bin`; marketplace plugin:
 `afruth.omarchy-xr`. This release uses reserved-rights application terms, not an
 open-source licence. Earlier MIT-licensed versions keep their existing terms.
 
-**Release status:** the maintainer has approved bundling the unchanged SDK
-runtime. The Arch package builds and its setup/update/removal checks pass.
-The commands below describe the publication installation flow; the AUR entry
-and public v0.3.0 assets are not published yet. See
-[sdk-redistribution.md](sdk-redistribution.md) for the recorded bundling decision.
+**Release status:** [v0.3.0 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.0)
+with the bundled SDK, Arch package, AUR recipe and SHA-256 checksums. The source
+repository is public. AUR publication requires the maintainer's account-linked
+SSH key; the marketplace listing is being submitted.
+
+## Install the published package
+
+Download `omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the
+release page. Verify the package hash against that file, then run:
+
+```sh
+sudo pacman -U ./omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst
+omarchy-xr-setup --controls --notifications
+```
+
+This installation path works before the AUR listing is available. The rest of
+this document applies to both the direct package and AUR installation.
 
 ## Install from AUR
 
-Once published:
+Once the AUR entry is published:
 
 ```sh
 yay -S omarchy-xr-bin
@@ -52,7 +64,9 @@ omarchy-xr-setup --controls --notifications
 ```
 
 If you install the marketplace checkout first, its **Install XR runtime** button
-opens a terminal to run the AUR install and setup with visible prompts.
+opens a terminal to run the AUR install and setup with visible prompts. Until
+the AUR entry is available, install the published package using the commands
+above instead.
 
 The checkout supplies QML and a small renderer launcher. The package supplies
 the compiled renderer, licensed SDK runtime, helper and udev rules. Setup
