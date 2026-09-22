@@ -18,7 +18,7 @@ the published terms, not a vendor-specific written approval.
 
 Runtime SHA-256: `a68cbef5e39fa97086fe6e8d63a2a3649165c78c298f85ba896ff12ef75404ad`.
 
-## Remaining release evidence
+## Maintainer decision and component information
 
 The ZIP (including its nested documentation and demo archives) contains no
 licence inventory or corresponding dependency source. VITURE's linked
@@ -27,17 +27,16 @@ and MPL Eigen for the overall SDK, without mapping them to individual binaries.
 `readelf -d libglasses.so` shows only system C/C++/udev dependencies. This does
 not prove that no copyleft code is statically embedded.
 
-Before publicly publishing the bundled runtime, obtain VITURE's component
-inventory for this precise binary and any corresponding source/relinking
-materials required for embedded LGPL/MPL components, or confirmation those
-components occur only in the omitted Carina/OpenCV/demo runtime. The public
-notice and generic upstream licence texts alone cannot prove this obligation
-is satisfied. No request has been sent to VITURE on the user's behalf.
+On 22 September 2026, the maintainer explicitly authorized proceeding with
+bundling this runtime under the published application-distribution grant.
+The release includes the original runtime bytes, the vendor and third-party
+notices, required end-user terms, and a privacy notice. End users do not need
+to obtain the developer archive separately.
 
-The build and local install tests can proceed while this is resolved. The
-archive is a release candidate, not evidence that this outstanding distribution
-question is closed. Do not publish it or mark the distribution goal complete
-until the evidence is recorded here.
+A per-binary component inventory and corresponding source/relinking materials
+have not been supplied. The maintainer's decision does not establish which
+LGPL/MPL components are embedded or change their licence obligations. The
+request below is retained for follow-up; no request has been sent to VITURE.
 
 ## Vendor request ready to send
 

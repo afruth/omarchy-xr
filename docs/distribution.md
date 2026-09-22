@@ -5,10 +5,11 @@ Hyprland Lua controls. Runtime package: `omarchy-xr-bin`; marketplace plugin:
 `afruth.omarchy-xr`. This release uses reserved-rights application terms, not an
 open-source licence. Earlier MIT-licensed versions keep their existing terms.
 
-**Release status:** the packaging can be built locally. SDK component/source
-obligations in [sdk-redistribution.md](sdk-redistribution.md) must be resolved
-before publishing a runtime release. The commands below describe the release
-installation flow; the AUR entry and v0.3.0 assets are not published yet.
+**Release status:** the maintainer has approved bundling the unchanged SDK
+runtime. The Arch package builds and its setup/update/removal checks pass.
+The commands below describe the publication installation flow; the AUR entry
+and public v0.3.0 assets are not published yet. See
+[sdk-redistribution.md](sdk-redistribution.md) for the recorded bundling decision.
 
 ## Install from AUR
 
@@ -121,9 +122,11 @@ updates and removal, not live shell rendering or head tracking.
 
 ## Publication order
 
-1. Resolve the precise SDK binary's third-party source obligations.
-2. Review and accept the reserved-rights end-user terms and privacy notice.
-3. Merge the packaging source, tag v0.3.0, and publish the complete archive and
+1. Keep the approved SDK runtime, reserved-rights end-user terms, privacy notice
+   and third-party notices together in the complete application release.
+2. Make the repository and release downloads publicly accessible for AUR and
+   the marketplace. Public visibility does not grant an open-source licence.
+3. Tag v0.3.0 and publish the complete archive and
    checksums as GitHub release assets. Confirm the generated source URL downloads
    the archive with the recorded hash from a clean machine.
 4. Check official repositories and AUR for naming collisions, then submit the

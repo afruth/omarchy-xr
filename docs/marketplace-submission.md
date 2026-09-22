@@ -30,8 +30,7 @@ its narrowly scoped polkit action permits the active local session.
 ## Before submitting
 
 Do not send this draft until the release assets and AUR entry are available,
-the SDK redistribution evidence in docs/sdk-redistribution.md is resolved,
-and `omarchy plugin validate` passes on a clean checkout of the publication
+the repository is public, and `omarchy plugin validate` passes on a clean checkout of the publication
 commit. Complete the official submission checklist using that actual state.
 
 Submit at https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml

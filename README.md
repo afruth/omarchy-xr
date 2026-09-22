@@ -14,8 +14,10 @@ is still pending.
 
 Packaging for Arch x86_64 and the Omarchy marketplace is in preparation.
 The release candidate includes the Gen1/Gen2 glasses runtime so end users do
-not need the vendor download form. **Public release is pending the SDK
-component/source clarification documented in [the redistribution review](docs/sdk-redistribution.md).**
+not need the vendor download form. Bundling is approved by the maintainer;
+the [redistribution notes](docs/sdk-redistribution.md) record the licence basis
+and available component information. Public release assets and listings are
+being prepared.
 See [installation, removal and release instructions](docs/distribution.md).
 This release uses [reserved-rights end-user terms](LICENSE), not an open-source
 licence. Existing copies distributed under MIT retain those terms.
