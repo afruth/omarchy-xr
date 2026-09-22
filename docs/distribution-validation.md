@@ -1,13 +1,13 @@
 # Distribution validation — 22 September 2026
 
 Candidate: 0.3.0, Arch Linux x86_64. Source branch:
-`feature/distribution-packaging`, based on notification commit `c14a95c`.
+`feature/distribution-packaging`, including merged notification PR #10.
 
 Executed checks:
 
 - Optimized renderer build with compiler warnings treated as errors.
 - `make check`: C++ unit programs, Lua behavior suite, Python suite and CLI errors.
-- All 113 Python tests pass, including loading the staged vendor library and
+- All 115 Python tests pass, including the isolated package lifecycle, loading the staged vendor library and
   checking that it reports version 2.4.0 without opening the glasses.
 - `make check-notifications`: content, stereo rendering, expiry, dismissal,
   placement and motion regressions pass.
@@ -25,6 +25,11 @@ Executed checks:
   `omarchy plugin validate` consumer. The old tracked developer-path symlink was
   removed; no vendor binary is included in the source checkout.
 - `desktop-file-validate` passes; dynamic renderer dependencies resolve locally.
+- Isolated package tests run actual installed scripts and the Omarchy CLI using
+  Bubblewrap. First-use consent, both optional integrations, repeat setup,
+  backups, removal and retained user data pass. Updating the system renderer
+  is picked up by the plugin launcher without rerunning setup. Only shell and
+  compositor IPC are simulated; no real desktop or hardware is changed.
 - AUR RPC reports no existing omarchy-xr, omarchy-xr-bin or omarchy-xr-git package
   at the time of the check. Recheck before publication.
 

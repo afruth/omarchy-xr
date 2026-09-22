@@ -60,8 +60,9 @@ installer does not install OS dependencies or run a build hook. Listing this
 plugin without documenting the companion package would leave an unusable UI.
 Do not install a second copy if the AUR setup already installed this plugin.
 
-Updates: update the package, then run `omarchy-xr-setup` again to refresh the
-package-installed UI. For a marketplace checkout use `omarchy plugin update afruth.omarchy-xr` as well. Reapply `--controls` and `--notifications` to update
+Updates: the next viewer launch uses the updated system renderer automatically.
+Run `omarchy-xr-setup` again to refresh the package-installed UI. For a marketplace
+checkout use `omarchy plugin update afruth.omarchy-xr` as well. Reapply `--controls` and `--notifications` to update
 those optional copies; setup never resets saved layouts or imported images.
 A changed licence requires acceptance before the packaged SDK is opened again.
 
@@ -104,6 +105,19 @@ and run `makepkg --nodeps` there. It validates the real checksum and constructs
 the pacman package. `--nodeps` is for staging verification only; normal users
 must install dependencies. Inspect package contents with `bsdtar -tf` and query
 metadata with `pacman -Qip` before installing anything.
+
+To exercise the installed paths without touching your desktop, extract the
+pacman package into a temporary directory, then run:
+
+```sh
+XR_PACKAGE_ROOT=/path/to/extracted-package python3 -m unittest tests.test_package_install -v
+```
+
+This requires Bubblewrap with overlay support and the installed Omarchy CLI.
+It runs the real setup, control/notification installers, plugin validator and
+plugin removal commands in a private filesystem, with network and hardware
+access removed. Shell/compositor IPC is simulated; this verifies installation,
+updates and removal, not live shell rendering or head tracking.
 
 ## Publication order
 

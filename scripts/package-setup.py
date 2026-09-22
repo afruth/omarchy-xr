@@ -14,7 +14,6 @@ import time
 SHARE = Path('/usr/share/omarchy-xr')
 PLUGIN_ID = 'afruth.omarchy-xr'
 NOTIFICATION_ID = 'afruth.omarchy-xr-notifications'
-RENDERER = Path('/usr/bin/omarchy-xr')
 MARKER = 'require("hypr.xr-controls")'
 
 
@@ -84,7 +83,7 @@ def setup(config, controls=False, notifications=False):
         if target.exists():
             backup = target.with_name('.' + PLUGIN_ID + '.before-package-' + str(time.time_ns()))
             shutil.copytree(target, backup, symlinks=True)
-        installer.install_plugin_files(SHARE / 'plugin', target, RENDERER)
+        installer.install_plugin_files(SHARE / 'plugin', target, SHARE / 'plugin/bin/omarchy-xr')
     subprocess.run(['omarchy-shell', 'shell', 'rescanPlugins'], check=True)
     for _ in range(40):
         listing = subprocess.check_output(['omarchy', 'plugin', 'list', '--json'], text=True)
