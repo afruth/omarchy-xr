@@ -34,7 +34,10 @@ Executed checks:
 - AUR RPC reports no existing omarchy-xr, omarchy-xr-bin or omarchy-xr-git package
   at the time of the check. Recheck before publication.
 
-The package has not been installed over the user's running XR session, and no
-marketplace submission, AUR push or public release has been performed. These
-checks prove local staging/build behavior, not marketplace approval or resolution
-of the remaining vendor component/source question in sdk-redistribution.md.
+The package has not been installed over the user's running XR session.
+The source and v0.3.0 release are now public. All three release downloads were
+fetched without GitHub credentials and checked against the published SHA256SUMS.
+A fresh anonymous source clone passes the installed Omarchy plugin validator.
+The AUR recipe is ready; submission needs an account-linked SSH key. Marketplace
+submission does not imply maintainer approval. The component information and
+maintainer's bundling decision are recorded in sdk-redistribution.md.

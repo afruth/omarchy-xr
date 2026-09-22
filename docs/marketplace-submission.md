@@ -20,17 +20,20 @@ Reserved-rights application licence: `LicenseRef-Omarchy-XR` (LICENSE). Vendor
 and open-source dependency terms are separately preserved. The included runtime
 is not a standalone SDK distribution. Read PRIVACY.md and THIRD_PARTY_NOTICES.md.
 
-Install the companion package before enabling the plugin. Run
+Install the companion package from the public v0.3.0 release before enabling
+the plugin; the AUR entry is awaiting account authentication. Run
 `omarchy-xr-setup --controls --notifications` to accept terms and explicitly opt
 into the two optional integrations. Setup keeps existing marketplace checkouts;
 package installation never rewrites user configuration. Removal is documented
 in docs/distribution.md. The display helper is the only privileged component;
 its narrowly scoped polkit action permits the active local session.
 
-## Before submitting
+## Submission status
 
-Do not send this draft until the release assets and AUR entry are available,
-the repository is public, and `omarchy plugin validate` passes on a clean checkout of the publication
-commit. Complete the official submission checklist using that actual state.
+The repository and v0.3.0 assets are public, and a fresh source clone passes
+`omarchy plugin validate`. Direct package installation is documented and usable
+while AUR publication is awaiting account authentication. Submit with the
+public release link and this dependency information. Marketplace approval is
+external and does not imply a security review.
 
 Submit at https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml
