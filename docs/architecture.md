@@ -318,3 +318,11 @@ The spectator window renders the scene a third time and queues ahead of the ster
 timed separately (`gpu spectator p95`), and `SpectatorGovernor` lowers it to 10 fps once a frame's
 spectator + scene GPU time passes 60% of the refresh period and pauses it past 85%, recovering one
 step at a time after two seconds below 45%. The latch margin uses the sum of both timers.
+
+Halos and drop shadows are four feathered bands per panel drawn through `HaloShader`, a GLSL 1.20
+program that fades alpha with the distance from the panel edge; the twelve-ring immediate-mode
+version remains as the fallback when the program cannot be built. Panel copies carry one mipmap
+level, since the quality buckets always leave them 1.25-1.9x denser than the screen. When one flat
+opaque panel covers an entire eye (`occlusion::panelCoversEye`, corner quad in eye space), that eye
+skips the full-screen sky draw; curved surfaces never qualify, because their edges bow inward on
+screen. The governor decides on the 80th percentile of the last thirty frames, not single spikes.

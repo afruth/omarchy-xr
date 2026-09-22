@@ -15,6 +15,8 @@
 #include "gpu_timers.hpp"
 #include "vblank.hpp"
 #include "load_governor.hpp"
+#include "halo_shader.hpp"
+#include "sky_cull.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -91,13 +93,7 @@ void drawPanel(const Panel& panel, size_t index, float cx, float cy, float span,
     }
 }
 // Soft geometry halos behind the screen, with no permanent frame over content.
-void drawHalo(const Panel& panel,float cx,float cy,float span,float distance,spatial::Workspace workspace) {
-    const auto& p=panel.layout;const float w=p.width/900,h=p.height/900;
-    const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,w,span,distance,workspace,p.curvature);
-    const float extent=std::min(w,h)*(.012f+.018f*panel.halo);
-    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
-    // A neutral, feathered drop shadow adds depth without outlining the image.
-    const float shadow=std::min(w,h)*.045f;
+void drawHaloRings(const spatial::Pose& pose,float w,float h,float extent,float shadow,float haloLevel) {
     for(int i=11;i>=0;--i){
         const float inner=shadow*i/12,outer=shadow*(i+1)/12,thickness=outer-inner;
         const float fade=1-float(i)/12,drop=shadow*.3f;
@@ -110,12 +106,32 @@ void drawHalo(const Panel& panel,float cx,float cy,float span,float distance,spa
     for(int i=11;i>=0;--i){
         const float inner=extent*i/12,outer=extent*(i+1)/12,thickness=outer-inner;
         const float fade=1-float(i)/12;
-        glColor4f(.35f,.65f,1.f,(.025f+.18f*panel.halo)*fade*fade);
+        glColor4f(.35f,.65f,1.f,(.025f+.18f*haloLevel)*fade*fade);
         surface(pose,-w/2-outer,h/2+inner,w+2*outer,thickness,-.025f);
         surface(pose,-w/2-outer,-h/2-outer,w+2*outer,thickness,-.025f);
         surface(pose,-w/2-outer,-h/2-inner,thickness,h+2*inner,-.025f);
         surface(pose,w/2+inner,-h/2-inner,thickness,h+2*inner,-.025f);
     }
+}
+// Four bands around the rectangle; the top and bottom ones include the corners.
+void drawHaloBands(HaloShader& halo,const spatial::Pose& pose,float x0,float y0,float w,float h,float margin,float offset) {
+    halo.patch(x0-margin,y0+h,w+2*margin,margin);surface(pose,x0-margin,y0+h,w+2*margin,margin,offset);
+    halo.patch(x0-margin,y0-margin,w+2*margin,margin);surface(pose,x0-margin,y0-margin,w+2*margin,margin,offset);
+    halo.patch(x0-margin,y0,margin,h);surface(pose,x0-margin,y0,margin,h,offset);
+    halo.patch(x0+w,y0,margin,h);surface(pose,x0+w,y0,margin,h,offset);
+}
+void drawHalo(HaloShader& halo,const Panel& panel,float cx,float cy,float span,float distance,spatial::Workspace workspace) {
+    const auto& p=panel.layout;const float w=p.width/900,h=p.height/900;
+    const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,w,span,distance,workspace,p.curvature);
+    const float extent=std::min(w,h)*(.012f+.018f*panel.halo);
+    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+    // A neutral, feathered drop shadow adds depth without outlining the image.
+    const float shadow=std::min(w,h)*.045f,drop=shadow*.3f;
+    if(halo.ready()){
+        halo.use(0,0,0,.18f,w/2,h/2,shadow,0,-drop);drawHaloBands(halo,pose,-w/2,-h/2-drop,w,h,shadow,-.035f);
+        halo.use(.35f,.65f,1.f,.025f+.18f*panel.halo,w/2,h/2,extent,0,0);drawHaloBands(halo,pose,-w/2,-h/2,w,h,extent,-.025f);
+        halo.stop();
+    } else drawHaloRings(pose,w,h,extent,shadow,panel.halo);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
 }
 struct View {
@@ -160,6 +176,8 @@ struct View {
     unsigned reportFrames=0, missedBaseline=0, seenMisses=0;
     std::vector<double> workTimes, frameTimes, gpuCaptureTimes, gpuSpectatorTimes, gpuSceneTimes, latchWork, latchGpu;
     SpectatorGovernor governor;
+    HaloShader halo;
+    unsigned skyCulled=0;
     GpuTimers gpuTimers;
     MissPenalty missPenalty;
     std::filesystem::file_time_type layoutVersion{}, trackingVersion{};
@@ -371,6 +389,7 @@ struct View {
                 }
                 spectator.reset();
                 environment->release();
+                halo.release();
                 gpuTimers.reset();
                 output=std::make_unique<DirectOutput>(display, stereo);
                 if (!output->pump()) throw std::runtime_error("Replacement lease is not active");
@@ -666,11 +685,23 @@ struct View {
         const double t=.1*std::tan(fov*pi/360), r=t*eyeWidth/height;
         glFrustum(-r, r, flipped?t:-t, flipped?-t:t, .1, 20000);
         glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-        environment->draw(tracking::matrix(view).data());
+        if (!skyHidden(eyePosition, float(t/.1), float(r/.1))) environment->draw(tracking::matrix(view).data());
+        else ++skyCulled;
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
-        for (const auto& p:panels) if (p.visible) drawHalo(p, cx, cy, span(), distance, workspace);
+        for (const auto& p:panels) if (p.visible) drawHalo(halo, p, cx, cy, span(), distance, workspace);
         for (size_t i=0;i<panels.size();++i) if (panels[i].visible) drawPanel(panels[i], i, cx, cy, span(), distance, workspace);
+    }
+    // One opaque flat panel filling this eye makes the full-screen sky draw pointless.
+    bool skyHidden(float eyePosition, float tanV, float tanH) const {
+        const auto view=currentView();
+        for (const auto& p:panels) {
+            if (!p.visible) continue;
+            const auto& l=p.layout;
+            const auto pose=spatial::pose((l.x+l.width/2-cx)/900, -(l.y+l.height/2-cy)/900, l.width/900, span(), distance, workspace, l.curvature);
+            if (occlusion::panelCoversEye(l, pose, view, {panX, panY, panZ}, eyePosition, tanH, tanV)) return true;
+        }
+        return false;
     }
     void presentSpectator(int drawableW, int drawableH) {
         if (tracking.spectator>=0) { spectatorEnabled=tracking.spectator==1; tracking.spectator=-1; spectatorError.clear(); }
@@ -751,12 +782,13 @@ struct View {
         const unsigned missed=output?output->missedVblanks():0;
         printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
         writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
-        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
+        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; skyCulled=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
     }
     void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         std::cout << "Performance: " << reportFrames/(now-reportTime) << " present fps, work p95 " << workP95 << " ms, work max " << workMax << " ms, frame p95 " << frameP95 << " ms";
         if (gpu) std::cout << ", gpu capture p95 " << gpuCaptureP95 << " ms, gpu spectator p95 " << gpuSpectatorP95 << " ms, gpu scene p95 " << gpuSceneP95 << " ms";
         if (spectator) std::cout << ", spectator " << governor.name();
+        std::cout << ", sky skipped " << skyCulled << " eye draws";
         if (output) std::cout << ", missed vblanks " << missed-missedBaseline << " (" << missed << " session)";
         std::cout << std::endl;
         for (const auto& p:panels) if (p.capture) std::cout << "Capture: " << p.layout.output << " " << (p.visible?"visible":"paused") << " " << p.capture->transport() << " " << p.width << "x" << p.height << " source " << p.sourceWidth << "x" << p.sourceHeight << " requests " << p.capture->requests() << " frames " << p.frames << std::endl;
@@ -772,7 +804,7 @@ struct View {
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
-        stats << ",\"spectatorRate\":" << std::quoted(governor.name());
+        stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
         if (output) stats << ",\"refreshHz\":" << output->refreshHz() << ",\"missedVblanks\":" << missed << ",\"missedVblanksWindow\":" << missed-missedBaseline;
         stats << ",\"captures\":[";
         writeCaptureStats(stats);
@@ -878,6 +910,7 @@ struct View {
         if (smoke && drawn<10) result=1;
         std::cout << "Head pose samples: " << tracking.camera.samples << std::endl;
         spectator.reset();
+        halo.release();
         if (environment) environment->release();
         if (context) SDL_GL_DeleteContext(context);
         if (window) SDL_DestroyWindow(window);

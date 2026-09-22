@@ -171,6 +171,13 @@ struct GpuCapture {
             flip=false;srcFbo=destFbo;cw=passes[i].width;ch=passes[i].height;
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER,0);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
+        // Quality buckets keep the copy 1.25-1.9x denser than the screen, so the scene always
+        // minifies it. One extra level lets trilinear filtering cover that range without shimmer,
+        // for a quarter of the base image in extra writes per new frame.
+        glBindTexture(GL_TEXTURE_2D,texture);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,1);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
         glFlush();
         if(!rebake){shownSlot=source;captureSlot=-1;}
         return texture;
