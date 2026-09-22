@@ -37,7 +37,7 @@ class AuthorizationTests(unittest.TestCase):
         from unittest.mock import patch
         with patch('dedicated.HELPER') as helper, patch('dedicated.subprocess.Popen') as popen:
             helper.is_file.return_value=False
-            with self.assertRaisesRegex(RuntimeError,'make install-helper'):
+            with self.assertRaisesRegex(RuntimeError,'Setup & integrations'):
                 Dedicated('/tmp','renderer').start('DP-1')
             popen.assert_not_called()
 

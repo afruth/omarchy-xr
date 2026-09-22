@@ -45,7 +45,7 @@ def load_controls(directory):
 
 def save_controls(directory,value,runner):
     value=validate_controls(value,json.loads(runner('-j','binds')))
-    runner("eval", 'assert(omarchy_xr_controls and omarchy_xr_controls.refresh, "Install XR controls with make install-controls first")')
+    runner("eval", 'assert(omarchy_xr_controls and omarchy_xr_controls.refresh, "Open Utilities → Setup & integrations and install XR controls first")')
     # Atomic data mailbox, reread by the existing Lua timer. No compositor reload.
     path=directory/'controls-settings.tsv'
     content=str(value['fingers'])+'\n'+''.join(value[k]+'\n' for k in ACTIONS)

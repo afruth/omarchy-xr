@@ -20,7 +20,7 @@ def _magick(args):
             prefix.append(args.pop(0))
         return subprocess.run([*prefix, '-limit', 'thread', '2', '-limit', 'memory', '256MiB', '-limit', 'map', '512MiB', *args], check=True, capture_output=True, text=True, timeout=120).stdout
     except subprocess.CalledProcessError as exc:
-        raise ValueError('Could not decode panorama: ' + exc.stderr[-300:]) from exc
+        raise ValueError('The panorama could not be opened. Try another JPEG, PNG, or BMP image.') from exc
 
 
 def atomic(path, text):
@@ -111,7 +111,7 @@ class Environment:
         if type(resolution) is not int or resolution not in (4096, 8192):
             raise ValueError('Choose 4K or 8K')
         if not shutil.which('magick'):
-            raise RuntimeError('Image import requires ImageMagick: sudo pacman -S imagemagick')
+            raise RuntimeError('Panorama import is unavailable because ImageMagick is not installed.')
         source = Path(source).expanduser().resolve()
         if not source.is_file() or source.suffix.lower() not in ('.jpg', '.jpeg', '.png', '.bmp'):
             raise ValueError('Choose a 2:1 JPEG, PNG or BMP panorama')

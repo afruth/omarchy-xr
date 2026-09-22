@@ -118,7 +118,7 @@ class SessionTests(unittest.TestCase):
     def test_start_failure_cleans_initialized_handle(self):
         session, library, calls = self.make_session()
         library.xr_device_provider_start.side_effect = lambda *args: -2
-        with self.assertRaisesRegex(RuntimeError, "USB inaccessible"):
+        with self.assertRaisesRegex(RuntimeError, "could not be accessed over USB"):
             session.connect(0x1301)
         self.assertEqual(calls[-2:], ["shutdown", "destroy"])
         self.assertIsNone(session.handle)
@@ -128,7 +128,7 @@ class SessionTests(unittest.TestCase):
         library.xr_device_provider_open_imu.side_effect = lambda *args: -4
         session.connect(0x1301)
         self.assertTrue(session.communication)
-        self.assertIn("Unsupported", session.tracking_error)
+        self.assertIn("do not support", session.tracking_error)
         session.close()
 
     def test_display_query_failure_does_not_disable_tracking(self):
@@ -237,7 +237,7 @@ class SupervisorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             sdk = SDK(directory)
             with patch.object(sdk, "library", return_value=Path(directory)/"absent"), patch("sdk.subprocess.Popen") as spawn:
-                with self.assertRaisesRegex(RuntimeError, "SDK missing"):
+                with self.assertRaisesRegex(RuntimeError, "Head tracking software is missing"):
                     sdk.connect()
                 spawn.assert_not_called()
 
@@ -256,7 +256,7 @@ class SupervisorTests(unittest.TestCase):
                 self.assertFalse(state["communication"])
                 self.assertFalse(state["tracking"])
                 self.assertTrue(state["error"])
-                self.assertIn("unplugged" if unplug else "timed out", state["message"])
+                self.assertIn("disconnected" if unplug else "stopped responding", state["message"])
                 process.communicate.assert_called_once()
 
     def test_worker_result_finishes_pending_request(self):

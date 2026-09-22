@@ -81,7 +81,7 @@ Item {
     property int activeTab: 0
     property var history: []
     readonly property var sdk: glasses.sdk || ({})
-    readonly property bool canStart: loaded && !busy && !glasses.recovering && !!sdk.available && (directOutput || (!!glasses.displays && glasses.displays.length === 1))
+    readonly property bool canStart: loaded && !busy && !glasses.recovering && !!glasses.runtimeInstalled && !!sdk.available && !!glasses.helperAvailable && (directOutput || (!!glasses.displays && glasses.displays.length === 1))
     function selectTab(index) {
         activeTab = Math.max(0, Math.min(3, Number(index)));
         var surface = panelBody.item;
@@ -178,6 +178,18 @@ Item {
     }
     function localPath(url) {
         return decodeURIComponent(String(url).replace(/^file:\/\//, ""));
+    }
+    function openSetupTerminal(command) {
+        Quickshell.execDetached(["omarchy", "launch", "terminal"].concat(command));
+    }
+    function installRuntime() {
+        var command = glasses.runtimeInstalled && sdk.available && sdk.packaged && sdk.licenseAccepted === false && glasses.helperAvailable
+            ? ["omarchy-xr-setup", "--controls", "--notifications"]
+            : ["python3", localPath(Qt.resolvedUrl("install_runtime.py")), "--controls", "--notifications"];
+        openSetupTerminal(command);
+    }
+    function runSetupAction(action) {
+        openSetupTerminal(["python3", localPath(Qt.resolvedUrl("setup_actions.py")), action]);
     }
     function send(action, enabled, selectedSetup, updateSetup) {
         if (!backend.running) return;
@@ -393,7 +405,7 @@ Item {
                     if (!response.ok)
                         root.notify(response.message || "Action failed", true);
                     else if (replyAction === "check") {
-                        root.notify("Checked at " + Qt.formatTime(new Date(), "hh:mm:ss") + ": " + (root.glasses.usb ? "USB detected" : "USB not detected") + " · " + (root.glasses.dedicatedDisplay ? "Dedicated XR on " + root.glasses.dedicatedDisplay : root.glasses.detectionError || (root.glasses.displays.length ? "Video on " + root.glasses.displays.join(", ") : "No VITURE video output")));
+                        root.notify("Connection checked at " + Qt.formatTime(new Date(), "hh:mm:ss") + ": " + (root.glasses.usb ? "glasses detected" : "glasses not detected") + " · " + (root.glasses.dedicatedDisplay ? "stereo active" : root.glasses.detectionError || (root.glasses.displays.length ? "video connected" : "glasses video not detected")));
                     } else if (response.message)
                         root.notify(response.message);
                     if (response.ok && root.glasses.recoveryMessage && root.glasses.recoveryMessage !== oldRecovery)
@@ -429,7 +441,7 @@ Item {
                     requests.reset();
                     root.backendSlow = false;
                     root.error = true;
-                    root.status = "Could not read backend response: " + e;
+                    root.status = "Studio could not read the latest update. Close and reopen it to try again.";
                     root.notify(root.status, true);
                 }
             }
@@ -444,7 +456,7 @@ Item {
             root.backendSlow = false;
             root.loaded = false;
             root.error = true;
-            root.status = "Monitor manager stopped (" + code + "). Reopen the panel to retry.";
+            root.status = "XR Monitor Studio stopped unexpectedly. Close and reopen it to try again.";
             root.notify(root.status, true);
         }
     }
@@ -845,6 +857,34 @@ Item {
                             Layout.fillWidth: true
                             spacing: 12
                             Card {
+                                visible: root.loaded && (!root.glasses.runtimeInstalled || !root.sdk.available || !root.glasses.helperAvailable)
+                                color: Qt.alpha(Color.accent, .08)
+                                border.color: Qt.alpha(Color.accent, .55)
+                                Heading {
+                                    text: !root.glasses.runtimeInstalled || !root.sdk.available ? "XR runtime required" : "Stereo setup incomplete"
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: !root.glasses.runtimeInstalled || !root.sdk.available
+                                        ? "Install the XR software before starting stereo. The installer verifies the download and includes everything needed to use the glasses."
+                                        : "One system component needed for stereo is missing. Install it once, then try again."
+                                }
+                                Action {
+                                    text: !root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged ? "Install XR runtime" : "Install stereo helper"
+                                    selected: true
+                                    helpText: !root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged
+                                        ? "Open a terminal, verify the download, and ask before installing it"
+                                        : "Open a terminal and ask for administrator approval to finish stereo setup"
+                                    onClicked: {
+                                        if (!root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged)
+                                            root.installRuntime();
+                                        else
+                                            root.runSetupAction("helper");
+                                    }
+                                }
+                            }
+                            Card {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Heading {
@@ -854,7 +894,7 @@ Item {
                                     Label {
                                         text: root.sdk.tracking ? "Tracking active" : root.glasses.usb ? "Glasses connected" : "Glasses disconnected"
                                         color: Qt.alpha(Color.foreground, .68)
-                                        helpText: "Head tracking: " + (root.sdk.tracking ? "live" : root.sdk.communication ? "waiting" : "standby")
+                                        helpText: "Head tracking is " + (root.sdk.tracking ? "active" : root.sdk.communication ? "starting" : "not connected")
                                     }
                                 }
                                 Flow {
@@ -864,14 +904,14 @@ Item {
                                         visible: !root.directOutput || root.dirty || root.pendingAction === "present_direct"
                                         text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? "Apply monitor changes" : "Start stereo"
                                         selected: true
-                                        helpText: "Display your monitor layout in the glasses"
+                                        helpText: "Show your virtual monitors in the glasses"
                                         enabled: root.canStart && (!root.directOutput || root.dirty)
                                         onClicked: root.send("present_direct")
                                     }
                                     Action {
                                         visible: root.viewing || root.activeCount > 0
                                         text: root.directOutput ? "Stop stereo" : root.viewing ? "Close preview" : "Restore desktop"
-                                        helpText: "Return XR workspaces and open windows to your desktop"
+                                        helpText: "Move your XR windows back to your computer display"
                                         enabled: (root.viewing || root.activeCount > 0) && !root.busy
                                         onClicked: root.send("stop_viewer")
                                     }
@@ -883,7 +923,7 @@ Item {
                                 }
                                 Hint {
                                     visible: !root.directOutput && !root.canStart && !root.busy
-                                    text: !root.loaded ? "Loading workspace…" : !root.sdk.available ? "Glasses SDK missing — open Utilities." : !root.glasses.usb ? "Connect your glasses to start." : "Glasses video unavailable — open Utilities."
+                                    text: !root.loaded ? "Loading workspace…" : !root.glasses.runtimeInstalled || !root.sdk.available ? "XR runtime required — use Install XR runtime above." : !root.glasses.helperAvailable ? "Stereo helper required — use Install stereo helper above." : !root.glasses.usb ? "Connect your glasses to start." : "Glasses video unavailable — open Utilities."
                                 }
                             }
                             Card {
@@ -1724,16 +1764,16 @@ Item {
                                             Layout.alignment: Qt.AlignBottom
                                             text: "Import panorama…"
                                             helpText: root.canImportEnvironment
-                                                ? "Choose a 2:1 JPEG, PNG or BMP. Images stay on this computer. 4K is recommended."
-                                                : "Install ImageMagick to import a panorama: sudo pacman -S imagemagick"
+                                                ? "Choose a 2:1 JPEG, PNG, or BMP. Images stay on this computer. 4K is recommended."
+                                                : "Panorama import needs the optional ImageMagick package."
                                             enabled: root.loaded && !root.busy && root.canImportEnvironment
                                             onClicked: environmentFile.open()
                                         }
                                     }
                                     Label {
                                         visible: !root.canImportEnvironment
-                                        text: "ImageMagick required for import"
-                                        helpText: "Install with: sudo pacman -S imagemagick"
+                                        text: "Panorama import is unavailable"
+                                        helpText: "Install the optional ImageMagick package to import your own background."
                                     }
                                 }
                             }
@@ -1750,7 +1790,7 @@ Item {
                                     Heading { text: "Glasses connection" }
                                     Action {
                                         text: "Check connection"
-                                        helpText: "Refresh USB, video output, and tracking status"
+                                        helpText: "Refresh the glasses video and head-tracking status"
                                         enabled: root.loaded && !root.busy
                                         onClicked: root.send("check")
                                     }
@@ -1758,11 +1798,11 @@ Item {
                                 Label {
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
-                                    text: (root.glasses.usb ? "USB connected" : "USB not detected") + " · " + (root.glasses.dedicatedDisplay ? "XR on " + root.glasses.dedicatedDisplay : root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length ? "Video on " + root.glasses.displays.join(", ") : "No glasses display"))
+                                    text: (root.glasses.usb ? "Glasses connected" : "Glasses not detected") + " · " + (root.glasses.dedicatedDisplay ? "Stereo active" : root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length ? "Video connected" : "Glasses video not detected"))
                                 }
                                 Hint {
-                                    text: sdkControls.sdk.tracking ? "Head tracking active" : sdkControls.sdk.communication ? "Waiting for head tracking" : sdkControls.sdk.available ? "Tracking disconnected" : "Tracking SDK not installed"
-                                    helpText: "SDK: " + (!sdkControls.sdk.available ? "not installed" : sdkControls.sdk.communication ? "communicating" : "disconnected") + " · Tracking samples: " + (sdkControls.sdk.samples || 0) + (sdkControls.sdk.displayMode !== undefined && sdkControls.sdk.displayMode !== null ? " · Display mode: 0x" + sdkControls.sdk.displayMode.toString(16) : "")
+                                    text: sdkControls.sdk.tracking ? "Head tracking active" : sdkControls.sdk.communication ? "Head tracking is starting" : sdkControls.sdk.available ? "Head tracking disconnected" : "Head tracking software not installed"
+                                    helpText: !sdkControls.sdk.available ? "Install the XR software to enable head tracking" : sdkControls.sdk.communication ? "The glasses are connected" : "Choose Connect tracking to begin"
                                 }
                                 Label {
                                     visible: !!(sdkControls.sdk.trackingError || sdkControls.sdk.displayError)
@@ -1780,37 +1820,54 @@ Item {
                                 }
                             }
                             Disclosure {
-                                title: "Connection tools"
-                                helpText: "Reconnect tracking, restore the display mode, or recover the USB-C connection"
+                                title: "Setup & integrations"
+                                helpText: "Install the XR software and optional controls"
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 8
                                     Action {
-                                        text: sdkControls.sdk.available ? "Finish XR setup" : "Install XR runtime"
-                                        helpText: "Download the verified GitHub release, install its bundled runtime, and read the setup terms"
-                                        visible: !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false
-                                        onClicked: {
-                                            var command = sdkControls.sdk.available
-                                                ? ["omarchy-xr-setup"]
-                                                : ["python3", root.localPath(Qt.resolvedUrl("install_runtime.py"))];
-                                            Quickshell.execDetached(["omarchy", "launch", "terminal"].concat(command, ["--controls", "--notifications"]));
-                                        }
+                                        text: !root.glasses.runtimeInstalled || !sdkControls.sdk.available ? "Install XR runtime" : sdkControls.sdk.licenseAccepted === false ? "Finish XR setup" : !root.glasses.helperAvailable ? (sdkControls.sdk.packaged ? "Repair XR runtime" : "Install stereo helper") : "XR runtime installed"
+                                        helpText: "Install the XR software or finish its one-time setup"
+                                        enabled: !root.glasses.runtimeInstalled || !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false || !root.glasses.helperAvailable
+                                        onClicked: root.glasses.runtimeInstalled && !root.glasses.helperAvailable && sdkControls.sdk.available && !sdkControls.sdk.packaged
+                                            ? root.runSetupAction("helper") : root.installRuntime()
                                     }
                                     Action {
+                                        text: "Set up shortcuts & gestures"
+                                        helpText: "Add or refresh the optional touchpad gestures and keyboard shortcuts"
+                                        onClicked: root.runSetupAction("controls")
+                                    }
+                                    Action {
+                                        text: "Set up XR notifications"
+                                        helpText: "Show optional floating notifications while using stereo"
+                                        onClicked: root.runSetupAction("notifications")
+                                    }
+                                }
+                                Hint {
+                                    text: "A terminal opens so you can review terms and approve any system changes."
+                                }
+                            }
+                            Disclosure {
+                                title: "Connection tools"
+                                helpText: "Reconnect head tracking or recover the glasses connection"
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Action {
                                         text: sdkControls.sdk.busy ? "Connecting…" : sdkControls.sdk.communication ? "Reconnect tracking" : "Connect tracking"
-                                        helpText: "Initialize communication with the glasses and start head tracking"
+                                        helpText: "Connect to the glasses and start head tracking"
                                         enabled: root.loaded && !root.busy && !root.directOutput && !sdkControls.sdk.busy && !root.glasses.recovering
                                         onClicked: root.send("sdk_connect")
                                     }
                                     Action {
-                                        text: "Restore display mode"
-                                        helpText: "Retry the glasses display-mode handshake"
+                                        text: "Restore glasses video"
+                                        helpText: "Switch the glasses back to their normal video mode"
                                         enabled: root.loaded && !root.busy && !root.directOutput && !!sdkControls.sdk.communication && !sdkControls.sdk.busy && !root.glasses.recovering
                                         onClicked: root.send("sdk_restore")
                                     }
                                     Action {
                                         text: root.viewing ? "Stop XR & disconnect" : "Disconnect tracking"
-                                        helpText: "Stop any viewer and release the tracking connection"
+                                        helpText: "Stop the current XR view and disconnect head tracking"
                                         enabled: root.loaded && !root.busy && (!!sdkControls.sdk.communication || !!sdkControls.sdk.busy)
                                         onClicked: root.send("sdk_disconnect")
                                     }
@@ -1828,7 +1885,7 @@ Item {
                             }
                             Disclosure {
                                 title: root.performance.spectatorError ? "Recording · needs attention" : "Recording"
-                                helpText: root.performance.spectatorError || "Create a separate mono window for OBS, up to 30 fps; it opens with stereo"
+                                helpText: root.performance.spectatorError || "Create a flat recording window for OBS; it opens with stereo and runs at up to 30 fps"
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Label {
@@ -1870,10 +1927,10 @@ Item {
                             }
                             Disclosure {
                                 title: "Performance"
-                                helpText: "Rendering timings and capture diagnostics; off-screen monitors pause capture and presentation follows the display refresh rate"
+                                helpText: "Frame rate and capture details for troubleshooting"
                                 Hint {
                                     text: root.directOutput ? "Stereo · dedicated display" : "Mono · desktop rendering"
-                                    helpText: root.directOutput ? "Dedicated DRM output, side-by-side stereo, native desktop cursor" : sdkControls.sdk.nativeDof === false ? "Host-rendered on the glasses display; on-device native tracking is unsupported" : "Host-rendered on the glasses display"
+                                    helpText: root.directOutput ? "Direct side-by-side stereo on the glasses" : sdkControls.sdk.nativeDof === false ? "Flat preview on the glasses; built-in tracking is unavailable" : "Flat preview on the glasses"
                                 }
                                 QQC.ScrollView {
                                     id: performanceScroll
@@ -1887,25 +1944,26 @@ Item {
                                         width: performanceScroll.availableWidth
                                         spacing: 8
                                         Hint {
-                                            text: root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" fps · CPU p95 "+root.performance.workP95.toFixed(2)+" ms · frame p95 "+root.performance.frameP95.toFixed(2)+" ms"
-                                                +(root.performance.gpuSceneP95 !== undefined ? " · GPU scene p95 "+root.performance.gpuSceneP95.toFixed(2)+" ms · GPU capture p95 "+root.performance.gpuCaptureP95.toFixed(2)+" ms" : "")
-                                                +(root.performance.refreshHz ? " · missed vblanks "+root.performance.missedVblanksWindow+" / "+root.performance.missedVblanks : "")
+                                            text: root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" fps · CPU frame time "+root.performance.workP95.toFixed(2)+" ms · total frame time "+root.performance.frameP95.toFixed(2)+" ms"
+                                                +(root.performance.gpuSceneP95 !== undefined ? " · graphics "+root.performance.gpuSceneP95.toFixed(2)+" ms · capture "+root.performance.gpuCaptureP95.toFixed(2)+" ms" : "")
+                                                +(root.performance.refreshHz ? " · missed frames "+root.performance.missedVblanksWindow+" recent / "+root.performance.missedVblanks+" total" : "")
                                                 : "Start XR to measure performance."
-                                            helpText: "p95 is the time within which 95% of frames finish; vblanks count missed display refreshes"
+                                            helpText: "Frame times show a typical slow frame; lower is better"
                                         }
                                         Repeater {
                                             model: root.captureRows
                                             Hint {
+                                                required property int index
                                                 required property var modelData
-                                                text: modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight+(modelData.importMs !== undefined ? " · import "+Number(modelData.importMs).toFixed(1)+" ms" : "")
+                                                text: "Monitor "+(index+1)+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+(modelData.importMs !== undefined ? " · capture time "+Number(modelData.importMs).toFixed(1)+" ms" : "")
                                             }
                                         }
                                     }
                                 }
                             }
                             Disclosure {
-                                title: "Preview & cleanup"
-                                helpText: "Open a desktop preview or stop XR and remove its virtual monitors"
+                                title: "Preview & stop"
+                                helpText: "Open a preview, or stop XR and remove its virtual monitors"
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
@@ -1917,8 +1975,8 @@ Item {
                                         onClicked: root.send("start")
                                     }
                                     Action {
-                                        text: "Open fullscreen mono"
-                                        helpText: "Present a mono preview on the glasses; requires exactly one glasses display"
+                                        text: "Open flat preview on glasses"
+                                        helpText: "Show a non-stereo preview on one connected pair of glasses"
                                         enabled: !!root.glasses.displays && root.glasses.displays.length === 1 && !root.viewing && !root.busy
                                         onClicked: root.send("present")
                                     }
@@ -1964,7 +2022,7 @@ Item {
                                         font.family: Style.font.family
                                         font.pixelSize: Style.font.bodySmall
                                         text: root.history.length ? root.history.map(function (e) {
-                                            return e.time + "  " + (e.failed ? "ERROR  " : "") + e.message;
+                                            return e.time + "  " + (e.failed ? "NEEDS ATTENTION  " : "") + e.message;
                                         }).join("\n\n") : "No activity yet."
                                         background: Rectangle {
                                             color: Qt.alpha(Color.foreground, .025)
@@ -1984,8 +2042,8 @@ Item {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: root.backendSlow ? "Still working…" : root.busy ? "Working…" : root.activeCount + " active monitors"
-                        helpText: root.backendSlow ? "The backend is taking longer than expected. Stop & remove monitors remains available in Utilities." : "Virtual monitors currently active on the desktop"
+                        text: root.backendSlow ? "Still working…" : root.busy ? "Working…" : root.activeCount + (root.activeCount === 1 ? " active monitor" : " active monitors")
+                        helpText: root.backendSlow ? "This is taking longer than expected. You can still use Stop & remove monitors in Utilities." : "Virtual monitors currently available on your desktop"
                         color: root.busy ? Color.accent : Color.foreground
                     }
                     Action {

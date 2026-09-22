@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "author": "Andreas Fruth",
   "license": "LicenseRef-Omarchy-XR",
-  "description": "Create and arrange virtual monitors for a live spatial desktop.",
+  "description": "Create and arrange virtual monitors for a live spatial desktop. Currently supports VITURE XR glasses only.",
   "kinds": [
     "panel",
     "bar-widget"

@@ -55,6 +55,12 @@ copies only this project's plugin files and binary into your user configuration
 and registers that bar icon; it never edits `/usr/share/omarchy`. Move the icon
 with `omarchy bar move afruth.omarchy-xr --section right`.
 
+Marketplace users do not need to run the setup targets above manually. A missing
+runtime is shown as an install card on the **Controls** tab, and **Utilities →
+Setup & integrations** provides buttons for the runtime, stereo helper, controls,
+and spatial notifications. Setup still opens a terminal so package-manager,
+licence, and administrator prompts remain visible.
+
 Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**):
 - **Controls**: start/stop stereo, recenter, fit, and zoom, with live connection status.
   Expand **Shortcuts & gestures** or **Laptop display** for preferences.

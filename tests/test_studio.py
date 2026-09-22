@@ -448,7 +448,7 @@ class LayoutTests(unittest.TestCase):
             try:
                 with patch("backend.subprocess.Popen",return_value=process) as spawn, patch.object(manager.sdk,"connect") as connect:
                     message=manager.present(default_layout())
-                    self.assertIn("3 desktops",message)
+                    self.assertIn("3 virtual monitors",message)
                     connect.assert_called_once()
                     args=spawn.call_args.args[0]
                     self.assertEqual(args[args.index("--display")+1],"DP-1")
@@ -463,7 +463,7 @@ class LayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fake=FakeHypr();manager=Manager(temp,"/unused",fake)
             try:
-                with self.assertRaisesRegex(RuntimeError,"active VITURE"):
+                with self.assertRaisesRegex(RuntimeError,"one pair of VITURE glasses"):
                     manager.present(default_layout())
                 self.assertEqual(list(fake.outputs),["eDP-1"])
             finally:manager.cleanup();manager.lock.close()
@@ -538,7 +538,7 @@ class LayoutTests(unittest.TestCase):
             original=copy.deepcopy(fake.outputs)
             manager.viewer=Mock();manager.viewer.poll.return_value=None
             changed=default_layout();changed["monitors"][0]["width"]=1280
-            with self.assertRaisesRegex(RuntimeError,"Dedicated stereo supports live resizing"):
+            with self.assertRaisesRegex(RuntimeError,"resize monitors while stereo is active"):
                 manager.apply(changed)
             self.assertEqual(fake.outputs,original)
             manager.viewer=None;manager.cleanup();manager.lock.close()
@@ -599,7 +599,7 @@ class LayoutTests(unittest.TestCase):
                 self.assertEqual(len(manager.owned),2)
                 self.assertEqual(fake.outputs[manager.prefix+"1-b"]["x"],origin)
                 fake.outputs.clear();manager.owned.clear();manager.applied=None
-                with self.assertRaisesRegex(RuntimeError,"Keep at least one existing display"):
+                with self.assertRaisesRegex(RuntimeError,"Keep at least one computer display"):
                     manager.apply(default_layout())
             finally:manager.lock.close()
     def test_failed_creation_is_cleaned(self):
@@ -632,10 +632,10 @@ class LayoutTests(unittest.TestCase):
                 process.poll.return_value=9
                 process.returncode=9
                 status=manager.status()
-                self.assertEqual(status["viewerExit"],"Viewer exited (code 9)")
-                self.assertIn("Viewer exited (code 9)",status["restorationError"])
+                self.assertEqual(status["viewerExit"],"The XR view stopped unexpectedly. Start it again to retry.")
+                self.assertIn("The XR view stopped unexpectedly",status["restorationError"])
                 self.assertIsNone(manager.viewer)
-                self.assertIn("Viewer exited (code 9)",(Path(temp)/"backend.log").read_text())
+                self.assertIn("XR viewer exited (code 9)",(Path(temp)/"backend.log").read_text())
             finally:
                 manager.cleanup();manager.lock.close()
 
@@ -650,8 +650,8 @@ class LayoutTests(unittest.TestCase):
                 reply=json.loads(stdout.getvalue().splitlines()[0])
                 self.assertFalse(reply["ok"])
                 self.assertEqual(reply["requestId"],7)
-                self.assertIn("ValueError",reply["message"])
-                self.assertIn("KeyError",reply["statusError"])
+                self.assertEqual(reply["message"],"Unknown action")
+                self.assertEqual(reply["statusError"],"'layout'")
                 log=(Path(temp)/"backend.log").read_text()
                 self.assertIn("Traceback",log)
                 self.assertIn("KeyError",log)

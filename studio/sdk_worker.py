@@ -60,10 +60,14 @@ class Session:
     def check(self, name, *args):
         code = self.call(name, *args)
         if code < 0:
-            errors = {-2: "USB inaccessible; check cable and VITURE udev permissions",
-                      -3: "USB transfer failed", -4: "Unsupported by this device",
-                      -5: "Device did not respond", -7: "Device rejected command"}
-            raise RuntimeError(f"{name}: {errors.get(code, 'SDK error')} ({code})")
+            errors = {-2: "The glasses could not be accessed over USB",
+                      -3: "The USB connection failed", -4: "The glasses do not support this feature",
+                      -5: "The glasses did not respond", -7: "The glasses rejected the request"}
+            actions = {"start": "starting the connection", "open_imu": "starting head tracking",
+                       "get_display_mode": "checking the video mode", "set_display_mode": "changing the video mode"}
+            reason = errors.get(code, "The glasses reported an error")
+            action = actions.get(name, "communicating with the glasses")
+            raise RuntimeError(f"{reason} while {action}. Reconnect them, then try again.")
         return code
 
     def on_pose(self, data, timestamp):
@@ -92,15 +96,15 @@ class Session:
     def connect(self, pid):
         self.close()
         if not self.call("is_product_id_valid", pid):
-            raise RuntimeError("This SDK does not support the connected product; install the current SDK")
+            raise RuntimeError("The installed XR software does not support these glasses. Update the XR runtime.")
         capability = self.call("is_product_support_native_dof", pid)
         self.native_dof = bool(capability) if capability >= 0 else None
         self.handle = self.call("create", pid)
         if not self.handle:
-            raise RuntimeError("SDK could not open glasses. Check USB connection and VITURE udev permissions")
+            raise RuntimeError("Head tracking could not connect to the glasses. Reconnect the USB cable, then try again.")
         try:
             if self.call("get_device_type", self.handle) not in (0, 1):
-                raise RuntimeError("This connection adapter currently supports Gen1/Gen2 glasses, including Pro 2")
+                raise RuntimeError("These glasses are not supported. Connect compatible VITURE Gen1 or Gen2 glasses.")
             self.check("register_imu_pose_callback", self.handle, self.callback)
             self.check("initialize", self.handle, None, None)
             self.initialized = True
@@ -186,7 +190,7 @@ class Session:
 
     def restore_display(self):
         if not self.started:
-            raise RuntimeError("Connect the SDK first")
+            raise RuntimeError("Connect head tracking first.")
         # Reapply the mode read from this device; do not guess supported modes.
         mode = self.check("get_display_mode", self.handle)
         self.check("set_display_mode", self.handle, mode)
@@ -333,7 +337,7 @@ def serve_sdk(session, publish, state):
     failures = 0
     while True:
         if session.state()["tracking"] and not reported_tracking:
-            state["message"] = "SDK connected and receiving head tracking. Video is checked separately."
+            state["message"] = "Head tracking is active."
             state["sequence"] += 1
             reported_tracking = True
         failures, last_query = keep_alive(session, failures, last_query)
@@ -364,7 +368,7 @@ def main():
         session = Session(library, target.with_name("display-mode.json"))
         session.connect(int(pid))
         publisher = PosePublisher(session, pose_path)
-        state["message"] = "SDK connected; waiting for tracking samples. Video is checked separately."
+        state["message"] = "Glasses connected. Waiting for head movement…"
         state["sequence"] += 1
         serve_sdk(session, publish, state)
     except Exception as exc:

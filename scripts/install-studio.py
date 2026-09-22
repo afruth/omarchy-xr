@@ -34,6 +34,7 @@ PLUGIN_FILES = (
     "studio/sdk.py",
     "studio/sdk_worker.py",
     "studio/install_runtime.py",
+    "studio/setup_actions.py",
     "studio/dedicated.py",
     "studio/dedicated_helper.py",
 )

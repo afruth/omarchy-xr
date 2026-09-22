@@ -25,7 +25,7 @@ class SDK:
         self.started = 0.0
         self.pending = False
         self.pid = None
-        self.state: dict[str, Any] = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
+        self.state: dict[str, Any] = {"communication": False, "tracking": False, "message": "Head tracking disconnected.", "error": False}
 
     def library(self):
         configured = os.environ.get("VITURE_SDK_LIBRARY")
@@ -52,12 +52,12 @@ class SDK:
 
     def connect(self):
         if not self.library().is_file():
-            raise RuntimeError("XR SDK missing. Install or reinstall omarchy-xr-bin, then reopen Studio.")
+            raise RuntimeError("Head tracking software is missing. Open Setup & integrations and install the XR runtime.")
         if not self.license_accepted():
-            raise RuntimeError("Run omarchy-xr-setup to read and accept the application and SDK terms first")
+            raise RuntimeError("XR setup is not finished. Open Setup & integrations, choose Finish XR setup, and review and accept the terms.")
         devices = self.devices()
         if len(devices) != 1:
-            raise RuntimeError("Connect exactly one pair of VITURE glasses")
+            raise RuntimeError("Connect one pair of VITURE glasses, then try again.")
         self.disconnect()
         self.state_file.unlink(missing_ok=True)
         self.pid = devices[0]
@@ -86,16 +86,16 @@ class SDK:
             self.log.close()
             self.log = None
         self.pending = False
-        self.state = {"communication": False, "tracking": False, "message": "SDK disconnected", "error": False}
+        self.state = {"communication": False, "tracking": False, "message": "Head tracking disconnected.", "error": False}
 
     def restore(self):
         if self.pending or not self.process or self.process.poll() is not None or not self.state.get("communication"):
-            raise RuntimeError("Connect the SDK and wait for it to respond first")
+            raise RuntimeError("Connect head tracking and wait for it to become ready.")
         self.process.stdin.write("restore\n")
         self.process.stdin.flush()
         self.pending = True
         self.started = boot_time()
-        self.state["message"] = "Reapplying the glasses display mode…"
+        self.state["message"] = "Restoring normal glasses video…"
 
     def stereo(self, enabled):
         self.display_command("stereo" if enabled else "stereo_off")
@@ -115,7 +115,7 @@ class SDK:
             self.status()
             time.sleep(.05)
         if not self.process or self.process.poll() is not None or not self.state.get("communication"):
-            raise RuntimeError("SDK communication is required for stereo")
+            raise RuntimeError("Head tracking must be connected before stereo can start.")
         self.process.stdin.write(command + "\n")
         self.process.stdin.flush()
         self.started = boot_time()
@@ -127,7 +127,7 @@ class SDK:
                     raise RuntimeError(state["message"])
                 return
             time.sleep(.05)
-        raise RuntimeError("Stereo display-mode command timed out")
+        raise RuntimeError("The glasses took too long to change video mode. Reconnect them, then try again.")
 
     def status(self):
         if self.process:
@@ -143,15 +143,17 @@ class SDK:
             failure = ""
             if self.process.poll() is not None:
                 message = self.state.get("message")
-                failure = message if isinstance(message, str) else "SDK process stopped. Connect again to retry."
+                failure = message if isinstance(message, str) else "Head tracking stopped. Choose Connect tracking to try again."
             elif self.pid not in self.devices():
-                failure = "Glasses unplugged. Reconnect the cable, then choose Connect glasses."
+                failure = "Glasses disconnected. Reconnect the cable, then choose Connect tracking."
             else:
                 heartbeat = self.state.get("heartbeat", 0)
                 stamp = float(heartbeat) if isinstance(heartbeat, (int, float)) and not isinstance(heartbeat, bool) else 0.0
                 if boot_time() - max(self.started, stamp) > 20:
-                    failure = "SDK timed out. Connect again to retry."
+                    failure = "Head tracking stopped responding. Choose Connect tracking to try again."
             if failure:
                 self.disconnect()
                 self.state.update(message=failure, error=True)
-        return {"available": self.library().is_file(), "licenseAccepted": self.license_accepted(), "busy": self.pending, **self.state}
+        library = self.library()
+        return {"available": library.is_file(), "packaged": library == PACKAGED_LIBRARY,
+                "licenseAccepted": self.license_accepted(), "busy": self.pending, **self.state}

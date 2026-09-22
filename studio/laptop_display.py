@@ -20,7 +20,7 @@ def hypr(*args):
     reply = subprocess.run(['hyprctl', *args],capture_output=True,text=True,timeout=3)
     text = reply.stdout.strip()
     if reply.returncode or text.lower().startswith(('error','invalid','unknown')):
-        raise RuntimeError(text or reply.stderr.strip() or 'Display command failed')
+        raise RuntimeError(text or reply.stderr.strip() or 'The display change did not work. Try again.')
     return text
 
 
@@ -80,7 +80,7 @@ class LaptopDisplay:
                 active={m['name'] for m in json.loads(self.runner('-j','monitors')) if not m.get('disabled',False)}
                 if all(m['name'] in active for m in monitors): break
                 time.sleep(.1)
-            else: raise RuntimeError('Laptop display restoration needs retry')
+            else: raise RuntimeError('The laptop display was not restored. Choose Restore display to try again.')
         self.journal.unlink(missing_ok=True)
         self.error=''
 
@@ -93,7 +93,7 @@ class LaptopDisplay:
             while True:
                 try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);break
                 except BlockingIOError:
-                    if time.monotonic()>deadline: raise RuntimeError('Laptop display restoration is still pending')
+                    if time.monotonic()>deadline: raise RuntimeError('The laptop display is still being restored. Wait a moment, then try again.')
                     time.sleep(.1)
             self.restore()
             request.unlink(missing_ok=True)
@@ -101,14 +101,14 @@ class LaptopDisplay:
     def start(self,renderer_pid,glasses_output):
         self.stop()
         if not internal(json.loads(self.runner('-j','monitors'))):
-            raise RuntimeError('No active built-in laptop display')
+            raise RuntimeError('No active laptop display was found.')
         self.log=(self.directory/'laptop-display.log').open('w')
         self.process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'watch',str(self.directory),str(renderer_pid),glasses_output],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.log,text=True,start_new_session=True)
         try:
             stdout=self.process.stdout
             if stdout is None or not select.select([stdout],[],[],10)[0] or stdout.readline().strip()!='ready':
-                raise RuntimeError('Could not disable laptop display; see laptop-display.log')
+                raise RuntimeError('The laptop display could not be turned off, so it was left on.')
         except Exception:
             self.stop();raise
 
@@ -118,7 +118,7 @@ class LaptopDisplay:
             try: self.process.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 # Do not kill the process responsible for restoration.
-                raise RuntimeError('Laptop display restoration is still pending')
+                raise RuntimeError('The laptop display is still being restored. Wait a moment, then try again.')
             self.process=None
         if self.log: self.log.close();self.log=None
         self.recover()
@@ -185,7 +185,7 @@ def disable_laptop(monitors):
         if all(monitor['name'] not in active for monitor in monitors):
             return
         time.sleep(.1)
-    raise RuntimeError('Hyprland did not disable the laptop display')
+    raise RuntimeError('The laptop display could not be turned off, so it was left on.')
 
 
 def restore_laptop(display):
