@@ -14,6 +14,7 @@
 #include "capture_plan.hpp"
 #include "gpu_timers.hpp"
 #include "vblank.hpp"
+#include "load_governor.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -157,7 +158,8 @@ struct View {
     Uint64 started=0, nextLayoutCheck=0;
     double lastCameraTime=0, reportTime=0, workP99=0, gpuP99=5, workMax=0, lastFrameMs=16.7, lastPredictionMs=0, lastMarginMs=0, nextTrackingCheck=0;
     unsigned reportFrames=0, missedBaseline=0, seenMisses=0;
-    std::vector<double> workTimes, frameTimes, gpuCaptureTimes, gpuSceneTimes, latchWork, latchGpu;
+    std::vector<double> workTimes, frameTimes, gpuCaptureTimes, gpuSpectatorTimes, gpuSceneTimes, latchWork, latchGpu;
+    SpectatorGovernor governor;
     GpuTimers gpuTimers;
     MissPenalty missPenalty;
     std::filesystem::file_time_type layoutVersion{}, trackingVersion{};
@@ -677,8 +679,10 @@ struct View {
         try {
             if (!spectator) spectator=std::make_unique<Spectator>();
             if (!spectator->pump()) { spectator.reset(); spectatorEnabled=false; return; }
-            if (!spectator->begin(monotonicSeconds())) return;
+            if (!spectator->begin(monotonicSeconds(), governor.interval())) return;
+            const bool timed=gpuTimers.begin(GpuTimers::Spectator);
             renderScene(spectator->width(), spectator->height(), false, true, drawableW, drawableH);
+            if (timed) gpuTimers.end(GpuTimers::Spectator);
             spectator->present();
         } catch (const std::exception& e) {
             spectatorError=e.what(); std::cerr << spectatorError << std::endl;
@@ -690,9 +694,10 @@ struct View {
         for (auto& p:panels) p.halo=navigation::ease(p.halo, selection.output==p.layout.output ? 1.f:0.f, cameraDt);
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
         environment->update(monotonicSeconds());
-        // The spectator render queues ahead of the stereo scene, so it is part of what must finish before the flip.
-        const bool timeScene=gpuTimers.begin(GpuTimers::Scene);
+        // The spectator render queues ahead of the stereo scene, so both must finish before the flip;
+        // they are timed one after the other and summed for the latch margin.
         presentSpectator(w, h);
+        const bool timeScene=gpuTimers.begin(GpuTimers::Scene);
         renderScene(w, h, stereo, false, w, h);
         if (timeScene) gpuTimers.end(GpuTimers::Scene);
         if (!glOk()) return false;
@@ -738,23 +743,25 @@ struct View {
     void report(double now) {
         std::sort(workTimes.begin(), workTimes.end()); std::sort(frameTimes.begin(), frameTimes.end());
         const double workP95=workTimes[workTimes.size()*95/100], frameP95=frameTimes[frameTimes.size()*95/100];
-        const bool gpu=!gpuCaptureTimes.empty() && gpuCaptureTimes.size()==gpuSceneTimes.size();
-        if (gpu) { std::sort(gpuCaptureTimes.begin(), gpuCaptureTimes.end()); std::sort(gpuSceneTimes.begin(), gpuSceneTimes.end()); }
+        const bool gpu=!gpuCaptureTimes.empty() && gpuCaptureTimes.size()==gpuSceneTimes.size() && gpuSpectatorTimes.size()==gpuSceneTimes.size();
+        if (gpu) { std::sort(gpuCaptureTimes.begin(), gpuCaptureTimes.end()); std::sort(gpuSpectatorTimes.begin(), gpuSpectatorTimes.end()); std::sort(gpuSceneTimes.begin(), gpuSceneTimes.end()); }
         const double gpuCaptureP95=gpu?gpuCaptureTimes[gpuCaptureTimes.size()*95/100]:0;
+        const double gpuSpectatorP95=gpu?gpuSpectatorTimes[gpuSpectatorTimes.size()*95/100]:0;
         const double gpuSceneP95=gpu?gpuSceneTimes[gpuSceneTimes.size()*95/100]:0;
         const unsigned missed=output?output->missedVblanks():0;
-        printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSceneP95, missed);
-        writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSceneP95, missed);
-        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSceneTimes.clear();
+        printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
+        writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
+        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
     }
-    void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSceneP95, unsigned missed) const {
+    void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         std::cout << "Performance: " << reportFrames/(now-reportTime) << " present fps, work p95 " << workP95 << " ms, work max " << workMax << " ms, frame p95 " << frameP95 << " ms";
-        if (gpu) std::cout << ", gpu capture p95 " << gpuCaptureP95 << " ms, gpu scene p95 " << gpuSceneP95 << " ms";
+        if (gpu) std::cout << ", gpu capture p95 " << gpuCaptureP95 << " ms, gpu spectator p95 " << gpuSpectatorP95 << " ms, gpu scene p95 " << gpuSceneP95 << " ms";
+        if (spectator) std::cout << ", spectator " << governor.name();
         if (output) std::cout << ", missed vblanks " << missed-missedBaseline << " (" << missed << " session)";
         std::cout << std::endl;
         for (const auto& p:panels) if (p.capture) std::cout << "Capture: " << p.layout.output << " " << (p.visible?"visible":"paused") << " " << p.capture->transport() << " " << p.width << "x" << p.height << " source " << p.sourceWidth << "x" << p.sourceHeight << " requests " << p.capture->requests() << " frames " << p.frames << std::endl;
     }
-    void writeStats(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSceneP95, unsigned missed) const {
+    void writeStats(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         if (posePath.empty()) return;
         std::ostringstream stats;
         stats << "{\"pid\":" << getpid() << ",\"time\":" << std::setprecision(12) << now << ",\"fps\":" << reportFrames/(now-reportTime)
@@ -764,7 +771,8 @@ struct View {
             << ",\"spectator\":" << (spectator?"true":"false") << ",\"spectatorFrames\":" << (spectator?spectator->frames:0) << ",\"spectatorError\":" << std::quoted(spectatorError)
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
-        if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
+        if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
+        stats << ",\"spectatorRate\":" << std::quoted(governor.name());
         if (output) stats << ",\"refreshHz\":" << output->refreshHz() << ",\"missedVblanks\":" << missed << ",\"missedVblanksWindow\":" << missed-missedBaseline;
         stats << ",\"captures\":[";
         writeCaptureStats(stats);
@@ -847,8 +855,15 @@ struct View {
     }
     void collectGpu() {
         const auto gpuBefore=gpuSceneTimes.size();
-        gpuTimers.collect(gpuCaptureTimes, gpuSceneTimes);
-        for (auto i=gpuBefore; i<gpuSceneTimes.size(); ++i) latchGpu.push_back(gpuSceneTimes[i]);
+        gpuTimers.collect(gpuCaptureTimes, gpuSpectatorTimes, gpuSceneTimes);
+        const double periodMs=output && output->refreshHz() ? 1000.0/output->refreshHz() : 1000.0/60;
+        for (auto i=gpuBefore; i<gpuSceneTimes.size(); ++i) {
+            const double frameGpu=gpuSpectatorTimes[i]+gpuSceneTimes[i];
+            latchGpu.push_back(frameGpu);
+            const auto before=governor.level;
+            if (governor.update(frameGpu, periodMs, monotonicSeconds())!=before)
+                std::cout << "Spectator: " << governor.name() << " (frame GPU time " << frameGpu << " ms of " << periodMs << ")" << std::endl;
+        }
         while (latchGpu.size()>120) latchGpu.erase(latchGpu.begin());
         if (latchGpu.empty()) return;
         auto ranked=latchGpu; std::sort(ranked.begin(), ranked.end()); gpuP99=ranked[(ranked.size()-1)*99/100];

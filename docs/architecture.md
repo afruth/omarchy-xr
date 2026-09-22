@@ -305,3 +305,16 @@ start of the frame when there is no direct output, or when the lease has not rep
 timestamp yet. The scene GPU timer that feeds the margin includes the spectator render, because it
 queues ahead of the stereo scene. `pose.sock.stats` reports `predictionMs`, `predictionCapMs`,
 `latchMarginMs` and `latchPenaltyMs`.
+
+### GPU load on the integrated card
+
+The compositor's DMA-BUF is linear, and sampling a linear image is slow on the Intel GPU: each
+screen row touches a different cache line of the source. Every new capture frame is therefore
+blitted once into a driver-tiled private texture, also at 1:1, and the scene samples that copy
+(`OMARCHY_XR_DIRECT_SAMPLING` restores direct sampling for A/B measurements). The sky texture
+carries mipmaps for the same reason; an 8192x4096 image is heavily minified on a 1920x1080 eye.
+
+The spectator window renders the scene a third time and queues ahead of the stereo scene. It is
+timed separately (`gpu spectator p95`), and `SpectatorGovernor` lowers it to 10 fps once a frame's
+spectator + scene GPU time passes 60% of the refresh period and pauses it past 85%, recovering one
+step at a time after two seconds below 45%. The latch margin uses the sum of both timers.

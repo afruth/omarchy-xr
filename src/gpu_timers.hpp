@@ -8,7 +8,7 @@
 // cannot time queries, so a GL 2.1 preview or software renderer still runs.
 class GpuTimers {
 public:
-    enum Kind { Capture = 0, Scene = 1 };
+    enum Kind { Capture = 0, Spectator = 1, Scene = 2 };
 
     void probe() {
         if (probed) return;
@@ -40,6 +40,7 @@ public:
         if (deleteQueries) deleteQueries(1, &probeId);
         for (auto& slot : slots) {
             genQueries(1, &slot.capture);
+            genQueries(1, &slot.spectator);
             genQueries(1, &slot.scene);
         }
         drain();
@@ -50,6 +51,7 @@ public:
         if (deleteQueries) {
             for (auto& slot : slots) {
                 if (slot.capture) deleteQueries(1, &slot.capture);
+                if (slot.spectator) deleteQueries(1, &slot.spectator);
                 if (slot.scene) deleteQueries(1, &slot.scene);
                 slot = {};
             }
@@ -68,7 +70,10 @@ public:
             for (int i = 0; i < slotCount; ++i) if (!slots[i].pending) { active = i; break; }
             if (active < 0) return false;
         }
-        beginQuery(timeElapsed, kind == Capture ? slots[active].capture : slots[active].scene);
+        // GL_TIME_ELAPSED queries cannot nest, so the three phases of a frame are timed one after another.
+        auto& slot = slots[active];
+        beginQuery(timeElapsed, kind == Capture ? slot.capture : kind == Spectator ? slot.spectator : slot.scene);
+        if (kind == Spectator) slot.spectatorIssued = true;
         return true;
     }
 
@@ -81,17 +86,20 @@ public:
         }
     }
 
-    void collect(std::vector<double>& captureMs, std::vector<double>& sceneMs) {
+    // A frame without a spectator render reports 0 ms for it; its query object was never issued.
+    void collect(std::vector<double>& captureMs, std::vector<double>& spectatorMs, std::vector<double>& sceneMs) {
         if (!available) return;
         for (auto& slot : slots) {
             if (!slot.pending) continue;
-            unsigned captureReady = 0, sceneReady = 0;
+            unsigned captureReady = 0, spectatorReady = 1, sceneReady = 0;
             getAvailable(slot.capture, queryAvailable, &captureReady);
+            if (slot.spectatorIssued) getAvailable(slot.spectator, queryAvailable, &spectatorReady);
             getAvailable(slot.scene, queryAvailable, &sceneReady);
-            if (!captureReady || !sceneReady) continue;
+            if (!captureReady || !spectatorReady || !sceneReady) continue;
             captureMs.push_back(nanoseconds(slot.capture) / 1e6);
+            spectatorMs.push_back(slot.spectatorIssued ? nanoseconds(slot.spectator) / 1e6 : 0);
             sceneMs.push_back(nanoseconds(slot.scene) / 1e6);
-            slot.pending = false;
+            slot.pending = false; slot.spectatorIssued = false;
         }
     }
 
@@ -108,7 +116,7 @@ private:
     using Get64Fn = void (*)(unsigned, unsigned, std::uint64_t*);
     using Get32Fn = void (*)(unsigned, unsigned, unsigned*);
 
-    struct Slot { unsigned capture = 0, scene = 0; bool pending = false; };
+    struct Slot { unsigned capture = 0, spectator = 0, scene = 0; bool pending = false, spectatorIssued = false; };
 
     void drain() const { while (glGetError() != GL_NO_ERROR) {} }
     double nanoseconds(unsigned id) const {

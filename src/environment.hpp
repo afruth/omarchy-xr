@@ -1,6 +1,8 @@
 #pragma once
 #include <SDL.h>
+#define GL_GLEXT_PROTOTYPES
 #include <SDL_opengl.h>
+#include <GL/glext.h>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -82,7 +84,15 @@ public:
             glTexSubImage2D(GL_TEXTURE_2D,0,0,row,pixels->w,count,GL_RGB,GL_UNSIGNED_BYTE,static_cast<char*>(pixels->pixels)+row*pixels->pitch);
             glPixelStorei(GL_UNPACK_ALIGNMENT,alignment);
             row+=count;
-            if(row==pixels->h){if(texture)glDeleteTextures(1,&texture);texture=staging;staging=0;resident=requested;pixels.reset();error.clear();}
+            if(row==pixels->h){
+                // An 8192x4096 sky is heavily minified on a 1920x1080 eye. Without mipmaps every
+                // screen pixel gathers scattered texels from the full image; with them the fetches
+                // are cache-local, and the sky aliases less while the head moves.
+                glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
+                glGenerateMipmap(GL_TEXTURE_2D);
+                if(texture)glDeleteTextures(1,&texture);
+                texture=staging;staging=0;resident=requested;pixels.reset();error.clear();
+            }
         }
     }
     void draw(const float* view) {
