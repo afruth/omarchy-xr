@@ -224,6 +224,7 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
+local hoverName   -- the monitor the halo is on, for the pane publisher
 -- v3 appends a pointer serial and the dwelled monitor pixel; older lines carry no pointer.
 local function hoverTarget(line)
     local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
@@ -240,7 +241,6 @@ local function warpPointer(name,px,py)
         if monitor.name==name then
             local scale=monitor.scale or 1
             local x,y=monitor.x+px/scale,monitor.y+py/scale
-            hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+.5),y=math.floor(y+.5)}))
             local ok,windows=pcall(hl.get_windows,{monitor=name,mapped=true})
             if ok and windows then
                 local best
@@ -256,6 +256,8 @@ local function warpPointer(name,px,py)
                 end
                 if best and not best.active then pcall(function() hl.dispatch(hl.dsp.focus({window=best})) end) end
             end
+            -- Focusing warps the cursor to the window's centre, so the move to the look point comes last.
+            hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+.5),y=math.floor(y+.5)}))
             return
         end
     end
@@ -282,7 +284,7 @@ local function noteHover(owner, serialNumber)
     return true
 end
 local function selectGazeWorkspace()
-    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;return end
+    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;hoverName=nil;return end
     local file=io.open(path..".hover","r")
     if not file then return end
     local line=file:read("*l");file:close()
@@ -295,23 +297,32 @@ local function selectGazeWorkspace()
         if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py) end
         pointerSerialSeen=pointerSerial
     end
+    hoverName=mode=="1" and name or nil
     if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
     if gazeTarget==name then return end
     focusMonitor(name)
 end
--- The active window's rectangle on its XR output, for the pane zoom level; written on change only.
+-- The last-focused window on the selected XR monitor, for the pane zoom level; written on change
+-- only. The globally active window is usually elsewhere (the laptop screen), so the workspace's
+-- own focus history is what the pane fit needs.
 local paneSerial,paneLast=0,nil
-local function publishPane()
+local function publishPane(name)
     if not active then paneLast=nil;return end
-    local ok,win=pcall(hl.get_active_window)
     local line="-"
-    if ok and win and type(win)=="table" and win.monitor and win.monitor.name and win.monitor.name:match("^OMXR%-")
-       and type(win.at)=="table" and type(win.size)=="table" then
-        local m=win.monitor
-        local ax,ay=win.at.x or win.at[1],win.at.y or win.at[2]
-        local sw,sh=win.size.x or win.size[1],win.size.y or win.size[2]
-        if ax and ay and sw and sh and m.x and m.y then
-            line=string.format("%s %d %d %d %d",m.name,math.floor(ax-m.x+.5),math.floor(ay-m.y+.5),math.floor(sw+.5),math.floor(sh+.5))
+    if name and name:match("^OMXR%-") then
+        for _,m in ipairs(hl.get_monitors()) do
+            if m.name==name then
+                local ws=m.active_workspace
+                local win=ws and ws.last_window
+                if type(win)=="table" and type(win.at)=="table" and type(win.size)=="table" and m.x and m.y then
+                    local ax,ay=win.at.x or win.at[1],win.at.y or win.at[2]
+                    local sw,sh=win.size.x or win.size[1],win.size.y or win.size[2]
+                    if ax and ay and sw and sh then
+                        line=string.format("%s %d %d %d %d",m.name,math.floor(ax-m.x+.5),math.floor(ay-m.y+.5),math.floor(sw+.5),math.floor(sh+.5))
+                    end
+                end
+                break
+            end
         end
     end
     if line==paneLast then return end
@@ -321,7 +332,7 @@ local function publishPane()
     file:write(string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
     file:close();os.rename(path..".pane.tmp",path..".pane")
 end
-local function updatePointer() selectGazeWorkspace();publishPane() end
+local function updatePointer() selectGazeWorkspace();publishPane(hoverName) end
 local hoverTimer
 setHoverTimer = function(enabled)
     if enabled then
