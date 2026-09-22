@@ -65,12 +65,14 @@ omarchy plugin add https://github.com/afruth/omarchy-xr.git --enable
 
 Open XR Monitor Studio from the bar, then choose **Utilities → Connection tools
 → Install XR runtime**. The button opens a terminal, downloads the complete
-v0.3.0 package from GitHub, verifies its SHA-256 against the digest pinned in the
+v0.3.0 package from GitHub, enforces its pinned size of 2,804,714 bytes while
+streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
 It then runs setup as your desktop user to display the terms and enable controls
 and notifications. Neither an AUR account nor the vendor SDK download is needed.
 The package manager runs only after verification; a failed download or checksum
-stops installation. No downloaded script is executed.
+stops installation. Oversized downloads stop before excess bytes are written;
+incomplete or unverified downloads are deleted. No downloaded script is executed.
 
 If you installed the package directly already, run
 `omarchy-xr-setup --controls --notifications` to finish setup.
