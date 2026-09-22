@@ -2,6 +2,7 @@
 #include "live_controls.hpp"
 #include <algorithm>
 #include <cassert>
+#include <unistd.h>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -265,6 +266,18 @@ void gutterAndInput() {
         auto panWrite=[&](int serial,int gesture,float x,float y,int active){std::ofstream file(path+".pan");file<<owner<<' '<<serial<<' '<<gesture<<' '<<x<<' '<<y<<' '<<active<<' '<<std::time(nullptr);};
         panWrite(1,1,10,-5,1);input.update();assert(input.panStarted && input.panActive && input.panX==10 && input.panY==-5 && input.zoom==0);
         input.update();assert(!input.panStarted && input.panActive && input.panX==0);
+        // The pane mailbox: the active window's rectangle on its output, or none; stale, foreign and
+        // malformed lines are ignored, and a rewrite with the same mtime is not re-read.
+        auto paneWrite=[&](std::string body){std::ofstream file(path+".pane");file<<body<<'\n';};
+        paneWrite("v1 "+owner+" 1 OMXR-a 100 50 800 600 "+std::to_string(std::time(nullptr)));
+        usleep(2000);input.update();assert(input.paneValid && input.paneOutput=="OMXR-a" && input.paneX==100 && input.paneW==800 && input.paneH==600);
+        paneWrite("v1 "+owner+" 2 - "+std::to_string(std::time(nullptr)));usleep(2000);input.update();assert(!input.paneValid);
+        paneWrite("v1 other 3 OMXR-a 1 1 10 10 "+std::to_string(std::time(nullptr)));usleep(2000);input.update();assert(!input.paneValid);
+        paneWrite("v1 "+owner+" 4 OMXR-a 1 1 0 10 "+std::to_string(std::time(nullptr)));usleep(2000);input.update();assert(!input.paneValid);
+        paneWrite("v1 "+owner+" 5 OMXR-b 20 30 400 300 "+std::to_string(std::time(nullptr)));usleep(2000);input.update();assert(input.paneValid && input.paneOutput=="OMXR-b");
+        // A rectangle fills the eye at whichever side is limiting.
+        assert(navigation::rectDistance(1920,1080,28,16.f/9)==navigation::heightDistance(1080,28));
+        assert(navigation::rectDistance(1920,200,28,16.f/9)>navigation::heightDistance(200,28)*3);
         panWrite(5,1,40,20,1);input.update();assert(input.panX==30 && input.panY==25);
         panWrite(6,1,40,20,0);input.update();assert(!input.panActive && input.panX==0);
         panWrite(7,2,-2,3,1);input.update();assert(input.panStarted && input.panX==-2 && input.panY==3);

@@ -79,9 +79,33 @@ class LiveControls {
         panY = std::clamp(y - previousPanY, -1000., 1000.);
         previousPanX = x; previousPanY = y; panSerial = seq;
     }
-    unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0;
+    unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0, hoverPointerSerial = 0;
     long heartbeat = 0;
+    std::string paneSeen; timespec paneStamp{};
+    // The adapter publishes the active window's rectangle on its monitor: v1 owner serial name x y w h stamp,
+    // or v1 owner serial - stamp when the active window is not on an XR output.
+    void updatePane() {
+        const auto filePath = existing(".pane");
+        if (filePath != paneSeen) { paneSeen = filePath; paneStamp = {}; }
+        struct stat st{};
+        if (stat(filePath.c_str(), &st) != 0) { paneValid = false; paneStamp = {}; return; }
+        if (st.st_mtim.tv_sec == paneStamp.tv_sec && st.st_mtim.tv_nsec == paneStamp.tv_nsec) return;
+        paneStamp = st.st_mtim;
+        paneValid = false;
+        std::ifstream file(filePath); std::string version, owner, name, extra;
+        unsigned long long seq; long stamp;
+        if (!(file >> version >> owner >> seq >> name) || version != "v1" || owner != session) return;
+        if (name == "-") { file >> stamp; return; }
+        double x, y, w, h;
+        if (!(file >> x >> y >> w >> h >> stamp) || file >> extra || !stampFresh(stamp)
+            || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)
+            || w <= 0 || h <= 0 || w > 32768 || h > 32768 || std::abs(x) > 1e6 || std::abs(y) > 1e6) return;
+        paneOutput = name; paneX = float(x); paneY = float(y); paneW = float(w); paneH = float(h); paneValid = true;
+    }
 public:
+    std::string paneOutput;
+    float paneX = 0, paneY = 0, paneW = 0, paneH = 0;
+    bool paneValid = false;
     double zoom = 0, panX = 0, panY = 0;
     bool panStarted = false, panActive = false;
     int fit = 0;
@@ -95,25 +119,30 @@ public:
         if (path.empty()) return;
         for (const auto& base : {path, mirror}) {
             if (base.empty()) continue;
-            unlink((base + ".pan").c_str()); unlink((base + ".active").c_str()); unlink(base.c_str());
+            unlink((base + ".pan").c_str()); unlink((base + ".pane").c_str()); unlink((base + ".active").c_str()); unlink(base.c_str());
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
         }
     }
-    void publishHover(bool enabled, const std::string& output, float u, float v) {
+    // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
+    // coordinates. The adapter warps the desktop pointer there exactly once per serial.
+    void publishHover(bool enabled, const std::string& output, float u, float v, unsigned pointerSerial=0, float pointerX=0, float pointerY=0) {
         if (path.empty()) return;
         const auto now = bootSeconds();
-        if (enabled == hoverEnabled && output == hoverOutput && now == hoverStamp) return;
-        hoverEnabled = enabled; hoverOutput = output; hoverStamp = now;
+        if (enabled == hoverEnabled && output == hoverOutput && pointerSerial == hoverPointerSerial && now == hoverStamp) return;
+        hoverEnabled = enabled; hoverOutput = output; hoverStamp = now; hoverPointerSerial = pointerSerial;
         const auto body = session + ' ' + std::to_string(++hoverSerial) + ' ' + (enabled ? '1' : '0') + ' ' +
             (output.empty() ? "-" : output) + ' ';
         std::ostringstream values;
-        values << body << std::setprecision(9) << u << ' ' << v << '\n';
-        writeFile(path + ".hover", "v2 " + values.str());
-        if (!mirror.empty()) writeFile(mirror + ".hover", values.str());
+        values << body << std::setprecision(9) << u << ' ' << v;
+        std::ostringstream pointer;
+        pointer << values.str() << ' ' << pointerSerial << ' ' << std::setprecision(9) << pointerX << ' ' << pointerY << '\n';
+        writeFile(path + ".hover", "v3 " + pointer.str());
+        if (!mirror.empty()) writeFile(mirror + ".hover", values.str() + '\n');
     }
     void update() {
         zoom = 0; fit = 0; if (path.empty()) return;
         updatePan();
+        updatePane();
         const auto now = bootSeconds();
         if (now != heartbeat) {
             writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');

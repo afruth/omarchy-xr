@@ -290,14 +290,28 @@ takes angular velocity from a least-squares fit over the newest unbroken run of 
 two-point difference, which multiplies sensor jitter by horizon/dt. Prediction fades in with head
 speed: a still head is shown exactly as measured, a fast turn gets the whole horizon.
 
-The four values are read from an optional `tracking.tsv` beside the viewer layout
+Before prediction, each sample passes a One-Euro filter per axis (Casiez, Roussel, Vogel 2012)
+on unwrapped angles: a low-pass whose cutoff rises with head speed, so a still head is smoothed
+hard and a turn barely at all. The rise is scaled by motion coherence, the net displacement over
+the path length of the last 200 ms: about 0.95 for a deliberate turn, 0.3-0.5 for a shake with
+some drift mixed in, near zero for a pure shake. The gate closes below 0.6 and opens fully above
+0.9, and the speed term only starts above the rest speed, so a shake stays smoothed however fast
+it is and a slow drift stays smoothed too; the predictor, which would overshoot at every reversal
+of a shake, is gated the same way. The
+velocity fit uses the device clock once its unit has been learned from the first samples, so USB
+timing jitter does not enter the estimate.
+
+The values are read from an optional `tracking.tsv` beside the viewer layout
 (`~/.local/state/omarchy-xr/`), checked every 250 ms, so they can be tuned while wearing the glasses:
 
-    tracking-v1 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8>
+    tracking-v2 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8> <minCutoffHz 0..30> <beta 0..5>
 
-The default is `tracking-v1 20 2 20 5`. A lower horizon, higher speeds or more samples give a
-steadier image; the opposite gives less lag. `0` for the horizon disables prediction. Removing the
-file restores the defaults, and an invalid line is ignored with a message in `viewer.log`.
+The default is `tracking-v2 20 2 20 5 0.7 0.25` (a `tracking-v1` line with the first four values
+keeps the default filter). A lower horizon, higher speeds, more samples, a lower cutoff or a lower
+beta give a steadier image; the opposite gives less lag. `0` for the horizon disables prediction
+and `0` for the cutoff disables the filter. Removing the file restores the defaults, and an invalid
+line is ignored with a message in `viewer.log`. `pose.sock.stats` reports the live `filterCutoffHz`
+and `motionCoherence`.
 
 Each missed vblank adds 1 ms of latch margin (`MissPenalty`, at most 6 ms, draining at 1 ms per
 20 s), so the pose stays on the late latch and the margin converges. The pose is sampled at the
@@ -305,3 +319,58 @@ start of the frame when there is no direct output, or when the lease has not rep
 timestamp yet. The scene GPU timer that feeds the margin includes the spectator render, because it
 queues ahead of the stereo scene. `pose.sock.stats` reports `predictionMs`, `predictionCapMs`,
 `latchMarginMs` and `latchPenaltyMs`.
+
+### GPU load on the integrated card
+
+The compositor's DMA-BUF is linear, and sampling a linear image is slow on the Intel GPU: each
+screen row touches a different cache line of the source. Every new capture frame is therefore
+blitted once into a driver-tiled private texture, also at 1:1, and the scene samples that copy
+(`OMARCHY_XR_DIRECT_SAMPLING` restores direct sampling for A/B measurements). The sky texture
+carries mipmaps for the same reason; an 8192x4096 image is heavily minified on a 1920x1080 eye.
+
+The spectator window renders the scene a third time and queues ahead of the stereo scene. It is
+timed separately (`gpu spectator p95`), and `SpectatorGovernor` lowers it to 10 fps once a frame's
+spectator + scene GPU time passes 60% of the refresh period and pauses it past 85%, recovering one
+step at a time after two seconds below 45%. The latch margin uses the sum of both timers.
+
+Halos and drop shadows are four feathered bands per panel drawn through `HaloShader`, a GLSL 1.20
+program that fades alpha with the distance from the panel edge; the twelve-ring immediate-mode
+version remains as the fallback when the program cannot be built. Panel copies carry one mipmap
+level, since the quality buckets always leave them 1.25-1.9x denser than the screen. When one
+opaque panel covers an entire eye, that eye skips the full-screen sky draw. `occlusion::panelCoversEye`
+projects the same tessellated grid the renderer draws, clips each quad against the near plane, and
+requires that no boundary edge (including the near-plane cut) touches the viewport square and that
+the viewport centre lies in one quad: a connected patch can only leave part of the viewport
+uncovered where its boundary passes through, so this is exact for flat, curved and wrap-around
+panels alike. The governor decides on the 80th percentile of the last thirty frames, not single spikes.
+
+### Gaze dwell, pointer and the selected monitor
+
+A glance never selects. `gaze::Dwell` fires once when the look point has rested within a small
+area of one monitor for the dwell time with the head settled (filtered speed below the settle
+speed); leaving the area, a miss, or a fast head resets it, and it re-arms only after the gaze
+leaves the area. Monitor selection (halo, workspace focus, zoom target) follows the dwell; the
+explicit fit command still targets what is looked at now. Settings live-reload from an optional
+`gaze.tsv` beside the layout: `gaze-v1 <dwellMs> <settleSpeed deg/s> <radiusPx> <pointer 0|1>`,
+default `gaze-v1 500 15 120 1`. The head speed a dwell watches is that of the stabilised
+output, smoothed at 4 Hz, so it settles within a quarter second of a turn and a smoothed shake
+still counts as settled.
+
+Selection pauses while the look point is being driven rather than rested: during a pan or zoom
+gesture, for 400 ms after any fit, zoom or pan input, and while the camera easing has not settled.
+
+The flick gestures step through three zoom levels. Flick in: workspace overview -> the looked-at
+monitor face-on -> the active window on that monitor, fitted to the eye (`fitPane`, from the
+`.controls.pane` mailbox the adapter writes with the active window's rectangle on its XR output).
+Flick out: pane -> monitor -> overview. A flick in on a different monitor than the current level's
+restarts at the monitor level. The socket commands `fit` and `fit_target` (Studio buttons, Ctrl+Up
+and Ctrl+Down) stay direct: overview and monitor.
+
+Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
+The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the
+window under it if it is not already active; halo transitions still only focus the workspace.
+Adapter version 3; the mirror mailbox keeps the older line.
+
+The selected monitor is outlined in the Omarchy theme's accent colour (`~/.local/state/omarchy/
+current/theme/colors.toml`, re-read when it changes): a solid ten-pixel rim that fades over the
+halo extent, eased in with the selection. Unselected monitors keep a faint glow in the same colour.

@@ -27,6 +27,10 @@ inline size_t centerPanel(const std::vector<PanelLayout>& panels,float cx,float 
 inline float heightDistance(float height,float fov) {
     return height/900.f/2/std::tan(fov*spatial::pi/360.f)*1.04f;
 }
+// Depth at which a w x h pixel rectangle fills the eye, whichever side is limiting.
+inline float rectDistance(float w,float h,float fov,float aspect) {
+    return std::max(heightDistance(h,fov),heightDistance(w/std::max(aspect,.01f),fov));
+}
 inline targeting::Vec fitPanForHeight(const PanelLayout& p,const spatial::Pose& pose,tracking::Quaternion view,float fov) {
     // Fit vertical projected bounds in the user's current viewing frame.
     // Keep head calibration and rotation unchanged; move the workspace smoothly.

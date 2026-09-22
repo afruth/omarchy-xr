@@ -111,8 +111,9 @@ public:
     }
     int width()const{return w;}
     int height()const{return h;}
-    bool begin(double now){
-        if(!configured || callback || now-lastFrame<1./30-.001)return false;
+    // interval: seconds between frames; a negative value skips this frame (load governor).
+    bool begin(double now,double interval=1./30){
+        if(!configured || callback || interval<0 || now-lastFrame<interval-.001)return false;
         drawing=nullptr;
         for(auto& slot:slots){
             if(!slot)slot=std::make_unique<Slot>();
