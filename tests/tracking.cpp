@@ -118,7 +118,7 @@ void prediction() {
     assert(!gapped.predict(50.22,50.2));
     // Settings line: versioned, bounded, no trailing junk. v1 keeps the default filter.
     const auto parsed=tracking::parsePrediction("tracking-v1 12 3 30 6");
-    assert(parsed && parsed->horizonMs==12 && parsed->restSpeed==3 && parsed->fullSpeed==30 && parsed->samples==6 && parsed->minCutoff==1 && parsed->beta==0.3);
+    assert(parsed && parsed->horizonMs==12 && parsed->restSpeed==3 && parsed->fullSpeed==30 && parsed->samples==6 && parsed->minCutoff==0.7 && parsed->beta==0.25);
     const auto parsed2=tracking::parsePrediction("tracking-v2 12 3 30 6 0.5 0.1");
     assert(parsed2 && parsed2->minCutoff==0.5 && parsed2->beta==0.1);
     for(const char* bad:{"","tracking-v3 12 3 30 6","tracking-v2 12 3 30 6","tracking-v2 12 3 30 6 31 0.1","tracking-v2 12 3 30 6 1 -1",
@@ -136,6 +136,18 @@ void prediction() {
     tracking::Camera turning;
     feed(turning,200,240,[](int,double t){ return 30*(t-200); });
     assert(turning.coherence>0.95 && turning.cutoffHz>5);
+    // A shake riding on a slow drift still scores as incoherent enough to keep the filter closed:
+    // 3 deg/s drift plus a 6 Hz, half-degree wobble.
+    // The drift itself lags by a constant amount, so the wobble that gets through is the spread of
+    // (filtered - drift) over the last two seconds: under a fifth of the raw one-degree swing.
+    tracking::Camera drifting;
+    double lo=1e9, hi=-1e9;
+    for(int i=0;i<360;++i){
+        const double t=250+i/120.0, base=3*(t-250);
+        assert(drifting.accept("euler-nwu-v1 "+std::to_string(t)+" 0 0 "+std::to_string(base+0.5*std::sin(2*3.14159265358979323846*6*(t-250))),t+0.001));
+        if(i>=120){ lo=std::min(lo,drifting.yaw-base); hi=std::max(hi,drifting.yaw-base); }
+    }
+    assert(drifting.coherence<0.6 && drifting.cutoffHz<1.2 && hi-lo<0.2);
     const double turnLag=30*(240/120.0-1/120.0)-turning.yaw;
     assert(turnLag>0 && turnLag<0.7);
     // Prediction from the filtered turn covers most of that lag.

@@ -41,8 +41,8 @@ struct Prediction {
     double restSpeed=2;   // at or below this head speed nothing is predicted
     double fullSpeed=20;  // at or above it the whole horizon applies
     int samples=5;        // least-squares velocity window
-    double minCutoff=1;   // Hz: smoothing on a still or shaking head; 0 disables the filter
-    double beta=0.3;      // Hz per deg/s: how fast the filter opens for a coherent turn
+    double minCutoff=0.7; // Hz: smoothing on a still or shaking head; 0 disables the filter
+    double beta=0.25;     // Hz per deg/s above restSpeed: how fast the filter opens for a deliberate turn
 };
 inline std::optional<Prediction> parsePrediction(const std::string& line) {
     std::istringstream in(line); std::string version,extra; Prediction p;
@@ -69,8 +69,10 @@ struct Camera {
     int histCount=0, histNext=0;
     // One-Euro filter per axis on unwrapped angles (Casiez, Roussel, Vogel 2012): a low-pass whose
     // cutoff rises with speed, so a still head is smoothed hard and a turn barely at all. The rise is
-    // scaled by motion coherence, net displacement over path length in the last 200 ms, which is
-    // near one for a deliberate turn and near zero for a shake; a shaking head stays smoothed.
+    // gated by motion coherence, net displacement over path length in the last 200 ms: about 0.95
+    // for a deliberate turn, 0.3-0.5 for a shake with some drift mixed in, near zero for a pure
+    // shake. The gate is closed below 0.6 and fully open above 0.9, so a shake stays smoothed
+    // however fast it is; and the speed term starts above restSpeed, so a slow drift stays smoothed.
     struct Axis { double raw=0, filtered=0, velocity=0; };
     Axis axes[3]{};
     bool filterReady=false;
@@ -125,7 +127,7 @@ struct Camera {
             speed+=axes[i].velocity*axes[i].velocity;
         }
         speed=std::sqrt(speed);
-        cutoffHz=prediction.minCutoff+prediction.beta*speed*coherence*coherence;
+        cutoffHz=prediction.minCutoff+prediction.beta*std::max(0.0,speed-prediction.restSpeed)*coherenceGate();
         for(int i=0;i<3;++i){
             axes[i].filtered=lowpass(axes[i].filtered, value[i], dt, cutoffHz);
             axes[i].raw=value[i];
@@ -133,6 +135,7 @@ struct Camera {
         }
         filterTime=t;
     }
+    double coherenceGate() const { const double g=std::clamp((coherence-0.6)/0.3,0.0,1.0); return g*g*(3-2*g); }
     // Extrapolate to a scanout time. A stale pose, a still head, a shaking head and a gap in the
     // samples are left as measured.
     bool predict(double targetTime, double now) {
@@ -157,7 +160,7 @@ struct Camera {
         // Fade prediction in with head speed, so what little velocity noise remains never moves a still
         // image, and scale it by coherence: extrapolating a shake overshoots at every reversal.
         const double x=std::clamp((std::sqrt(vr*vr+vp*vp+vy*vy)-prediction.restSpeed)/(prediction.fullSpeed-prediction.restSpeed),0.0,1.0);
-        const double applied=horizon*x*x*(3-2*x)*coherence;
+        const double applied=horizon*x*x*(3-2*x)*coherenceGate();
         if(applied<=0) { updateView(); return false; }
         const double relYaw=std::remainder((latest.yaw-neutralYaw)+vy*applied,360.0);
         view=conjugate(orientation(latest.roll+vr*applied, latest.pitch+vp*applied, relYaw));

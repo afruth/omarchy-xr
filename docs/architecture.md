@@ -293,9 +293,11 @@ speed: a still head is shown exactly as measured, a fast turn gets the whole hor
 Before prediction, each sample passes a One-Euro filter per axis (Casiez, Roussel, Vogel 2012)
 on unwrapped angles: a low-pass whose cutoff rises with head speed, so a still head is smoothed
 hard and a turn barely at all. The rise is scaled by motion coherence, the net displacement over
-the path length of the last 200 ms, which is near one for a deliberate turn and near zero for a
-tremor or a shaken pair of glasses; a shake therefore stays smoothed however fast it is, and the
-predictor, which would overshoot at every reversal, is scaled down by the same factor. The
+the path length of the last 200 ms: about 0.95 for a deliberate turn, 0.3-0.5 for a shake with
+some drift mixed in, near zero for a pure shake. The gate closes below 0.6 and opens fully above
+0.9, and the speed term only starts above the rest speed, so a shake stays smoothed however fast
+it is and a slow drift stays smoothed too; the predictor, which would overshoot at every reversal
+of a shake, is gated the same way. The
 velocity fit uses the device clock once its unit has been learned from the first samples, so USB
 timing jitter does not enter the estimate.
 
@@ -304,7 +306,7 @@ The values are read from an optional `tracking.tsv` beside the viewer layout
 
     tracking-v2 <horizonMs 0..30> <restSpeed deg/s> <fullSpeed deg/s> <samples 2..8> <minCutoffHz 0..30> <beta 0..5>
 
-The default is `tracking-v2 20 2 20 5 1 0.3` (a `tracking-v1` line with the first four values
+The default is `tracking-v2 20 2 20 5 0.7 0.25` (a `tracking-v1` line with the first four values
 keeps the default filter). A lower horizon, higher speeds, more samples, a lower cutoff or a lower
 beta give a steadier image; the opposite gives less lag. `0` for the horizon disables prediction
 and `0` for the cutoff disables the filter. Removing the file restores the defaults, and an invalid
