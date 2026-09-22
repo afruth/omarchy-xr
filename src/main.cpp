@@ -410,6 +410,14 @@ struct View {
     void fitTarget() {
         // An explicit command targets what is looked at now; it does not wait for a dwell.
         if (gaze.current) { const auto previous=selection.output; selection.observe(gaze.current); if (selection.output!=previous) selectionAnchor=baseView(); }
+        fitSelection();
+    }
+    void fitOutput(const std::string& name) {
+        if (std::none_of(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==name; })) return;
+        selection.output=name; selectionAnchor=baseView();
+        fitSelection();
+    }
+    void fitSelection() {
         interactionUntil=monotonicSeconds()+.4;
         if (focusSelected(true, 0)) { level=Level::Monitor; levelOutput=selection.output; std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl; }
         else std::cout << "Camera: no selected monitor; fit ignored" << std::endl;
@@ -696,6 +704,7 @@ struct View {
         if (tracking.recenterRequested) { recenterSelected(); tracking.recenterRequested=false; }
         if (tracking.fitRequested) { fit(); tracking.camera.recenter(monotonicSeconds()); tracking.fitRequested=false; }
         if (tracking.fitTargetRequested) { fitTarget(); tracking.fitTargetRequested=false; }
+        if (!controls->focusOutput.empty()) fitOutput(controls->focusOutput);
     }
     void pollInput() {
         SDL_Event event;

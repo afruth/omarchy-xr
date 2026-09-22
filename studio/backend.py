@@ -949,7 +949,7 @@ class Manager:
             version = int((Path(base) / "controls.version").read_text().strip())
         except (OSError, ValueError):
             version = 0
-        if version != 3:
+        if version != 4:
             return "Reinstall XR controls with make install-controls"
         return ""
 

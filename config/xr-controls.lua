@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 3
+local CONTROLS_VERSION = 4
 local setHoverTimer
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 local function retireHoverTimer()
@@ -14,8 +14,14 @@ local function retireHoverTimer()
     timer:set_enabled(false)
     omarchy_xr_controls.hover_timer=nil
 end
+local function retireWorkspaceEvents()
+    for _,subscription in ipairs(omarchy_xr_controls.workspace_events or {}) do subscription:remove() end
+end
 retireHoverTimer()
+retireWorkspaceEvents()
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
+local workspacePending, gazeDispatch = false, false
+local focusSerial, focusWaiting = 0, nil
 local active = false
 local lastTap, tapBlockedUntil=nil,0
 local function bootSeconds()
@@ -177,6 +183,13 @@ local function readSettings()
 end
 local function adoptSession(owner)
     session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
+    workspacePending=false;focusWaiting=nil;focusSerial=0
+    local focus=io.open(path..".focus","r")
+    if focus then
+        local savedOwner,savedSerial=(focus:read("*l") or ""):match("^v1 (%d+) (%d+) ")
+        focus:close()
+        if savedOwner==session then focusSerial=tonumber(savedSerial) or 0 end
+    end
     -- Preserve accumulated input across a Hyprland config reload.
     local previous = io.open(path, "r")
     if not previous then return end
@@ -193,6 +206,7 @@ local function restorePan()
 end
 local function applyLive(live)
     active = live
+    if not live then workspacePending=false;focusWaiting=nil end
     swipe=nil;panActive=false;cancelTap()
     if active then publishPan() end
     hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
@@ -225,6 +239,46 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
 local hoverName   -- the monitor the halo is on, for the pane publisher
+local pointerSerialSeen
+-- Observe existing workspace shortcuts, including a workspace already visible on
+-- another monitor. Resolve after dispatch finishes, coalescing both event types.
+local function workspaceChanged()
+    if active and not gazeDispatch then workspacePending=true end
+end
+omarchy_xr_controls.workspace_events={
+    hl.on("workspace.active",workspaceChanged),
+    hl.on("monitor.focused",workspaceChanged),
+}
+local function followWorkspace()
+    if not workspacePending then return end
+    workspacePending=false
+    refresh()
+    if not active then return end
+    local workspace=hl.get_active_workspace()
+    local monitor=workspace and workspace.monitor
+    local name=monitor and monitor.name
+    focusWaiting=nil
+    if not name or workspace.special or monitor.active_special_workspace or not name:match("^OMXR%-[%w_-]+$") then return end
+    local file=io.open(path..".focus.tmp","w")
+    if not file then return end
+    focusSerial=focusSerial+1
+    file:write(string.format("v1 %s %d %s %d\n",session,focusSerial,name,math.floor(bootSeconds())))
+    file:close();os.rename(path..".focus.tmp",path..".focus")
+    focusWaiting={name=name,untilTime=bootSeconds()+2}
+    gazeTarget=name
+end
+local function waitForFocus(mode,name,pointerSerial)
+    if not focusWaiting then return false end
+    -- A mailbox sample from before the shortcut must not switch focus back or
+    -- warp the pointer. The renderer acknowledges by publishing its selection.
+    pointerSerialSeen=pointerSerial
+    if mode=="1" and name==focusWaiting.name then gazeTarget=name end
+    if mode=="1" and name==focusWaiting.name or bootSeconds()>=focusWaiting.untilTime then
+        focusWaiting=nil
+        return false
+    end
+    return true
+end
 -- v3 appends a pointer serial and the dwelled monitor pixel; older lines carry no pointer.
 local function hoverTarget(line)
     local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
@@ -235,7 +289,6 @@ local function hoverTarget(line)
 end
 -- A dwell warps the desktop pointer to the look point once and focuses the window under it.
 -- Hyprland's follow-mouse may already focus it; the explicit dispatch covers the other policies.
-local pointerSerialSeen
 local function warpPointer(name,px,py)
     for _,monitor in ipairs(hl.get_monitors()) do
         if monitor.name==name then
@@ -292,6 +345,7 @@ local function selectGazeWorkspace()
     local owner,serialText,mode,name,pointerSerial,px,py=hoverTarget(line)
     local serialNumber=tonumber(serialText)
     if not noteHover(owner, serialNumber) then pointerSerialSeen=pointerSerial;return end
+    if waitForFocus(mode,name,pointerSerial) then return end
     if pointerSerial and pointerSerial~=pointerSerialSeen then
         -- The first sample of a session only records the serial; a pre-existing dwell is not replayed.
         if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py) end
@@ -339,7 +393,14 @@ local function publishPane(name)
     file:write(string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
     file:close();os.rename(path..".pane.tmp",path..".pane")
 end
-local function updatePointer() selectGazeWorkspace();publishPane(hoverName) end
+local function updatePointer()
+    followWorkspace()
+    gazeDispatch=true
+    local success,message=pcall(selectGazeWorkspace)
+    gazeDispatch=false
+    if not success then error(message) end
+    publishPane(hoverName)
+end
 local hoverTimer
 setHoverTimer = function(enabled)
     if enabled then

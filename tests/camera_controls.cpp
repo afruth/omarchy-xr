@@ -16,13 +16,46 @@ void cylinderFit();
 void gazeZoom();
 void adjacentPanelZoom();
 void gutterAndInput();
+void workspaceInput();
 int main() {
     easeZoom();
     cylinderFit();
     gazeZoom();
     adjacentPanelZoom();
     gutterAndInput();
+    workspaceInput();
     std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup passed\n";
+}
+
+void workspaceInput() {
+    char temp[]="/tmp/xr-workspace-test-XXXXXX";assert(mkdtemp(temp));
+    const std::string pose=std::string(temp)+"/pose.sock",path=pose+".controls.focus";
+    const auto owner=std::to_string(getpid()),stamp=std::to_string(std::time(nullptr));
+    auto write=[&](const std::string& packet){std::ofstream file(path);file<<packet;};
+    write("v1 "+owner+" 1 OMXR-stale "+stamp);
+    {
+        LiveControls input(pose);assert(input.focusOutput.empty()); // never replay an old session's file
+        auto check=[&](const std::string& packet,const std::string& output){
+            usleep(2000);write(packet);input.update();assert(input.focusOutput==output);
+        };
+        check("v1 "+owner+" 1 OMXR-left "+stamp,"OMXR-left");
+        input.update();assert(input.focusOutput.empty());
+        check("v1 "+owner+" 1 OMXR-right "+stamp,""); // duplicate serial
+        check("v1 "+owner+" 9 OMXR-right "+stamp,"OMXR-right"); // coalesced requests
+        check("v1 "+owner+" 8 OMXR-left "+stamp,""); // older request
+        check("v1 foreign 10 OMXR-left "+stamp,"");
+        check("v1 "+owner+" 10 OMXR-left "+std::to_string(std::time(nullptr)-10),"");
+        check("v1 "+owner+" 10 OMXR-left "+std::to_string(std::time(nullptr)+10),"");
+        check("v1 "+owner+" 10 eDP-1 "+stamp,"");
+        check("v1 "+owner+" 10 OMXR-left "+stamp+" extra","");
+        check("v2 "+owner+" 10 OMXR-left "+stamp,"");
+        check("v1 "+owner+" 10 OMXR-left "+stamp,"OMXR-left"); // invalid packets do not consume serials
+        std::filesystem::remove(path);input.update();assert(input.focusOutput.empty());
+        timespec boot{};clock_gettime(CLOCK_BOOTTIME,&boot);
+        check("v1 "+owner+" 11 OMXR-right "+std::to_string(boot.tv_sec),"OMXR-right");
+    }
+    assert(!std::filesystem::exists(path));
+    std::filesystem::remove_all(temp);
 }
 
 void easeZoom() {
@@ -209,7 +242,7 @@ void gazeZoom() {
 }
 
 void adjacentPanelZoom() {
-    targeting::Hit lockedHit;lockedHit.output="other";lockedHit.u=.2f;lockedHit.v=.8f;
+    targeting::Hit lockedHit{};lockedHit.output="other";lockedHit.u=.2f;lockedHit.v=.8f;
     std::optional<targeting::Hit> locked=lockedHit;
     PanelLayout next{"other",1944,0,1920,1080};
     const auto nextPose=spatial::pose((next.x+next.width/2)/900,0,next.width/900,2,5,0,0);

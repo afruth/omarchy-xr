@@ -1,5 +1,5 @@
 -- Exercise actual Lua callbacks without a compositor or any input devices.
-local files,bindings,gestures={}, {}, {}
+local files,bindings,gestures,events={}, {}, {}, {}
 package.preload["hypr.xr-touchpads"]=function()return {"test-touchpad"} end
 local now=100
 files["/proc/uptime"]="100"
@@ -19,6 +19,11 @@ io.open=function(path,mode)
     return {write=function(_,value) files[path]=value end,close=function() end}
 end
 hl={
+    on=function(name,callback)
+        local subscription={callback=callback}
+        subscription.remove=function(self) if events[name]==self then events[name]=nil end end
+        events[name]=subscription;return subscription
+    end,
     get_config=function(_)return "lrm" end,
     bind=function(key,callback,options)
         local binding={options=options,callback=callback,set_enabled=function(self,value)self.enabled=value end}
@@ -39,7 +44,7 @@ assert(not bindings["CTRL + Up"].enabled and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + Up"].enabled and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==3 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==4 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -213,3 +218,48 @@ testGestures()
 testHalo()
 testSettings()
 testPan()
+
+local function testWorkspaceFocus()
+    now=120;files["/proc/uptime"]="120";files[path..".active"]="42 120";omarchy_xr_controls.refresh()
+    local ws={id=10,monitor={name="OMXR-test-2"},special=false}
+    hl.get_active_workspace=function() return ws end
+    local function event(name) events[name or "workspace.active"].callback(ws) end
+    local function hover(seq,name,pointer)
+        files[path..".hover"]=string.format("v3 42 %d 1 %s 0 0 %d 100 100",seq,name,pointer or 0)
+        omarchy_xr_controls.hover()
+    end
+    local function packet(seq,name) return string.format("v1 42 %d %s 120\n",seq,name or ws.monitor.name) end
+    event("monitor.focused");event() -- a single shortcut can emit both
+    omarchy_xr_controls.hover();assert(files[path..".focus"]==packet(1))
+    local dispatched=0
+    hl.dispatch=function()
+        dispatched=dispatched+1;event("monitor.focused");event()
+    end
+    hover(1000,"OMXR-test-1",1);hover(1001,"OMXR-test-1",2)
+    assert(dispatched==0) -- old hover/pointer samples cannot undo the keyboard choice
+    hover(1002,"OMXR-test-2",3)
+    assert(dispatched==0) -- acknowledgment must not replay a pointer dwell
+    hover(1003,"OMXR-test-1",4);omarchy_xr_controls.hover()
+    assert(dispatched>0 and files[path..".focus"]==packet(1)) -- XR's own dispatch never fits
+    event("monitor.focused");omarchy_xr_controls.hover()
+    assert(files[path..".focus"]==packet(2)) -- already-visible workspace on another monitor
+    ws={id=11,monitor={name="OMXR-test-2"}};event();omarchy_xr_controls.hover()
+    assert(files[path..".focus"]==packet(3)) -- different workspace on the same monitor
+    ws={id=12,monitor={name="OMXR-test-1"}};event()
+    ws={id=13,monitor={name="OMXR-test-2"}};event();omarchy_xr_controls.hover()
+    assert(files[path..".focus"]==packet(4)) -- rapid switching targets the final workspace
+    local previous=files[path..".focus"]
+    ws.special=true;event();omarchy_xr_controls.hover();assert(files[path..".focus"]==previous)
+    ws.special=false;ws.monitor.active_special_workspace={id=-99}
+    event("monitor.focused");omarchy_xr_controls.hover();assert(files[path..".focus"]==previous)
+    ws={monitor={name="eDP-1"}};event();omarchy_xr_controls.hover();assert(files[path..".focus"]==previous)
+    ws=nil;event();omarchy_xr_controls.hover();assert(files[path..".focus"]==previous)
+    ws={id=10,monitor={name="OMXR-test-2"}}
+    dofile("config/xr-controls.lua");event();omarchy_xr_controls.hover()
+    assert(files[path..".focus"]==packet(5)) -- serial survives a live config reload
+    previous=files[path..".focus"]
+    now=125;files["/proc/uptime"]="125";event();omarchy_xr_controls.hover()
+    assert(files[path..".focus"]==previous) -- expired renderer, even before the heartbeat timer fires
+    print("Workspace focus: coalescing, gaze suppression, hover acknowledgment, reload and expiry passed")
+end
+testWorkspaceFocus()
