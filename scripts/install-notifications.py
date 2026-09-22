@@ -15,8 +15,10 @@ def install_files(source, config, native):
         raise RuntimeError("Requires Omarchy's Quickshell notification service")
     target = config / "omarchy/plugins" / PLUGIN_ID
     target.mkdir(parents=True, exist_ok=True)
-    for filename in ("manifest.json", "Bridge.qml"):
-        shutil.copy2(source / filename, target / filename)
+    # Keep one discoverable marketplace plugin in the source repository. This
+    # optional extension becomes a separate plugin only during explicit setup.
+    for filename, installed in (("manifest.json.in", "manifest.json"), ("Bridge.qml", "Bridge.qml")):
+        shutil.copy2(source / filename, target / installed)
     template = (source / "Service.qml.in").read_text()
     # A file URL lets Qt load the installed service outside Quickshell's config tree.
     # Relative imports outside that tree are redirected to qs-blackhole.
