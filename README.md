@@ -41,8 +41,8 @@ Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**)
   **Monitor settings…**, **Workspace settings…**, and **Save setup…** contain
   additional options. The persistent action bar applies changes; switching tabs
   preserves unapplied edits.
-- **Environment**: choose a panorama or black background and adjust brightness.
-  Expand **Environment options** for rotation and local image import.
+- **Environment**: choose the theme-colored Tron grid, a panorama, or black background and adjust brightness.
+  Expand **Environment options** for glow animation, rotation, and local image import.
 - **Utilities**: check the glasses connection, then expand connection tools,
   recording, performance, previews/cleanup, or session activity as needed.
 
@@ -530,16 +530,34 @@ These are dimension guards, not a guarantee of successful buffer allocation or s
 
 ## Environment backgrounds
 
-The Environment tab selects a local 360° panorama or a black background.
+The Environment tab selects the built-in **Tron grid**, a local 360° panorama, or a black background.
 Brightness and rotation apply live to stereo, desktop preview, and the mono OBS
-window, independently of monitor layout. The sky follows camera rotation, with
-no positional parallax or change from monitor zoom. Settings persist across runs.
+window, independently of monitor layout. Backgrounds follow camera rotation and stay
+anchored when monitor zoom or pan changes. Panoramas have no positional parallax;
+the Tron floor uses the stereo eye offset. Settings persist across runs.
+
+**Tron grid** is generated in OpenGL: a perspective floor, a soft horizon, and
+sparse light structures. It follows the current Omarchy accent even while Studio
+is closed, and needs no image files or ImageMagick. The floor stays stationary;
+the horizon and structures vary gently between 92% and 100% intensity over 24
+seconds. Turn off **Environment options → Animate glow** for a fully static scene.
+Grid lines fade at subpixel sizes to reduce distant shimmer. Switching to Tron
+releases the resident panorama texture; it uses no image texture or bloom buffer.
+
+To measure background GPU time and capture the actual rendered scene without
+opening an XR output, run `make build/environment-preview`, then
+`build/environment-preview /tmp/xr-backgrounds /path/to/sky.bmp` (the panorama
+argument is optional). The probe reports median/p95 GPU time for one 1920 × 1080
+eye at the renderer’s default 28° vertical field of view and writes PPM captures. It measures background drawing only; full frame
+rate still depends on capture, monitors, head direction, and hardware.
+`make check-environment` exercises panorama and Tron rendering in a GL session.
 
 Import a 2:1 JPEG, PNG or BMP using **Environment options → Import panorama…**. ImageMagick prepares a maximum
 4096 × 2048 texture by default; optional 8K uses more GPU memory. Smaller images
 are not upscaled. HDR/EXR and cubemap imports are not currently supported.
 The original file stays unchanged. Decode runs off the renderer thread and uploads
-are spread across frames; switching retains the previous sky until loading finishes.
+are spread across frames; switching between panoramas retains the previous image
+until loading finishes.
 A static panorama adds one cached mesh draw per eye; 120 Hz performance still needs
 hardware measurement. Brightness zero disables the sky draw.
 

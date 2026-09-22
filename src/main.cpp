@@ -778,7 +778,7 @@ struct View {
         const double t=.1*std::tan(fov*pi/360), r=t*eyeWidth/height;
         glFrustum(-r, r, flipped?t:-t, flipped?-t:t, .1, 20000);
         glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-        if (!skyHidden(eyePosition, float(t/.1), float(r/.1))) environment->draw(tracking::matrix(view).data());
+        if (!skyHidden(eyePosition, float(t/.1), float(r/.1))) environment->draw(tracking::matrix(view).data(), accent.rgb, eyePosition);
         else ++skyCulled;
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);

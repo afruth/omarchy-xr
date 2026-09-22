@@ -29,7 +29,7 @@ Item {
     function setControl(key,value) {
         var copy=Object.assign({},controlDraft);copy[key]=value;controlDraft=copy;controlsDirty=true;
     }
-    property var environmentSettings: ({id:"",brightness:25,rotation:0})
+    property var environmentSettings: ({id:"",brightness:25,rotation:0,animated:true})
     property var environmentItems: []
     property bool canImportEnvironment: false
     property int imageResolution: 4096
@@ -1464,12 +1464,12 @@ Item {
                                     spacing: 12
                                     Heading {
                                         text: "Environment"
-                                        helpText: "Choose a 360° background. Changes apply immediately."
+                                        helpText: "Choose your background. Changes apply immediately."
                                     }
                                     Action {
                                         text: "Black background"
                                         selected: !root.environmentSettings.id
-                                        helpText: "Turn off the panorama and use a black background."
+                                        helpText: "Turn off the environment and use a black background."
                                         enabled: root.loaded && !root.busy
                                         onClicked: root.setEnvironment("id", "")
                                     }
@@ -1523,10 +1523,60 @@ Item {
                                                 Image {
                                                     x: 6; y: 6
                                                     width: parent.width - 12; height: 62
+                                                    visible: environmentTile.modelData.id !== "builtin:tron"
                                                     source: environmentTile.modelData.thumbnail
                                                     asynchronous: true
                                                     fillMode: Image.PreserveAspectCrop
                                                     clip: true
+                                                }
+                                                Canvas {
+                                                    id: tronPreview
+                                                    x: 6; y: 6
+                                                    width: parent.width - 12; height: 62
+                                                    visible: environmentTile.modelData.id === "builtin:tron"
+                                                    readonly property color gridColor: Color.accent
+                                                    readonly property color backdrop: Color.background
+                                                    onGridColorChanged: requestPaint()
+                                                    onBackdropChanged: requestPaint()
+                                                    onWidthChanged: requestPaint()
+                                                    onHeightChanged: requestPaint()
+                                                    onVisibleChanged: if (visible) requestPaint()
+                                                    onPaint: {
+                                                        if (!visible) return;
+                                                        var c = getContext("2d");
+                                                        var horizon = height * .38;
+                                                        c.reset();
+                                                        c.fillStyle = backdrop;
+                                                        c.fillRect(0, 0, width, height);
+                                                        var glow = c.createLinearGradient(0, 0, 0, height);
+                                                        glow.addColorStop(0, Qt.alpha(gridColor, 0));
+                                                        glow.addColorStop(.38, Qt.alpha(gridColor, .16));
+                                                        glow.addColorStop(1, Qt.alpha(gridColor, .025));
+                                                        c.fillStyle = glow;
+                                                        c.fillRect(0, 0, width, height);
+                                                        c.beginPath();
+                                                        for (var i = -6; i <= 6; i++) {
+                                                            c.moveTo(width / 2 + i * 2, horizon);
+                                                            c.lineTo(width / 2 + i * width / 5, height);
+                                                        }
+                                                        for (var row = 1; row <= 6; row++) {
+                                                            var y = horizon + (height - horizon) * Math.pow(row / 6, 2);
+                                                            c.moveTo(0, y);
+                                                            c.lineTo(width, y);
+                                                        }
+                                                        c.strokeStyle = Qt.alpha(gridColor, .48);
+                                                        c.lineWidth = 1;
+                                                        c.stroke();
+                                                        c.beginPath();
+                                                        c.moveTo(0, horizon);
+                                                        c.lineTo(width, horizon);
+                                                        c.strokeStyle = Qt.alpha(gridColor, .1);
+                                                        c.lineWidth = 5;
+                                                        c.stroke();
+                                                        c.strokeStyle = Qt.alpha(gridColor, .7);
+                                                        c.lineWidth = 1;
+                                                        c.stroke();
+                                                    }
                                                 }
                                                 Label {
                                                     x: 8; y: 75; width: parent.width - 16
@@ -1559,7 +1609,7 @@ Item {
                                     spacing: 12
                                     Label {
                                         text: "Brightness"
-                                        helpText: "Adjust the panorama brightness. Your monitor brightness is unchanged."
+                                        helpText: "Adjust the background brightness. Your monitor brightness is unchanged."
                                     }
                                     Ui.PanelSlider {
                                         id: skyBrightness
@@ -1599,7 +1649,36 @@ Item {
                                 }
                                 Disclosure {
                                     title: "Environment options"
-                                    helpText: "Rotate the panorama or import your own image."
+                                    helpText: "Adjust the background or import your own panorama."
+                                    RowLayout {
+                                        visible: root.environmentSettings.id === "builtin:tron"
+                                        Layout.fillWidth: true
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Animate glow"
+                                            helpText: "Gently vary the horizon and structure glow over 24 seconds. The grid stays stationary; no geometry moves."
+                                        }
+                                        Ui.ToggleSwitch {
+                                            checked: root.environmentSettings.animated !== false
+                                            enabled: root.loaded && !root.busy
+                                            activeFocusOnTab: true
+                                            Accessible.role: Accessible.CheckBox
+                                            Accessible.name: "Animate glow"
+                                            Accessible.description: "Slow stationary glow; no moving geometry"
+                                            Accessible.checked: checked
+                                            Keys.onSpacePressed: if (enabled) toggled()
+                                            Accessible.onToggleAction: if (enabled) toggled()
+                                            onToggled: root.setEnvironment("animated", !checked)
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                anchors.margins: -3
+                                                color: "transparent"
+                                                border.width: parent.activeFocus ? 1 : 0
+                                                border.color: Color.accent
+                                                radius: Style.cornerRadius
+                                            }
+                                        }
+                                    }
                                     RowLayout {
                                         Layout.fillWidth: true
                                         spacing: 12
