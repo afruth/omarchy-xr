@@ -4,7 +4,7 @@ import select
 import subprocess
 import time
 
-HELPER = Path('/usr/local/libexec/omarchy-xr-display')
+HELPER = Path('/usr/lib/omarchy-xr/omarchy-xr-display')
 
 class Dedicated:
     def __init__(self,directory,renderer):

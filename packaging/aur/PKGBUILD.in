@@ -1,0 +1,19 @@
+# Maintainer: Andreas Fruth <afruth at users dot noreply dot github dot com>
+pkgname=omarchy-xr-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Spatial desktop and monitor studio for Omarchy with bundled glasses runtime'
+arch=('x86_64')
+url='https://github.com/afruth/omarchy-xr'
+license=('LicenseRef-Omarchy-XR' 'LicenseRef-VITURE-SDK' 'MIT' 'BSD-3-Clause' 'Apache-2.0' 'MPL-2.0' 'LGPL-2.1-or-later' 'Unlicense')
+depends=('glibc' 'gcc-libs' 'sdl2-compat' 'libglvnd' 'wayland' 'mesa' 'libdrm' 'pango' 'cairo' 'json-c' 'glib2' 'python' 'polkit' 'systemd-libs' 'hyprland' 'quickshell' 'omarchy>=4.0')
+optdepends=('imagemagick: import panorama backgrounds')
+provides=('omarchy-xr')
+conflicts=('omarchy-xr' 'omarchy-xr-git')
+options=('!strip')
+source=("$url/releases/download/v$pkgver/omarchy-xr-$pkgver-linux-x86_64.tar.xz")
+sha256sums=('@SHA256@')
+
+package() {
+  cp -a "$srcdir/usr" "$pkgdir/"
+}

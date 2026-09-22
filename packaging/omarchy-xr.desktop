@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=XR Monitor Studio
+Comment=Set up and open the spatial desktop
+Exec=omarchy-xr-setup
+Icon=video-display
+Terminal=true
+Categories=Settings;HardwareSettings;

@@ -1,0 +1,7 @@
+#!/bin/sh
+# The marketplace checkout contains the UI; the package supplies the runtime.
+if [ ! -x /usr/bin/omarchy-xr ]; then
+    echo 'Install omarchy-xr-bin, then reopen XR Monitor Studio.' >&2
+    exit 127
+fi
+exec /usr/bin/omarchy-xr "$@"

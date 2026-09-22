@@ -10,6 +10,16 @@ limit practical configurations. VITURE head tracking, stereo eye rendering, and 
 presentation are supported. Forwarding clicks/typing through the 3D panels
 is still pending.
 
+## Distribution preview
+
+Packaging for Arch x86_64 and the Omarchy marketplace is in preparation.
+The release candidate includes the Gen1/Gen2 glasses runtime so end users do
+not need the vendor download form. **Public release is pending the SDK
+component/source clarification documented in [the redistribution review](docs/sdk-redistribution.md).**
+See [installation, removal and release instructions](docs/distribution.md).
+This release uses [reserved-rights end-user terms](LICENSE), not an open-source
+licence. Existing copies distributed under MIT retain those terms.
+
 ## Monitor Studio — native Omarchy UI
 
 Studio is a Quickshell/QML **panel plugin hosted by `omarchy-shell`**, using the
@@ -290,16 +300,16 @@ Pro 2 tracking is rotational only (3DoF).
 
 ## SDK and licensing
 
-Obtain the current Linux SDK from [VITURE](https://www.viture.com/developer).
-No vendor SDK binaries are bundled; keep local SDK files in ignored `vendor/`
-and review redistribution terms before packaging them.
+The distribution candidate includes the unmodified VITURE 2.4.0 Gen1/Gen2
+runtime solely as part of the complete application. No vendor binaries,
+headers or developer ZIP are committed to the source repository. See
+[SDK redistribution evidence](docs/sdk-redistribution.md),
+[third-party notices](THIRD_PARTY_NOTICES.md), and [privacy](PRIVACY.md).
 
-Original code is MIT. The vendored [wlr-screencopy protocol](https://github.com/swaywm/wlr-protocols/blob/master/unstable/wlr-screencopy-unstable-v1.xml)
-retains its MIT notice; other dependencies retain their licenses. This project
-is not affiliated with VITURE or Omarchy.
+Current application terms are in [LICENSE](LICENSE). Protocol files and other
+third-party components retain their own licences. Prior MIT releases retain
+the rights they already granted. No new open-source licence is chosen here.
 
-See [architecture and milestones](docs/architecture.md) and the
-[Omarchy plugin development guide](https://plugins.omarchy.org/develop.html).
 
 ### Reconnecting glasses
 
@@ -327,7 +337,8 @@ SDK session. Use the SDK connection controls below for that.
 
 ### SDK connection (Pro 2 / Gen1 / Gen2)
 
-Obtain the current **VITURE XR Glasses SDK**, **Linux (x86_64)**, from
+For local source development only (packaged releases include the runtime):
+obtain the current **VITURE XR Glasses SDK**, **Linux (x86_64)**, from
 https://www.viture.com/developer. The download form emails a link after
 submission. Extract the archive and install its library directory locally:
 
@@ -451,7 +462,7 @@ and the display lease survive edits. Only changed virtual outputs are configured
 presentation-only changes do not reconfigure Hyprland monitors.
 
 `make install-helper` installs a root-owned executable at
-`/usr/local/libexec/omarchy-xr-display` and its polkit action. Setup (and explicit
+`/usr/lib/omarchy-xr/omarchy-xr-display` and its polkit action. Setup (and explicit
 helper upgrades) needs administrator authentication once; starting/stopping stereo
 and applying monitor settings then require no password in an active local desktop
 session. Remote and inactive sessions are denied. The policy authorizes only this
@@ -460,7 +471,7 @@ No username, home directory, GPU number, or connector number is baked into setup
 The helper discovers the connected VITURE connector and validates its EDID at runtime.
 It requires polkit, Python 3, kernel debugfs EDID override support, and Hyprland DRM
 leasing; hardware/driver support still determines whether dedicated stereo works.
-The separately supplied VITURE SDK must match the machine's architecture.
+The packaged VITURE runtime targets Linux x86_64. Developer-supplied SDKs must match the machine's architecture.
 
 After updating helper source, rerun `make install-helper` with XR closed. Ordinary
 `make install-studio` updates do not change privileged code. To remove system

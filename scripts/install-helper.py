@@ -12,7 +12,7 @@ import stat
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = Path('/usr/local/libexec/omarchy-xr-display')
+HELPER = Path('/usr/lib/omarchy-xr/omarchy-xr-display')
 POLICY = Path('/usr/share/polkit-1/actions/io.github.afruth.omarchy-xr.display.policy')
 
 

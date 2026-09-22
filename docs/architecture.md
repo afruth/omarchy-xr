@@ -131,7 +131,7 @@ failed handoff cleanup, mode journaling, headset identification checks, and a li
 lease/stereo/restore cycle. See README for dependencies and the opt-in hardware test.
 
 The display handoff executable is installed separately as root at
-`/usr/local/libexec/omarchy-xr-display` (`make install-helper`). Its shebang uses
+`/usr/lib/omarchy-xr/omarchy-xr-display` (`make install-helper`). Its shebang uses
 isolated Python (`-I`); it imports only the standard library. A dedicated polkit
 action authorizes that exact executable for active local sessions and denies
 inactive/remote sessions. It grants no access to arbitrary Python scripts. The
