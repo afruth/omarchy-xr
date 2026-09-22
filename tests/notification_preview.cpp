@@ -22,11 +22,13 @@ void assertReadingVisible(){
     assert(visible>400*200/2);
 }
 void publish(const std::filesystem::path& folder){
-    std::ofstream file(folder/"notifications.json");
+    std::ofstream file(folder/"notifications.json.tmp");
     file<<"{\"version\":1,\"generation\":\"preview\",\"time\":"<<std::fixed<<notifications::wallMilliseconds()
-        <<",\"count\":2,\"palette\":{\"background\":\"#16242d\",\"text\":\"#d6e2ee\",\"accent\":\"#8bc9eb\"},"
+        <<",\"count\":3,\"palette\":{\"background\":\"#16242d\",\"text\":\"#d6e2ee\",\"accent\":\"#8bc9eb\"},"
         "\"entries\":[{\"key\":\"preview\",\"app\":\"Omarchy\",\"summary\":\"Your workspace is ready\","
-        "\"body\":\"Floating beside your workspace.\\nShake no to dismiss both copies.\"}]}";
+        "\"body\":\"Floating beside your workspace.\\nLook here and flick up to dismiss.\"},{\"key\":\"build\",\"app\":\"Build\",\"summary\":\"All tests passed\"},"
+        "{\"key\":\"mail\",\"app\":\"Mail\",\"summary\":\"New message\"}]}";
+    file.close();std::filesystem::rename(folder/"notifications.json.tmp",folder/"notifications.json");
 }
 void makeScene(View& view,const std::filesystem::path& directory){
     view.sceneBounds();view.primeCamera();view.panZ=view.targetPanZ;
@@ -38,7 +40,10 @@ void makeScene(View& view,const std::filesystem::path& directory){
     assert(view.notificationHud->visible());
 }
 void run(View& view,const std::filesystem::path& directory,bool video){
-    auto frame=[&](double time){view.lastCameraTime=time;view.placeNotification(time);};
+    auto frame=[&](double time){
+        publish(directory);view.lastCameraTime=time;view.tracking.camera.timestamp=time;
+        view.notificationHud->update(view.tracking.camera,time);view.placeNotification(time);
+    };
     auto capture=[&](const char* name){
         if(std::string(name).find("frames/")!=0){const auto& f=view.notificationHud->placement();
             std::cout<<name<<" position "<<f.position.x<<","<<f.position.y<<","<<f.position.z<<" safe "<<f.safe<<" in view "<<f.onscreen<<" phase "<<f.phase()<<" opacity "<<f.opacity<<"\n";}
@@ -64,13 +69,16 @@ void run(View& view,const std::filesystem::path& directory,bool video){
     assert(!view.notificationHud->placement().onscreen);
     capture("zoomed.png");
     // Turn toward the card: it should stay put while being read.
-    const auto p=view.notificationHud->placement().position;
+    const auto p=view.notificationHud->position(0);
     const auto d=targeting::normalize(targeting::add(p,{view.panX,view.panY,view.panZ}));
     view.tracking.camera.view=tracking::conjugate(tracking::orientation(0,-std::asin(d.y)*180/pi,-std::atan2(d.x,-d.z)*180/pi));
     for(int i=3120;i<3240;++i)frame(100+i/60.);
     capture("reading.png");
     assert(view.notificationHud->placement().onscreen);
     assertReadingVisible();
+    assert(!view.notificationHud->highlight().empty());
+    assert(view.notificationHud->flick(view.notificationHud->highlight(),false));
+    capture("cycled.png");
 }
 }
 int main(int argc,char** argv){

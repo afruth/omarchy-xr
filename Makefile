@@ -204,15 +204,19 @@ check-workspace-focus: $(BUILD)/test-workspace-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
 .PHONY: check-workspace-focus
 
-$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp src/head_shake.hpp | $(BUILD)
+$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDLIBS)
 
 $(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_space.hpp src/targeting.hpp src/curvature.hpp | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@
 
-check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space
+$(BUILD)/test-notification-controls: tests/notification_controls.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space $(BUILD)/test-notification-controls
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notifications
 	./$(BUILD)/test-notification-space
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notification-controls
 .PHONY: check-notifications
 
 $(BUILD)/notification-preview: tests/notification_preview.cpp src/notification_space.hpp src/notification_draw.hpp src/notification_hud.hpp $(APP_OBJS)

@@ -42,7 +42,7 @@ make
 make install-studio
 make install-helper # one-time administrator setup for dedicated stereo
 make install-controls # optional live touchpad and keyboard controls
-make install-notifications # optional 3D notifications and head-shake dismissal
+make install-notifications # optional stacked 3D notifications and gaze/flick controls
 omarchy-shell shell rescanPlugins
 omarchy plugin enable afruth.omarchy-xr
 omarchy bar put afruth.omarchy-xr
@@ -228,9 +228,11 @@ VS Code build/run/check tasks are included. Build artifacts stay in `build/`.
 of Omarchy's installed notification service. Native desktop cards, actions,
 expiry, Do Not Disturb and history remain available. No packaged files are edited.
 
-In stereo, the newest desktop notification becomes a small, theme-colored 3D
-card with a shallow rim. It uses the same perspective and eye separation as the
-monitors. It chooses the nearest clear position beside or above the workspace,
+In stereo, desktop notifications become separate, theme-colored 3D cards with
+shallow rims. Up to three cards form a staggered floating stack; flicking down
+brings the next notification to the front. The bridge mirrors up to 32 active
+alerts, with bounded text and textures. The stack uses the same perspective and
+eye separation as the monitors. It chooses the nearest clear position beside or above the workspace,
 at approximately the monitor's depth. It never moves onto a monitor merely to
 stay visible at close zoom. Curved surfaces and both eyes are included in placement.
 
@@ -241,17 +243,25 @@ at the card holds it still for reading. A small, slow-pulsing directional arrow
 at the view edge points toward a card that is outside the frame or behind a screen;
 the arrow is also drawn at a finite stereo depth. Large turns take longer to follow.
 
-Briefly settle while the card is in view, then shake **no** (left, right, centre,
-or the reverse) to dismiss that exact notification in XR and on the monitors.
-A cooldown and rejection of slow turns, nods, stale tracking and changing card
-identities guard against accidental dismissal. Long content is truncated; desktop
-actions remain on the original notification. Text shaping runs off the render
+Look directly at a card to highlight its outline. While highlighted, a quick
+**three-finger flick up** dismisses that exact notification in XR and on the
+monitors; a **three-finger flick down** cycles through the stack without dismissing
+anything. Dismissing a desktop card also removes its XR card; both views share
+Omarchy's active notification list. Gaze uses the headset's forward direction, as with monitor targeting.
+Head motion alone never dismisses an alert. Cancelled or slow gestures, stale
+tracking, and a gaze target that changes during the flick do not act on alerts.
+These controls always use three fingers, even if monitor zoom is set to five.
+Away from alerts, the configured monitor flick/zoom controls keep their behavior.
+Re-run `make install-controls` and `make install-notifications` after upgrading.
+
+Long content is truncated; desktop actions remain on the original notification. Text shaping runs off the render
 thread and uploads a bounded texture only when content or theme changes.
 
 To turn off XR mirroring, run `omarchy plugin enable omarchy.notifications`.
 The installer refuses to replace another enabled custom notification clone.
 `make check-notifications` exercises placement, safe flight paths, motion,
-reading, directional cues, stereo rendering, depth occlusion, and dismissal.
+reading, gaze highlighting, stack cycling, directional cues, stereo rendering,
+depth occlusion, and exact-card dismissal.
 `make check-ui` includes native-model synchronization and exact-ID dismissal.
 
 For a synthetic preview using the real renderer (no desktop captures or SDK):
@@ -259,7 +269,7 @@ For a synthetic preview using the real renderer (no desktop captures or SDK):
 ```sh
 make build/notification-preview
 SDL_VIDEODRIVER=offscreen build/notification-preview /tmp/xr-notifications --video
-# Six screenshots, a motion trace, and a 30 fps PNG sequence in frames/.
+# Seven screenshots, a motion trace, and a 30 fps PNG sequence in frames/.
 ```
 
 - Right-drag: look around; middle-drag: pan across the panel plane.
@@ -501,7 +511,8 @@ and display-helper processes throughout.
 Install with `make install-controls` on Lua-based Omarchy. While the viewer is
 running (including dedicated stereo with Studio hidden):
 
-- Three-finger swipe **up** zooms in; **down** zooms out continuously.
+- Three-finger swipe **up** zooms in; **down** zooms out continuously. Over a
+  highlighted alert, quick flicks instead dismiss (up) or cycle alerts (down).
 - **Ctrl+Up** fits the complete workspace, accounting for curved panel bounds.
 - **Super+1…0** keeps Omarchy's normal workspace switching and smoothly fits the
   XR monitor showing that workspace, just like the first upward flick. This also

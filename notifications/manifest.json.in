@@ -4,7 +4,7 @@
   "name": "Notifications with XR",
   "version": "0.3.0",
   "author": "Andreas Fruth",
-  "description": "Omarchy notifications with a spatial stereo card and head-shake dismissal",
+  "description": "Omarchy notifications with stacked spatial cards and gaze-targeted flick controls",
   "kinds": [
     "service"
   ],
