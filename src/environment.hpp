@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <sstream>
+#include "tron_environment.hpp"
 
 // Owns one resident sky and a staging texture. Decode is off-thread; upload is
 // bounded to 128 rows per frame. No per-frame image IO or mesh construction.
@@ -26,23 +27,35 @@ class SkyEnvironment {
     int row=0, maxSize=0;
     double nextCheck=0;
     float brightness=.25f, rotation=0;
+    double time=0;
+    bool animated=true;
+    TronEnvironment tron;
+    bool procedural() const {return requested=="builtin:tron";}
+    void readSettings(const std::string& line) {
+        std::istringstream input(line);float level,angle;std::string path,extra;int animate=1;
+        bool valid=bool(input>>level>>angle>>std::quoted(path));
+        if(valid && path=="builtin:tron")valid=bool(input>>animate) && (animate==0 || animate==1);
+        if(!valid || (input>>extra) || !std::isfinite(level) || !std::isfinite(angle) || level<0 || level>100 || angle< -180 || angle>180){
+            error="Invalid environment settings";return;
+        }
+        brightness=level/100;rotation=angle;animated=animate!=0;
+        if(error=="Invalid environment settings")error.clear();
+        if(path!=requested){requested=path;error.clear();discardStaging();}
+    }
     void discardStaging() {pixels.reset();if(staging)glDeleteTextures(1,&staging);staging=0;row=0;}
 public:
     std::string error;
     bool loadingImage() const {return loader.valid() || bool(pixels);}
-    bool visible() const {return texture && !requested.empty() && brightness>0;}
+    bool visible() const {return (texture || procedural()) && !requested.empty() && brightness>0;}
     explicit SkyEnvironment(const std::string& path):configPath(path) {glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxSize);}
     void update(double now) {
+        time=now;
         if(!configPath.empty() && now>=nextCheck) {
             nextCheck=now+.25;
             std::ifstream file(configPath);std::string line;
             if(std::getline(file,line) && line!=lastConfig) {
                 lastConfig=line;
-                std::istringstream input(line);float level,angle;std::string path,extra;
-                if(input>>level>>angle>>std::quoted(path) && !(input>>extra) && std::isfinite(level) && std::isfinite(angle) && level>=0 && level<=100 && angle>=-180 && angle<=180) {
-                    brightness=level/100;rotation=angle;
-                    if(path!=requested){requested=path;error.clear();discardStaging();}
-                } else error="Invalid environment settings";
+                readSettings(line);
             }
         }
         if(loader.valid() && loader.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
@@ -62,7 +75,7 @@ public:
                 }
             }
         }
-        if(requested.empty()) {
+        if(requested.empty() || procedural()) {
             if(texture)glDeleteTextures(1,&texture);
             texture=0;resident.clear();discardStaging();return;
         }
@@ -96,8 +109,15 @@ public:
             }
         }
     }
-    void draw(const float* view) {
-        if(!texture || requested.empty() || brightness<=0)return;
+    void draw(const float* view,const theme::Rgb& accent={.35f,.65f,1.f},float eyePosition=0) {
+        if(!visible())return;
+        if(procedural()){
+            glPushAttrib(GL_ENABLE_BIT|GL_DEPTH_BUFFER_BIT);
+            glDisable(GL_DEPTH_TEST);glDepthMask(GL_FALSE);
+            glPushMatrix();glLoadIdentity();glTranslatef(-eyePosition,0,0);glMultMatrixf(view);glRotatef(rotation,0,1,0);
+            if(!tron.draw(accent,brightness,time,animated))error="Procedural background shader unavailable";
+            glPopMatrix();glPopAttrib();return;
+        }
         if(!mesh) {
             mesh=glGenLists(1);glNewList(mesh,GL_COMPILE);
             constexpr int columns=128,rows=64;constexpr float pi=3.14159265358979323846f;
@@ -119,5 +139,5 @@ public:
         glPopAttrib();
     }
     // Called while the renderer's GL context is still current.
-    void release() {if(loader.valid())loader.wait();discardStaging();if(texture)glDeleteTextures(1,&texture);texture=0;if(mesh)glDeleteLists(mesh,1);mesh=0;resident.clear();}
+    void release() {tron.release();if(loader.valid())loader.wait();discardStaging();if(texture)glDeleteTextures(1,&texture);texture=0;if(mesh)glDeleteLists(mesh,1);mesh=0;resident.clear();}
 };

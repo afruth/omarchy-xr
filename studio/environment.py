@@ -1,4 +1,4 @@
-"""Local panorama library and independent live viewer settings."""
+"""Local panorama library, procedural backgrounds and live viewer settings."""
 import hashlib
 import json
 import math
@@ -8,6 +8,9 @@ from typing import Any
 import shutil
 import subprocess
 import tempfile
+
+
+TRON_ID = 'builtin:tron'
 
 
 def _magick(args):
@@ -38,7 +41,7 @@ class Environment:
             try:
                 value = json.loads(self.profile.read_text())
                 self.validate(value)
-                self.config = value
+                self.config = self.normalized(value)
             except (ValueError, OSError, TypeError):
                 pass
         self.publish()
@@ -48,13 +51,14 @@ class Environment:
         for path in sorted(self.library.glob('*/asset.json')):
             try:
                 item = json.loads(path.read_text())
-                if item['id'] != path.parent.name or not (path.parent/'sky.bmp').is_file():
+                if item['id'] == TRON_ID or item['id'] != path.parent.name or not (path.parent/'sky.bmp').is_file():
                     continue
                 item['thumbnail'] = (path.parent/'thumbnail.jpg').as_uri()
                 result.append(item)
             except (ValueError, OSError, KeyError, TypeError):
                 continue
-        return sorted(result, key=lambda item: item['name'].lower())
+        builtin = {'id':TRON_ID, 'name':'Tron grid', 'kind':'procedural', 'thumbnail':''}
+        return [builtin, *sorted(result, key=lambda item: item['name'].lower())]
 
     def validate(self, value):
         if not isinstance(value, dict) or not isinstance(value.get('id'), str):
@@ -65,20 +69,33 @@ class Environment:
             number = value.get(key)
             if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not low <= number <= high:
                 raise ValueError('Invalid environment ' + key)
+        if 'animated' in value and not isinstance(value['animated'], bool):
+            raise ValueError('Invalid environment animated')
+
+    @staticmethod
+    def normalized(value):
+        config = {key:value[key] for key in ('id','brightness','rotation')}
+        if value['id'] == TRON_ID:
+            config['animated'] = value.get('animated', True)
+        return config
 
     def snapshot(self):
         return {'settings':self.config, 'items':self.items(), 'canImport':bool(shutil.which('magick'))}
 
     def set(self, value):
         self.validate(value)
-        self.config = {key:value[key] for key in ('id','brightness','rotation')}
+        self.config = self.normalized(value)
         atomic(self.profile,json.dumps(self.config))
         self.publish()
 
     def publish(self):
         path = str(self.library/self.config['id']/'sky.bmp') if self.config['id'] else ''
+        animation = ''
+        if self.config['id'] == TRON_ID:
+            path = TRON_ID
+            animation = ' ' + str(int(self.config['animated']))
         # JSON string quoting is compatible with std::quoted for ordinary local paths.
-        atomic(self.state/'environment.tsv', f'{self.config["brightness"]} {self.config["rotation"]} {json.dumps(path,ensure_ascii=False)}\n')
+        atomic(self.state/'environment.tsv', f'{self.config["brightness"]} {self.config["rotation"]} {json.dumps(path,ensure_ascii=False)}{animation}\n')
 
     def import_image(self, source, resolution=4096, name=None):
         source = self.import_source(source, resolution)

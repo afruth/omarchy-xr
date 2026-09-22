@@ -29,7 +29,7 @@ Item {
     function setControl(key,value) {
         var copy=Object.assign({},controlDraft);copy[key]=value;controlDraft=copy;controlsDirty=true;
     }
-    property var environmentSettings: ({id:"",brightness:25,rotation:0})
+    property var environmentSettings: ({id:"",brightness:25,rotation:0,animated:true})
     property var environmentItems: []
     property bool canImportEnvironment: false
     property int imageResolution: 4096
@@ -92,6 +92,7 @@ Item {
     function notify(message, failed) {
         feedback = message;
         feedbackError = !!failed;
+        if (message && !failed) feedbackTimeout.restart();
         if (message && (!history.length || history[0].message !== message)) {
             var entries = history.slice();
             entries.unshift({
@@ -133,6 +134,12 @@ Item {
             builtInSetups: builtInSetups,
             setups: savedSetups,
             setupId: setupId,
+            setupName: setupName,
+            fps: fps,
+            spacing: spacing,
+            curvature: curvature,
+            selected: selected,
+            canImportEnvironment: canImportEnvironment,
             workspaceDegrees: workspaceDegrees, workspaceFollow: workspaceFollow,
             laptopOffEnabled: laptopOffEnabled,
             laptopDisplay: laptopDisplay,
@@ -442,6 +449,11 @@ Item {
         }
     }
     Timer {
+        id: feedbackTimeout
+        interval: 6000
+        onTriggered: if (!root.busy && !root.feedbackError) root.feedback = "";
+    }
+    Timer {
         interval: root.opened ? 3000 : 10000
         repeat: true
         running: root.loaded && (root.opened || root.viewing)
@@ -454,18 +466,81 @@ Item {
         running: root.busy
         onTriggered: if (root.busySinceMs > 0 && Date.now() - root.busySinceMs > 20000) root.backendSlow = true
     }
+    component HelpTip: Ui.PanelToolTip {
+        id: tip
+        readonly property real edge: 8
+        readonly property real cap: Math.min(420, Math.max(1, window.width - 40))
+        width: Math.min(cap, Math.ceil(tooltipMetrics.width + 24))
+        implicitWidth: width
+        TextMetrics { id: tooltipMetrics; text: tip.text; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+        x: {
+            var show = visible;
+            var originX = parent ? parent.x : 0;
+            if (!parent || !parent.window || !show || !window.contentItem)
+                return 0;
+            var origin = parent.mapToItem(window.contentItem, originX - parent.x, 0);
+            var preferred = origin.x + (parent.width - width) / 2;
+            var limit = Math.max(edge, window.width - width - edge);
+            return Math.min(Math.max(preferred, edge), limit) - origin.x;
+        }
+        y: {
+            var show = visible;
+            var originY = parent ? parent.y : 0;
+            if (!parent || !parent.window || !show || !window.contentItem)
+                return 0;
+            var origin = parent.mapToItem(window.contentItem, 0, originY - parent.y);
+            var box = implicitHeight;
+            var preferred = origin.y - box - 3;
+            if (preferred < edge)
+                preferred = origin.y + parent.height + 3;
+            var limit = Math.max(edge, window.height - box - edge);
+            return Math.min(Math.max(preferred, edge), limit) - origin.y;
+        }
+        contentItem: Text {
+            text: tip.text
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            width: tip.width
+            color: Color.tooltip.text
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            padding: 12
+        }
+    }
+    component BoundDropdown: Ui.Dropdown {
+        id: picker
+        property string sourceValue: ""
+        onSourceValueChanged: value = sourceValue
+        Component.onCompleted: value = sourceValue
+    }
     component Label: Text {
+        id: label
+        property string helpText: ""
         color: Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
         textFormat: Text.PlainText
+        Accessible.description: helpText
+        HoverHandler { id: labelHover }
+        HelpTip {
+            visible: label.visible && label.helpText !== "" && labelHover.hovered
+            text: label.helpText
+        }
     }
     component Action: Ui.Button {
+        id: action
+        property string helpText: ""
+        HelpTip {
+            visible: action.visible && action.helpText !== "" && (action.hot || action.activeFocus)
+            text: action.helpText
+        }
         focusable: true
         bordered: true
         opacity: enabled ? 1 : .4
         Accessible.role: Accessible.Button
         Accessible.name: text
+        Accessible.description: helpText
+        Accessible.onPressAction: if (enabled) clicked()
     }
     component Hint: Label {
         color: Qt.alpha(Color.foreground, .68)
@@ -480,37 +555,84 @@ Item {
     component Card: Rectangle {
         default property alias content: body.data
         Layout.fillWidth: true
-        implicitHeight: body.implicitHeight + 40
+        implicitHeight: body.implicitHeight + 32
         color: Qt.alpha(Color.foreground, .025)
         border.color: Qt.alpha(Color.foreground, .12)
         radius: Style.cornerRadius
         ColumnLayout {
             id: body
             anchors.fill: parent
-            anchors.margins: 20
-            spacing: 16
+            anchors.margins: 16
+            spacing: 12
         }
     }
-    component Metric: ColumnLayout {
-        id: metric
-        property string caption
-        property string value
+    component Disclosure: ColumnLayout {
+        id: disclosure
+        property string title: ""
+        property string helpText: ""
+        property bool expanded: false
+        default property alias content: disclosureBody.data
         Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        spacing: 8
-        Label {
-            Layout.fillWidth: true
-            text: metric.caption
-            color: Qt.alpha(Color.foreground, .68)
-            font.pixelSize: Style.font.bodySmall
+        spacing: 12
+        onExpandedChanged: if (expanded) revealTimer.restart()
+        Timer {
+            id: revealTimer
+            interval: 50
+            onTriggered: disclosure.reveal()
         }
-        Label {
-            Layout.fillWidth: true
-            text: metric.value
-            font.bold: true
-            font.pixelSize: Style.font.title
-            wrapMode: Text.WordWrap
+        function reveal() {
+            var view = panelBody.item.scrollView;
+            var position = disclosure.mapToItem(view.contentItem, 0, 0);
+            var overflow = position.y + disclosure.height - view.availableHeight;
+            if (overflow > 0)
+                view.contentItem.contentY = Math.min(view.contentHeight - view.availableHeight,
+                    view.contentItem.contentY + overflow);
         }
+        Action {
+            Layout.fillWidth: true
+            leftAlign: true
+            text: (disclosure.expanded ? "▾  " : "▸  ") + disclosure.title
+            helpText: disclosure.helpText
+            Accessible.name: disclosure.title
+            Accessible.description: (disclosure.expanded ? "Expanded. " : "Collapsed. ") + disclosure.helpText
+            onClicked: disclosure.expanded = !disclosure.expanded
+        }
+        QQC.ScrollView {
+            id: disclosureScroll
+            visible: disclosure.expanded
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(300, disclosureBody.implicitHeight)
+            clip: true
+            contentWidth: availableWidth
+            contentHeight: disclosureBody.implicitHeight
+            rightPadding: contentHeight > availableHeight + 1 ? 12 : 0
+            QQC.ScrollBar.vertical: ScrollThumb {}
+            QQC.ScrollBar.horizontal.policy: QQC.ScrollBar.AlwaysOff
+            ColumnLayout {
+                id: disclosureBody
+                width: disclosureScroll.availableWidth
+                spacing: 12
+            }
+        }
+    }
+    component ScrollThumb: QQC.ScrollBar {
+        orientation: Qt.Vertical
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        policy: QQC.ScrollBar.AsNeeded
+        active: true
+        contentItem: Rectangle {
+            implicitWidth: 5
+            implicitHeight: 20
+            radius: Style.cornerRadius
+            color: Qt.alpha(Color.foreground, parent.pressed ? .65 : .3)
+        }
+    }
+    QtObject {
+        id: sliderPalette
+        property color foreground: Color.foreground
+        property color background: Color.background
     }
 
     FloatingWindow {
@@ -519,7 +641,7 @@ Item {
         visible: false
         color: Color.background
         implicitWidth: 1100
-        implicitHeight: 820
+        implicitHeight: 760
         minimumSize: Qt.size(780, 600)
         onVisibleChanged: {
             if (!visible) {
@@ -628,8 +750,8 @@ Item {
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 24
-                spacing: 18
+                anchors.margins: 20
+                spacing: 14
                 RowLayout {
                     Layout.fillWidth: true
                     ColumnLayout {
@@ -638,10 +760,6 @@ Item {
                             text: "XR Monitor Studio"
                             font.pixelSize: Style.font.heading
                             font.bold: true
-                        }
-                        Label {
-                            text: "Virtual monitor configuration"
-                            color: Qt.alpha(Color.foreground, .68)
                         }
                     }
                     Item {
@@ -658,7 +776,7 @@ Item {
                     }
                     Action {
                         text: "Hide"
-                        tooltipText: "Park on the top bar; XR stays running"
+                        helpText: "Park on the top bar; XR stays running"
                         onClicked: root.hide()
                     }
                 }
@@ -673,15 +791,16 @@ Item {
                     Layout.fillWidth: true
                     spacing: 8
                     Repeater {
-                        model: ["Controls", "Monitors", "Environment", "Utilities & Debug"]
+                        model: ["Controls", "Monitors", "Environment", "Utilities"]
                         Action {
                             required property int index
                             required property string modelData
                             text: modelData
                             Layout.fillWidth: true
+                            Layout.preferredWidth: 1
                             selected: root.activeTab === index
-                            verticalPadding: 12
-                            tooltipText: "Ctrl+" + (index + 1)
+                            verticalPadding: 10
+                            helpText: "Ctrl+" + (index + 1)
                             Accessible.role: Accessible.PageTab
                             Accessible.selected: selected
                             onClicked: root.selectTab(index)
@@ -726,181 +845,147 @@ Item {
                     clip: true
                     contentWidth: availableWidth
                     contentHeight: tabContent.implicitHeight
-                    QQC.ScrollBar.vertical.policy: QQC.ScrollBar.AsNeeded
-                    QQC.ScrollBar.vertical.active: true
+                    rightPadding: contentHeight > height + 1 ? 12 : 0
+                    QQC.ScrollBar.vertical: ScrollThumb {
+                        visible: scroll.contentHeight > scroll.availableHeight + 1
+                    }
                     QQC.ScrollBar.horizontal.policy: QQC.ScrollBar.AlwaysOff
                     ColumnLayout {
                         id: tabContent
                         width: scroll.availableWidth
                         height: implicitHeight
-                        spacing: 20
+                        spacing: 12
                         ColumnLayout {
                             visible: root.activeTab === 0
                             Layout.fillWidth: true
-                            spacing: 20
+                            spacing: 12
                             Card {
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Heading { text: "Laptop display"; Layout.fillWidth: true }
-                                    Ui.ToggleSwitch {
-                                        checked: root.laptopOffEnabled
-                                        busy: root.busy
-                                        enabled: root.loaded && !root.busy && (root.laptopDisplay.available || root.laptopOffEnabled)
-                                        onToggled: root.send("set_laptop_off", !root.laptopOffEnabled)
+                                    Heading {
+                                        Layout.fillWidth: true
+                                        text: root.directOutput ? "Stereo active" : root.viewing ? "Preview active" : "XR session"
                                     }
-                                }
-                                Hint { text: "Turn off during stereo. Restore on exit or glasses disconnect." }
-                                RowLayout {
-                                    Layout.fillWidth: true
                                     Label {
-                                        Layout.fillWidth: true
-                                        text: root.laptopDisplay.off ? "Laptop display off" : root.laptopDisplay.available ? "Laptop display on" : "No built-in display detected"
-                                    }
-                                    Action {
-                                        text: "Restore laptop display"
-                                        enabled: root.loaded && !root.busy && (root.laptopDisplay.off || !!root.laptopDisplay.error)
-                                        onClicked: root.send("restore_laptop")
-                                    }
-                                }
-                                Hint {
-                                    visible: !!root.laptopDisplay.error
-                                    text: root.laptopDisplay.error || ""
-                                    color: Color.urgent
-                                }
-                            }
-                            Card {
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-                                        Label {
-                                            text: "YOUR XR SESSION"
-                                            color: Color.accent
-                                            font.pixelSize: Style.font.bodySmall
-                                            font.letterSpacing: 2
-                                        }
-                                        Heading {
-                                            text: root.directOutput ? "Stereo active" : root.viewing ? "Preview active" : "XR session"
-                                        }
-                                        Hint {
-                                            text: root.directOutput ? "Use Recenter to set the forward direction." : "Start stereo to display the monitor layout in the glasses."
-                                        }
-                                    }
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Metric {
-                                        caption: "WORKSPACE"
-                                        value: root.monitors.length + (root.monitors.length === 1 ? " monitor" : " monitors")
-                                    }
-                                    Metric {
-                                        caption: "GLASSES"
-                                        value: root.directOutput ? "Reserved for XR" : root.glasses.usb ? "Connected" : "Not connected"
-                                    }
-                                    Metric {
-                                        caption: "HEAD TRACKING"
-                                        value: root.sdk.tracking ? "Live" : root.sdk.communication ? "Waiting" : "Standby"
+                                        text: root.sdk.tracking ? "Tracking active" : root.glasses.usb ? "Glasses connected" : "Glasses disconnected"
+                                        color: Qt.alpha(Color.foreground, .68)
+                                        helpText: "Head tracking: " + (root.sdk.tracking ? "live" : root.sdk.communication ? "waiting" : "standby")
                                     }
                                 }
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
                                     Action {
-                                        text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? (root.dirty ? "Apply changes to XR" : "Stereo is running") : "Start stereo"
+                                        visible: !root.directOutput || root.dirty || root.pendingAction === "present_direct"
+                                        text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? "Apply monitor changes" : "Start stereo"
                                         selected: true
-                                        verticalPadding: 12
+                                        helpText: "Display your monitor layout in the glasses"
                                         enabled: root.canStart && (!root.directOutput || root.dirty)
                                         onClicked: root.send("present_direct")
                                     }
                                     Action {
-                                        text: root.viewing ? "Close viewer" : "Release XR workspaces"
+                                        visible: root.viewing || root.activeCount > 0
+                                        text: root.directOutput ? "Stop stereo" : root.viewing ? "Close preview" : "Restore desktop"
+                                        helpText: "Return XR workspaces and open windows to your desktop"
                                         enabled: (root.viewing || root.activeCount > 0) && !root.busy
-                                        verticalPadding: 12
                                         onClicked: root.send("stop_viewer")
                                     }
                                     Action {
-                                        text: "Edit monitors →"
-                                        verticalPadding: 12
+                                        text: "Edit monitors"
+                                        helpText: "Configure the size and arrangement of your virtual monitors"
                                         onClicked: root.selectTab(1)
                                     }
                                 }
                                 Hint {
                                     visible: !root.directOutput && !root.canStart && !root.busy
-                                    text: !root.loaded ? "Loading your workspace…" : !root.sdk.available ? "Install the VITURE SDK in Utilities & Debug." : !root.glasses.usb ? "Connect the glasses to a USB-C video port." : "No glasses video output. Check Utilities & Debug."
+                                    text: !root.loaded ? "Loading workspace…" : !root.sdk.available ? "Glasses SDK missing — open Utilities." : !root.glasses.usb ? "Connect your glasses to start." : "Glasses video unavailable — open Utilities."
                                 }
                             }
                             Card {
                                 Heading {
                                     text: "View controls"
+                                    helpText: root.viewing ? "Adjust your view without changing the monitor layout" : "Start stereo or a preview to use these controls"
                                 }
-                                Flow {
+                                GridLayout {
                                     Layout.fillWidth: true
-                                    spacing: 10
+                                    columns: width >= 5 * (Style.font.body * 8 + 26) ? 5 : 3
+                                    columnSpacing: 10
+                                    rowSpacing: 10
                                     enabled: root.viewing && !root.busy
                                     Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
                                         text: "Recenter"
-                                        iconText: "◎"
-                                        verticalPadding: 14
-                                        tooltipText: "Set the direction you are looking as forward"
+                                        helpText: "Set the direction you are looking as forward"
                                         onClicked: root.send("recenter")
                                     }
                                     Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
                                         text: "Fit workspace"
-                                        verticalPadding: 14
-                                        tooltipText: "Bring the whole workspace into view"
+                                        helpText: "Bring the whole workspace into view"
                                         onClicked: root.send("fit")
                                     }
                                     Action {
-                                        text: "Fit selected monitor"
-                                        verticalPadding: 14
-                                        tooltipText: (root.controlDraft.fit_target || "No hotkey") + " · Fit the selected monitor by height"
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        text: "Fit monitor"
+                                        helpText: "Fit the monitor selected by your head direction by height" + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
                                         onClicked: root.send("fit_target")
                                     }
                                     Action {
-                                        text: "− Zoom out"
-                                        verticalPadding: 14
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        text: "Zoom out"
+                                        helpText: "Move the workspace farther away"
                                         onClicked: root.send("zoom_out")
                                     }
                                     Action {
-                                        text: "+ Zoom in"
-                                        verticalPadding: 14
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        text: "Zoom in"
+                                        helpText: "Bring the workspace closer"
                                         onClicked: root.send("zoom_in")
                                     }
                                 }
-                                Hint {
-                                    visible: !root.viewing
-                                    text: "Requires an active viewer."
-                                }
                             }
-                            Card {
-                                Heading { text: "Input controls" }
-                                Hint { text: "Apply without restarting XR. Leave a shortcut blank to disable it." }
-                                Ui.Dropdown {
-                                    label: "Fingers for zoom swipe"
-                                    options: ["3", "5"]
-                                    value: String(root.controlDraft.fingers)
-                                    onChanged: function(value) {root.setControl("fingers",Number(value));}
+                            Disclosure {
+                                title: root.controlsDirty ? "Shortcuts & gestures · Unsaved" : "Shortcuts & gestures"
+                                helpText: "Apply shortcuts without restarting XR. Leave a shortcut blank to disable it."
+                                Label {
+                                    text: "Zoom gesture"
+                                    helpText: "Flick up to fit the selected monitor; flick down to fit the workspace. Hold a swipe to zoom. Double tap with three fingers to recenter; swipe with four fingers to pan the selected monitor."
                                 }
-                                Hint { text: "Flick up: fit monitor. Flick down: fit workspace. Hold swipe: zoom. Three-finger double tap: recenter. Four-finger swipe: pan the selected monitor." }
+                                BoundDropdown {
+                                    label: "Swipe fingers"
+                                    options: ["3", "5"]
+                                    sourceValue: String(root.controlDraft.fingers)
+                                    onChanged: function(picked) {root.setControl("fingers",Number(picked));}
+                                }
                                 Repeater {
                                     model: [{key:"recenter",title:"Recenter camera"},{key:"fit_all",title:"Fit workspace"},{key:"fit_target",title:"Fit selected monitor"},{key:"zoom_in",title:"Zoom in"},{key:"zoom_out",title:"Zoom out"}]
                                     delegate: RowLayout {
                                         required property var modelData
                                         Layout.fillWidth: true
-                                        Label { text: modelData.title; Layout.preferredWidth: 170 }
+                                        Label {
+                                            text: modelData.title
+                                            Layout.preferredWidth: 180
+                                            helpText: "Use a modifier combination such as CTRL + ALT + R. Leave blank to disable this shortcut."
+                                        }
                                         Ui.TextField {
                                             Layout.fillWidth: true
                                             text: root.controlDraft[modelData.key] || ""
-                                            placeholderText: "e.g. CTRL + ALT + R"
+                                            placeholderText: "No shortcut"
                                             Accessible.name: modelData.title + " hotkey"
+                                            Accessible.description: "Use a modifier combination, for example CTRL + ALT + R. Leave blank to disable."
                                             onTextEdited: root.setControl(modelData.key,text)
                                         }
                                     }
                                 }
                                 RowLayout {
                                     Action {
-                                        text: root.pendingAction === "save_controls" ? "Applying…" : "Apply controls"
+                                        text: root.pendingAction === "save_controls" ? "Saving…" : "Save shortcuts"
+                                        helpText: "Apply shortcuts and gestures to the current XR session"
                                         enabled: root.controlsDirty && !root.busy
                                         onClicked: root.send("save_controls")
                                     }
@@ -909,138 +994,117 @@ Item {
                                         enabled: !root.busy
                                         onClicked: {root.controlDraft={fingers:3,fit_all:"CTRL + Up",fit_target:"CTRL + Down",recenter:"",zoom_in:"",zoom_out:""};root.controlsDirty=true;}
                                     }
-                                    Hint { text: root.controlsDirty ? "Unsaved changes" : "Saved" }
+                                }
+                            }
+                            Disclosure {
+                                title: "Laptop display"
+                                helpText: "Choose whether your laptop display stays on during stereo"
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        text: "Turn off during stereo"
+                                        Layout.fillWidth: true
+                                        helpText: "The laptop display is restored when stereo stops or your glasses disconnect"
+                                    }
+                                    Ui.ToggleSwitch {
+                                        checked: root.laptopOffEnabled
+                                        busy: root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.CheckBox
+                                        Accessible.name: "Turn off laptop display during stereo"
+                                        Accessible.checked: checked
+                                        enabled: root.loaded && !root.busy && (root.laptopDisplay.available || root.laptopOffEnabled)
+                                        Keys.onSpacePressed: if (enabled) toggled()
+                                        Accessible.onToggleAction: if (enabled) toggled()
+                                        onToggled: root.send("set_laptop_off", !root.laptopOffEnabled)
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: root.laptopDisplay.off ? "Display off" : root.laptopDisplay.available ? "Display on" : "No built-in display"
+                                    }
+                                    Action {
+                                        text: "Restore display"
+                                        helpText: "Turn your laptop display back on now"
+                                        enabled: root.loaded && !root.busy && (root.laptopDisplay.off || !!root.laptopDisplay.error)
+                                        onClicked: root.send("restore_laptop")
+                                    }
                                 }
                             }
                             Hint {
-                                text: "Closing the viewer returns workspaces and open windows to your desktop."
+                                visible: !!root.laptopDisplay.error
+                                text: root.laptopDisplay.error || ""
+                                color: Color.urgent
                             }
                         }
                         ColumnLayout {
                             visible: root.activeTab === 1
                             Layout.fillWidth: true
-                            spacing: 16
+                            spacing: 12
                             RowLayout {
                                 Layout.fillWidth: true
-                                ColumnLayout {
-                                    Heading {
-                                        text: "Monitor layout"
-                                    }
-                                    Hint {
-                                        text: "Select a monitor to edit. Apply to update the layout."
-                                    }
-                                }
-                                Item {
-                                    Layout.fillWidth: true
-                                }
+                                spacing: 10
                                 Label {
-                                    text: root.dirty ? "Unapplied changes" : "Layout ready"
-                                    color: root.dirty ? Color.accent : Qt.alpha(Color.foreground, .68)
+                                    text: "Setup"
+                                    helpText: "Choosing a setup applies it immediately. Save your current layout as a setup to reuse it."
                                 }
-                            }
-                            Hint {
-                                text: "Limit: " + root.graphicsLimits.maxWidth + " × " + root.graphicsLimits.maxHeight + " px/monitor · "
-                                    + (root.totalPixels/1000000).toFixed(1) + " MP · " + (root.totalPixels*4/1048576).toFixed(0) + " MiB/frame"
-                                    + (!root.graphicsLimits.detected ? " · Hardware limit unverified" : !root.graphicsLimits.complete ? " · Partial GPU detection" : "")
-                            }
-                            GridLayout {
-                                columns: width >= 900 ? 7 : 4
-                                Layout.fillWidth: true
-                                rowSpacing: 12
-                                columnSpacing: 12
-                                enabled: root.loaded && !root.busy
-                                Ui.NumberField {
-                                    Layout.alignment: Qt.AlignBottom
-                                    label: "Monitors"
-                                    from: 1
-                                    to: 16
-                                    value: root.monitors.length
-                                    fieldWidth: 130
-                                    onModified: function (value) {
-                                        root.setCount(value);
+                                BoundDropdown {
+                                    id: setupPicker
+                                    Layout.fillWidth: true
+                                    label: "Apply setup"
+                                    showLabel: false
+                                    sourceValue: root.pendingSetupId !== "" ? root.pendingSetupId : root.setupId
+                                    options: [{value:"",label:"Choose a setup…"}].concat(root.builtInSetups.filter(root.supportsSetup).map(function(s) {
+                                        return {value:s.id,label:s.name};
+                                    }), root.savedSetups.map(function(s) { return {value:s.id,label:s.name}; }))
+                                    enabled: root.loaded && !root.busy
+                                    Accessible.name: "Apply monitor setup"
+                                    onChanged: function(picked) {
+                                        if (picked) root.chooseSetup(picked);
+                                        else setupPicker.value = sourceValue;
                                     }
                                 }
                                 Action {
-                                    Layout.alignment: Qt.AlignBottom
-                                    text: "+ Add"
+                                    text: "Add monitor"
+                                    enabled: root.loaded && !root.busy && root.monitors.length < 16
+                                    helpText: "Add a monitor to the draft layout"
                                     onClicked: root.setCount(root.monitors.length + 1)
                                 }
                                 Action {
-                                    Layout.alignment: Qt.AlignBottom
-                                    text: "Remove selected"
-                                    enabled: root.monitors.length > 1
-                                    onClicked: {
-                                        var c = root.monitors.slice();
-                                        c.splice(root.selected, 1);
-                                        root.monitors = c;
-                                        root.selected = Math.min(root.selected, c.length - 1);
-                                        root.changed();
-                                        root.fit();
+                                    text: "Arrange…"
+                                    enabled: root.loaded && !root.busy
+                                    helpText: "Arrange in a row or grid, or fit the layout map"
+                                    onClicked: arrangeMenu.open()
+                                    QQC.Popup {
+                                        id: arrangeMenu
+                                        x: parent.width - width
+                                        y: parent.height + 6
+                                        width: 220
+                                        padding: 12
+                                        background: Rectangle { color: Color.popups.background; border.color: Color.popups.border; radius: Style.cornerRadius }
+                                        contentItem: ColumnLayout {
+                                            spacing: 8
+                                            Action { Layout.fillWidth:true; text:"Arrange in row"; onClicked:{root.arrange(false);arrangeMenu.close();} }
+                                            Action { Layout.fillWidth:true; text:"Arrange in grid"; onClicked:{root.arrange(true);arrangeMenu.close();} }
+                                            Action { Layout.fillWidth:true; text:"Fit layout map"; onClicked:{root.fit();arrangeMenu.close();} }
+                                        }
                                     }
-                                }
-                                Ui.NumberField {
-                                    Layout.alignment: Qt.AlignBottom
-                                    label: "Capture fps"
-                                    from: 1
-                                    to: 120
-                                    value: root.fps
-                                    fieldWidth: 110
-                                    onModified: function (value) {
-                                        root.fps = value;
-                                        root.changed();
-                                    }
-                                }
-                                RowLayout {
-                                    Layout.columnSpan: parent.columns === 7 ? 3 : 4
-                                    Layout.alignment: Qt.AlignLeft | Qt.AlignBottom
-                                    spacing: 8
-                                    Action { text: "Row"; onClicked: root.arrange(false) }
-                                    Action { text: "Grid"; onClicked: root.arrange(true) }
-                                    Action { text: "Fit"; onClicked: root.fit() }
                                 }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
-                                spacing: 12
-                                enabled: root.loaded && !root.busy
-                                AngleField {
-                                    label: "Workspace wrap (°)"
-                                    amount: (root.workspaceDegrees >= 0 ? root.workspaceDegrees : root.curvature * root.angleLimits.workspace / 100) / 3.6
-                                    maximumDegrees: 360
-                                    fieldWidth: 190
-                                    onAmountEdited: function (value) {
-                                        root.workspaceDegrees = Math.round(value * 3.6);
-                                        root.changed();
-                                    }
-                                }
-                                Ui.NumberField {
-                                    Layout.alignment: Qt.AlignBottom
-                                    label: "Spacing (pixels)"
-                                    from: 1
-                                    to: 8192
-                                    value: root.spacing
-                                    fieldWidth: 150
-                                    onModified: function (value) {
-                                        root.spacing = value;
-                                        root.changed();
-                                    }
-                                }
-                                Item { Layout.fillWidth: true }
-                            }
-                            QQC.CheckBox {
-                                text: "Monitors follow workspace curvature"
-                                checked: root.workspaceFollow
-                                Layout.alignment: Qt.AlignBottom
-                                font.family: Style.font.family
-                                palette.windowText: Color.foreground
-                                palette.highlight: Color.accent
-                                onToggled: { root.workspaceFollow=checked; root.changed(); }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.minimumHeight: Math.max(430,monitorInspector.implicitHeight)
-                                Layout.preferredHeight: Layout.minimumHeight
-                                spacing: Style.space(16)
+                                Layout.preferredHeight: Math.max(monitorInspector.implicitHeight, Math.min(340, scroll.availableHeight - 96))
+                                spacing: 16
                                 Rectangle {
                                     id: layoutView
                                     Layout.fillWidth: true
@@ -1095,7 +1159,7 @@ Item {
                                                 text: String(monitorTile.index + 1)
                                                 font.bold: true
                                                 font.pixelSize: 16
-                                                font.family: "monospace"
+                                                font.family: Style.font.family
                                                 color: Color.foreground
                                             }
                                             Label {
@@ -1104,7 +1168,7 @@ Item {
                                                 visible: monitorTile.width > 115 && monitorTile.height > 60
                                                 text: monitorTile.modelData.width + " × " + monitorTile.modelData.height
                                                 font.pixelSize: 12
-                                                font.family: "monospace"
+                                                font.family: Style.font.family
                                                 color: Color.foreground
                                             }
                                         }
@@ -1163,187 +1227,268 @@ Item {
                                     Layout.maximumWidth: 260
                                     Layout.preferredWidth: 260
                                     Layout.alignment: Qt.AlignTop
+                                    spacing: 12
                                     enabled: root.loaded && !root.busy
-                                    Label {
-                                        text: "Monitor " + (root.selected + 1)
-                                        font.bold: true
-                                        font.pixelSize: Style.font.title
+                                    BoundDropdown {
+                                        Layout.fillWidth: true
+                                        label: "Selected monitor"
+                                        showLabel: false
+                                        sourceValue: String(root.selected)
+                                        options: root.monitors.map(function(m,i) {return {value:String(i),label:"Monitor " + (i+1)};})
+                                        Accessible.name: "Selected monitor"
+                                        onChanged: function(picked) {root.selected=Number(picked);}
                                     }
-                                    Ui.Dropdown {
+                                    BoundDropdown {
+                                        id: resolutionPicker
                                         Layout.fillWidth: true
                                         label: "Resolution"
-                                        value: MonitorPresets.match(root.current)
-                                        options: MonitorPresets.options(root.graphicsLimits)
-                                        onChanged: function(value) {
-                                            var preset = MonitorPresets.find(value);
+                                        sourceValue: MonitorPresets.match(root.current)
+                                        options: MonitorPresets.options(root.graphicsLimits).map(function(p) {
+                                            return p.value === "custom" ? {value:"custom", label:"Custom · " + root.current.width + " × " + root.current.height} : p;
+                                        })
+                                        onChanged: function(picked) {
+                                            var preset = MonitorPresets.find(picked);
                                             if (preset) root.resizeMonitor(preset.width,preset.height);
+                                            else monitorSettings.open();
+                                            resolutionPicker.value = sourceValue;
                                         }
                                     }
-                                    Action {
-                                        text: "Swap width / height"
-                                        enabled: MonitorPresets.supported(root.current.height,root.current.width,root.graphicsLimits)
-                                        onClicked: root.resizeMonitor(root.current.height,root.current.width)
-                                    }
-                                    Ui.Dropdown {
+                                    BoundDropdown {
                                         Layout.fillWidth: true
-                                        label: "Scale"
-                                        value: String(root.current.scale || 1)
-                                        options: ["1", "1.25", "1.6", "2", "3", "4"]
-                                        onChanged: function(value) { root.edit("scale",Number(value)); }
-                                    }
-                                    Label { text: "Brightness · " + Math.round(monitorBrightness.liveValue) + "%" }
-                                    Ui.PanelSlider {
-                                        id: monitorBrightness
-                                        Layout.fillWidth: true
-                                        minimum: 1; maximum: 100; step: 1; integer: true
-                                        value: root.current.brightness === undefined ? 100 : root.current.brightness
-                                        onReleased: function(value) { root.edit("brightness",value); }
-                                    }
-                                    Ui.NumberField {
-                                        label: "Width (pixels)"
-                                        from: 320
-                                        to: root.graphicsLimits.maxWidth
-                                        stepSize: 80
-                                        value: root.current.width
-                                        fieldWidth: 190
-                                        onModified: function (value) {
-                                            root.edit("width", value);
-                                        }
-                                    }
-                                    Ui.NumberField {
-                                        label: "Height (pixels)"
-                                        from: 200
-                                        to: root.graphicsLimits.maxHeight
-                                        stepSize: 80
-                                        value: root.current.height
-                                        fieldWidth: 190
-                                        onModified: function (value) {
-                                            root.edit("height", value);
-                                        }
-                                    }
-                                    Ui.NumberField {
-                                        label: "X position"
-                                        from: -100000
-                                        to: 100000
-                                        stepSize: 20
-                                        value: root.dragIndex === root.selected && root.dragSnap ? root.dragSnap.x : root.current.x
-                                        fieldWidth: 190
-                                        onModified: function (value) {
-                                            root.edit("x", value);
-                                        }
-                                    }
-                                    Ui.NumberField {
-                                        label: "Y position"
-                                        from: -100000
-                                        to: 100000
-                                        stepSize: 20
-                                        value: root.dragIndex === root.selected && root.dragSnap ? root.dragSnap.y : root.current.y
-                                        fieldWidth: 190
-                                        onModified: function (value) {
-                                            root.edit("y", value);
-                                        }
+                                        label: "Display scale"
+                                        sourceValue: String(root.current.scale || 1)
+                                        options: ["1", "1.25", "1.6", "2", "3", "4"].map(function(v) {return {value:v,label:Math.round(Number(v)*100)+"%"};})
+                                        onChanged: function(picked) { root.edit("scale",Number(picked)); }
                                     }
                                     AngleField {
-                                        label: root.workspaceFollow ? "Surface bend (workspace)" : "Surface bend (°)"
-                                        enabled: !root.workspaceFollow
+                                        visible: !root.workspaceFollow
+                                        label: "Surface bend (°)"
                                         amount: root.current.curvature || 0
                                         maximumDegrees: root.angleLimits.surfaces[root.selected] || 0
-                                        fieldWidth: 190
-                                        onAmountEdited: function (value) {
-                                            root.edit("curvature", value);
-                                        }
+                                        fieldWidth: 260
+                                        onAmountEdited: function(value) {root.edit("curvature",value);}
                                     }
-                                }
-                            }
-                            Ui.Dropdown {
-                                label: "Text size (all desktops)"
-                                value: String(Math.round(Style.font.baseSize))
-                                options: ["9", "10", "11", "12", "14", "16", "20"]
-                                enabled: root.loaded && !root.busy
-                                onChanged: function(value) { root.send("set_text_size",Number(value)); }
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                text: root.dragSnap && root.dragSnap.blocked ? "Move blocked: insufficient spacing." : root.dragSnap && (root.dragSnap.snapX || root.dragSnap.snapY) ? "Snapped to nearby monitor · " + root.spacing + " px minimum gutter" : "Drag: snap to monitors or grid · Empty area: pan · Ctrl+scroll: zoom"
-                                color: Qt.alpha(Color.foreground, .68)
-                                font.pixelSize: Style.font.bodySmall
-                            }
-
-                            Hint {
-                                text: "0° = flat. Angles vary with workspace zoom." + (root.viewing && root.performance.geometryDistance ? "" : " Estimated while viewer is closed.")
-                            }
-                            Card {
-                                Heading { text: "Built-in setups" }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Repeater {
-                                        model: root.builtInSetups
-                                        delegate: Action {
-                                            required property var modelData
-                                            text: modelData.name + (root.setupId === modelData.id && root.dirty ? " · edited" : "")
-                                            selected: root.setupId === modelData.id
-                                            enabled: root.loaded && !root.busy && root.supportsSetup(modelData)
-                                            tooltipText: modelData.description + (root.supportsSetup(modelData) ? " · 30 px spacing" : " · Exceeds this computer's resolution limit")
-                                            onClicked: root.chooseSetup(modelData.id)
-                                        }
-                                    }
-                                }
-                                Hint { text: "Select to apply. Customize and save your own copy." }
-                            }
-                            Card {
-                                visible: root.activeTab === 1
-                                Heading { text: "Saved setups" }
-                                Hint { text: "Save and switch monitor layouts." }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Repeater {
-                                        model: root.savedSetups
-                                        delegate: Action {
-                                            required property var modelData
-                                            text: modelData.name + (root.setupId === modelData.id && root.dirty ? " · edited" : "")
-                                            selected: root.setupId === modelData.id
-                                            enabled: !root.busy
-                                            tooltipText: modelData.layout.monitors.length + " monitors · " + modelData.layout.fps + " fps · Click to switch"
-                                            onClicked: root.chooseSetup(modelData.id)
-                                        }
-                                    }
-                                }
-                                Hint { visible: !root.savedSetups.length; text: "No saved setups." }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Ui.TextField {
+                                    Action {
+                                        visible: root.workspaceFollow
                                         Layout.fillWidth: true
-                                        text: root.setupName
-                                        placeholderText: "Setup name, e.g. Coding"
-                                        Accessible.name: "Setup name"
-                                        onTextEdited: root.setupName=text
+                                        text: "Workspace bend…"
+                                        helpText: "Change workspace curvature, or turn off matching to bend this monitor independently."
+                                        onClicked: workspaceSettings.open()
                                     }
                                     Action {
-                                        text: "Save new"
-                                        enabled: root.loaded && !root.busy && !!root.setupName.trim()
-                                        onClicked: root.send("save_setup")
-                                    }
-                                    Action {
-                                        text: "Update selected"
-                                        enabled: root.loaded && !root.busy && !!root.setupId && !root.setupId.startsWith("builtin:") && !!root.setupName.trim()
-                                        onClicked: root.send("save_setup", undefined, root.setupId, true)
+                                        Layout.fillWidth: true
+                                        text: "Monitor settings…"
+                                        helpText: "Custom size, position, brightness and orientation"
+                                        onClicked: monitorSettings.open()
                                     }
                                 }
-                                Hint { text: "Selecting applies a setup. Saving stores the current draft." }
-                                ColumnLayout {
-                                    visible: !!root.pendingSetupId
-                                    Layout.fillWidth: true
-                                    Hint { text: "Switching discards unapplied changes." }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                Action {
+                                    text: "Workspace settings…"
+                                    helpText: "Workspace curvature, monitor spacing, capture rate and desktop text size"
+                                    enabled: root.loaded && !root.busy
+                                    onClicked: workspaceSettings.open()
+                                }
+                                Action {
+                                    text: "Save setup…"
+                                    helpText: "Save this draft as a named setup"
+                                    enabled: root.loaded && !root.busy
+                                    onClicked: saveSetupDialog.open()
+                                }
+                                Item { Layout.fillWidth: true }
+                                Label {
+                                    text: root.dirty ? "Unapplied changes" : root.monitors.length + " monitors"
+                                    color: root.dirty ? Color.accent : Qt.alpha(Color.foreground,.68)
+                                    helpText: "Drag monitors to arrange. Drag empty space to pan. Ctrl+scroll zooms."
+                                }
+                            }
+                            Hint {
+                                visible: !!root.dragSnap && root.dragSnap.blocked
+                                text: "Move blocked: insufficient spacing."
+                                color: Color.urgent
+                            }
+                            QQC.Popup {
+                                id: monitorSettings
+                                parent: frame
+                                x: (frame.width-width)/2
+                                y: (frame.height-height)/2
+                                width: Math.min(540, frame.width-40)
+                                modal: true
+                                focus: true
+                                padding: 20
+                                background: Rectangle {color:Color.popups.background;border.color:Color.popups.border;radius:Style.cornerRadius}
+                                contentItem: ColumnLayout {
+                                    spacing: 14
+                                    Heading {text:"Monitor " + (root.selected+1) + " settings"}
+                                    GridLayout {
+                                        Layout.fillWidth: true
+                                        columns: 2
+                                        columnSpacing: 16
+                                        rowSpacing: 12
+                                        enabled: root.loaded && !root.busy
+                                        Ui.NumberField {label:"Width (px)";from:320;to:root.graphicsLimits.maxWidth;stepSize:80;value:root.current.width;fieldWidth:(monitorSettings.availableWidth-16)/2;onModified:function(value){root.edit("width",value);}}
+                                        Ui.NumberField {label:"Height (px)";from:200;to:root.graphicsLimits.maxHeight;stepSize:80;value:root.current.height;fieldWidth:(monitorSettings.availableWidth-16)/2;onModified:function(value){root.edit("height",value);}}
+                                        Ui.NumberField {label:"X position (px)";from:-100000;to:100000;stepSize:20;value:root.current.x;fieldWidth:(monitorSettings.availableWidth-16)/2;onModified:function(value){root.edit("x",value);}}
+                                        Ui.NumberField {label:"Y position (px)";from:-100000;to:100000;stepSize:20;value:root.current.y;fieldWidth:(monitorSettings.availableWidth-16)/2;onModified:function(value){root.edit("y",value);}}
+                                    }
+                                    Label {text:"Brightness · " + Math.round(monitorBrightness.liveValue) + "%";helpText:"Brightness changes apply with the layout."}
+                                    Ui.PanelSlider {
+                                        id: monitorBrightness
+                                        bar: sliderPalette
+                                        Layout.fillWidth:true
+                                        minimum:1;maximum:100;step:1;integer:true
+                                        trackColor: Qt.alpha(Color.foreground, .2)
+                                        value:root.current.brightness === undefined ? 100 : root.current.brightness
+                                        enabled:root.loaded && !root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.Slider
+                                        Accessible.name: "Monitor brightness"
+                                        Accessible.description: Math.round(liveValue) + "%"
+                                        Keys.onLeftPressed: if (enabled) root.edit("brightness", Math.max(1, value - 1))
+                                        Keys.onRightPressed: if (enabled) root.edit("brightness", Math.min(100, value + 1))
+                                        onReleased:function(value){root.edit("brightness",value);}
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
                                     RowLayout {
                                         Action {
-                                            text: "Discard edits and switch"
-                                            enabled: !root.busy
-                                            onClicked: {var id=root.pendingSetupId;root.pendingSetupId="";root.send("use_setup",undefined,id);}
+                                            text:"Rotate 90°"
+                                            enabled:!root.busy && MonitorPresets.supported(root.current.height,root.current.width,root.graphicsLimits)
+                                            helpText:"Swap monitor width and height"
+                                            onClicked:root.resizeMonitor(root.current.height,root.current.width)
                                         }
-                                        Action { text: "Keep editing"; onClicked: root.pendingSetupId="" }
+                                        Action {
+                                            text:"Remove monitor"
+                                            enabled:!root.busy && root.monitors.length>1
+                                            onClicked:{var c=root.monitors.slice();c.splice(root.selected,1);root.monitors=c;root.selected=Math.min(root.selected,c.length-1);root.changed();root.fit();monitorSettings.close();}
+                                        }
+                                    }
+                                    Action {Layout.alignment:Qt.AlignRight;text:"Done";onClicked:monitorSettings.close()}
+                                }
+                            }
+                            QQC.Popup {
+                                id: workspaceSettings
+                                parent: frame
+                                x:(frame.width-width)/2
+                                y:(frame.height-height)/2
+                                width:Math.min(560,frame.width-40)
+                                modal:true
+                                focus:true
+                                padding:20
+                                background:Rectangle {color:Color.popups.background;border.color:Color.popups.border;radius:Style.cornerRadius}
+                                contentItem:ColumnLayout {
+                                    spacing:14
+                                    Heading {
+                                        text:"Workspace settings"
+                                        helpText:"Apply the layout to use geometry and capture settings. Text size changes immediately on all desktops. 0° is flat.\nMaximum: " + root.graphicsLimits.maxWidth + " × " + root.graphicsLimits.maxHeight + " px per monitor. "
+                                            + (root.totalPixels/1000000).toFixed(1) + " MP · " + (root.totalPixels*4/1048576).toFixed(0) + " MiB/frame."
+                                            + (!root.graphicsLimits.detected ? "\nHardware limits are unverified." : !root.graphicsLimits.complete ? "\nGPU detection is partial." : "")
+                                    }
+                                    GridLayout {
+                                        Layout.fillWidth:true
+                                        columns:2
+                                        columnSpacing:16
+                                        rowSpacing:12
+                                        enabled:root.loaded && !root.busy
+                                        AngleField {
+                                            label:"Workspace wrap (°)"
+                                            amount:(root.workspaceDegrees>=0 ? root.workspaceDegrees : root.curvature*root.angleLimits.workspace/100)/3.6
+                                            maximumDegrees:360
+                                            fieldWidth:(workspaceSettings.availableWidth-16)/2
+                                            onAmountEdited:function(value){root.workspaceDegrees=Math.round(value*3.6);root.changed();}
+                                        }
+                                        Ui.NumberField {label:"Spacing (px)";from:1;to:8192;value:root.spacing;fieldWidth:(workspaceSettings.availableWidth-16)/2;onModified:function(value){root.spacing=value;root.changed();}}
+                                        Ui.NumberField {label:"Capture rate (fps)";from:1;to:120;value:root.fps;fieldWidth:(workspaceSettings.availableWidth-16)/2;onModified:function(value){root.fps=value;root.changed();}}
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth:true
+                                        Label {Layout.fillWidth:true;text:"Match monitor bend to workspace";helpText:"Use workspace curvature for every monitor. Turn off to edit each surface bend independently."}
+                                        Ui.ToggleSwitch {
+                                            checked:root.workspaceFollow
+                                            enabled:root.loaded && !root.busy
+                                            activeFocusOnTab:true
+                                            Accessible.role:Accessible.CheckBox
+                                            Accessible.name:"Match monitor bend to workspace"
+                                            Accessible.checked:checked
+                                            Keys.onSpacePressed:if(enabled)toggled()
+                                            Accessible.onToggleAction:if(enabled)toggled()
+                                            onToggled:{root.workspaceFollow=!root.workspaceFollow;root.changed();}
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                anchors.margins: -3
+                                                color: "transparent"
+                                                border.width: parent.activeFocus ? 1 : 0
+                                                border.color: Color.accent
+                                                radius: Style.cornerRadius
+                                            }
+                                        }
+                                    }
+                                    BoundDropdown {
+                                        Layout.fillWidth:true
+                                        label:"Text size · all desktops"
+                                        sourceValue:String(Math.round(Style.font.baseSize))
+                                        options:["9","10","11","12","14","16","20"]
+                                        enabled:root.loaded && !root.busy
+                                        onChanged:function(picked){root.send("set_text_size",Number(picked));}
+                                    }
+                                    Action {Layout.alignment:Qt.AlignRight;text:"Done";onClicked:workspaceSettings.close()}
+                                }
+                            }
+                            QQC.Popup {
+                                id:saveSetupDialog
+                                parent:frame
+                                x:(frame.width-width)/2
+                                y:(frame.height-height)/2
+                                width:Math.min(500,frame.width-40)
+                                modal:true
+                                focus:true
+                                padding:20
+                                background:Rectangle {color:Color.popups.background;border.color:Color.popups.border;radius:Style.cornerRadius}
+                                contentItem:ColumnLayout {
+                                    spacing:14
+                                    Heading {text:"Save setup";helpText:"Stores the current draft without applying it."}
+                                    Ui.TextField {
+                                        Layout.fillWidth:true
+                                        text:root.setupName
+                                        placeholderText:"Setup name"
+                                        Accessible.name:"Setup name"
+                                        onTextEdited:root.setupName=text
+                                    }
+                                    Flow {
+                                        Layout.fillWidth:true
+                                        spacing:8
+                                        Action {text:"Save as new";enabled:root.loaded && !root.busy && !!root.setupName.trim();onClicked:{root.send("save_setup");saveSetupDialog.close();}}
+                                        Action {text:"Update selected";enabled:root.loaded && !root.busy && !!root.setupId && !root.setupId.startsWith("builtin:") && !!root.setupName.trim();onClicked:{root.send("save_setup",undefined,root.setupId,true);saveSetupDialog.close();}}
+                                        Action {text:"Cancel";onClicked:saveSetupDialog.close()}
+                                    }
+                                }
+                            }
+                            QQC.Popup {
+                                parent:frame
+                                x:(frame.width-width)/2
+                                y:(frame.height-height)/2
+                                width:Math.min(500,frame.width-40)
+                                visible:!!root.pendingSetupId
+                                modal:true
+                                focus:true
+                                padding:20
+                                onClosed:root.pendingSetupId=""
+                                background:Rectangle {color:Color.popups.background;border.color:Color.popups.border;radius:Style.cornerRadius}
+                                contentItem:ColumnLayout {
+                                    spacing:14
+                                    Heading {text:"Discard unapplied changes?"}
+                                    RowLayout {
+                                        Action {text:"Keep editing";onClicked:root.pendingSetupId=""}
+                                        Action {text:"Discard and apply setup";enabled:!root.busy;onClicked:{var id=root.pendingSetupId;root.pendingSetupId="";root.send("use_setup",undefined,id);}}
                                     }
                                 }
                             }
@@ -1351,294 +1496,470 @@ Item {
                         ColumnLayout {
                             visible: root.activeTab === 2
                             Layout.fillWidth: true
-                            spacing: 20
+                            spacing: 12
                             Card {
-                                Heading { text: "Environment" }
-                                Hint { text: "360° background · Changes apply live." }
-                                Flow {
+                                RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 12
+                                    Heading {
+                                        text: "Environment"
+                                        helpText: "Choose your background. Changes apply immediately."
+                                    }
                                     Action {
                                         text: "Black background"
                                         selected: !root.environmentSettings.id
+                                        helpText: "Turn off the environment and use a black background."
                                         enabled: root.loaded && !root.busy
                                         onClicked: root.setEnvironment("id", "")
                                     }
                                 }
-                                Flow {
+                                Flickable {
+                                    id: environmentGallery
                                     Layout.fillWidth: true
-                                    spacing: 12
-                                    Repeater {
-                                        model: root.environmentItems
-                                        delegate: Rectangle {
-                                            required property var modelData
-                                            width: 190; height: 133
-                                            activeFocusOnTab: true
-                                            Keys.onReturnPressed: if (!root.busy) root.chooseEnvironment(modelData.id)
-                                            Keys.onSpacePressed: if (!root.busy) root.chooseEnvironment(modelData.id)
+                                    Layout.preferredHeight: Math.min(environmentGrid.implicitHeight, 210)
+                                    contentWidth: width
+                                    contentHeight: environmentGrid.implicitHeight
+                                    clip: true
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    flickableDirection: Flickable.VerticalFlick
+                                    QQC.ScrollBar.vertical: QQC.ScrollBar {
+                                        policy: QQC.ScrollBar.AsNeeded
+                                        visible: environmentGallery.contentHeight > environmentGallery.height + 1
+                                        contentItem: Rectangle {
+                                            implicitWidth: 5
                                             radius: Style.cornerRadius
-                                            color: Color.background
-                                            border.width: root.environmentSettings.id === modelData.id || activeFocus ? 2 : 1
-                                            border.color: root.environmentSettings.id === modelData.id ? Color.accent : Qt.alpha(Color.foreground,.2)
-                                            Image {
-                                                x: 6; y: 6; width: parent.width-12; height: 89
-                                                source: modelData.thumbnail
-                                                asynchronous: true
-                                                fillMode: Image.PreserveAspectFit
-                                            }
-                                            Label {
-                                                x: 8; y: 102; width: parent.width-16
-                                                text: modelData.name
-                                                elide: Text.ElideRight
-                                                font.pixelSize: Style.font.bodySmall
-                                            }
-                                            MouseArea {
-                                                anchors.fill: parent
+                                            color: Qt.alpha(Color.foreground, parent.pressed ? .65 : .3)
+                                        }
+                                    }
+                                    Grid {
+                                        id: environmentGrid
+                                        width: environmentGallery.width - 12
+                                        columns: Math.max(1, Math.min(4, Math.floor(width / 160)))
+                                        spacing: 10
+                                        Repeater {
+                                            model: root.environmentItems
+                                            delegate: Action {
+                                                id: environmentTile
+                                                required property var modelData
+                                                readonly property string displayName: modelData.name.replace(/\s*\(\d+[×x]\)\s*$/, "")
+                                                width: (environmentGrid.width - environmentGrid.spacing * (environmentGrid.columns - 1)) / environmentGrid.columns
+                                                height: 100
+                                                selected: root.environmentSettings.id === modelData.id
                                                 enabled: root.loaded && !root.busy
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.setEnvironment("id",modelData.id)
+                                                helpText: modelData.name + (selected ? " · Selected" : " · Use this background")
+                                                Accessible.name: displayName
+                                                Accessible.checkable: true
+                                                Accessible.checked: selected
+                                                Accessible.onPressAction: if (enabled) root.chooseEnvironment(modelData.id)
+                                                onClicked: root.chooseEnvironment(modelData.id)
+                                                onActiveFocusChanged: {
+                                                    if (!activeFocus) return;
+                                                    if (y < environmentGallery.contentY)
+                                                        environmentGallery.contentY = y;
+                                                    else if (y + height > environmentGallery.contentY + environmentGallery.height)
+                                                        environmentGallery.contentY = y + height - environmentGallery.height;
+                                                }
+                                                Image {
+                                                    x: 6; y: 6
+                                                    width: parent.width - 12; height: 62
+                                                    visible: environmentTile.modelData.id !== "builtin:tron"
+                                                    source: environmentTile.modelData.thumbnail
+                                                    asynchronous: true
+                                                    fillMode: Image.PreserveAspectCrop
+                                                    clip: true
+                                                }
+                                                Canvas {
+                                                    id: tronPreview
+                                                    x: 6; y: 6
+                                                    width: parent.width - 12; height: 62
+                                                    visible: environmentTile.modelData.id === "builtin:tron"
+                                                    readonly property color gridColor: Color.accent
+                                                    readonly property color backdrop: Color.background
+                                                    onGridColorChanged: requestPaint()
+                                                    onBackdropChanged: requestPaint()
+                                                    onWidthChanged: requestPaint()
+                                                    onHeightChanged: requestPaint()
+                                                    onVisibleChanged: if (visible) requestPaint()
+                                                    onPaint: {
+                                                        if (!visible) return;
+                                                        var c = getContext("2d");
+                                                        var horizon = height * .38;
+                                                        c.reset();
+                                                        c.fillStyle = backdrop;
+                                                        c.fillRect(0, 0, width, height);
+                                                        var glow = c.createLinearGradient(0, 0, 0, height);
+                                                        glow.addColorStop(0, Qt.alpha(gridColor, 0));
+                                                        glow.addColorStop(.38, Qt.alpha(gridColor, .16));
+                                                        glow.addColorStop(1, Qt.alpha(gridColor, .025));
+                                                        c.fillStyle = glow;
+                                                        c.fillRect(0, 0, width, height);
+                                                        c.beginPath();
+                                                        for (var i = -6; i <= 6; i++) {
+                                                            c.moveTo(width / 2 + i * 2, horizon);
+                                                            c.lineTo(width / 2 + i * width / 5, height);
+                                                        }
+                                                        for (var row = 1; row <= 6; row++) {
+                                                            var y = horizon + (height - horizon) * Math.pow(row / 6, 2);
+                                                            c.moveTo(0, y);
+                                                            c.lineTo(width, y);
+                                                        }
+                                                        c.strokeStyle = Qt.alpha(gridColor, .48);
+                                                        c.lineWidth = 1;
+                                                        c.stroke();
+                                                        c.beginPath();
+                                                        c.moveTo(0, horizon);
+                                                        c.lineTo(width, horizon);
+                                                        c.strokeStyle = Qt.alpha(gridColor, .1);
+                                                        c.lineWidth = 5;
+                                                        c.stroke();
+                                                        c.strokeStyle = Qt.alpha(gridColor, .7);
+                                                        c.lineWidth = 1;
+                                                        c.stroke();
+                                                    }
+                                                }
+                                                Label {
+                                                    x: 8; y: 75; width: parent.width - 16
+                                                    text: environmentTile.displayName
+                                                    elide: Text.ElideRight
+                                                    font.pixelSize: Style.font.bodySmall
+                                                    font.bold: environmentTile.selected
+                                                }
+                                                Rectangle {
+                                                    visible: environmentTile.selected
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.margins: 6
+                                                    width: 22; height: 22
+                                                    color: Color.accent
+                                                    radius: Style.cornerRadius
+                                                    Label {
+                                                        anchors.centerIn: parent
+                                                        text: "✓"
+                                                        color: Color.background
+                                                        font.bold: true
+                                                    }
+                                                }
                                             }
-                                            Accessible.role: Accessible.Button
-                                            Accessible.name: modelData.name
-                                            Accessible.onPressAction: if (!root.busy) root.setEnvironment("id",modelData.id)
                                         }
                                     }
                                 }
-                                Label { text: "Brightness · " + Math.round(skyBrightness.liveValue) + "%" }
-                                Ui.PanelSlider {
-                                    id: skyBrightness
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    minimum: 0; maximum: 100; step: 1; integer: true
-                                    value: root.environmentSettings.brightness
-                                    enabled: root.loaded && !root.busy
-                                    onReleased: function(value) { root.setEnvironment("brightness",value); }
-                                }
-                                Ui.NumberField {
-                                    label: "Rotation (°)"
-                                    from: -180; to: 180; stepSize: 5
-                                    value: root.environmentSettings.rotation
-                                    enabled: root.loaded && !root.busy
-                                    onModified: function(value) { root.setEnvironment("rotation",value); }
+                                    spacing: 12
+                                    Label {
+                                        text: "Brightness"
+                                        helpText: "Adjust the background brightness. Your monitor brightness is unchanged."
+                                    }
+                                    Ui.PanelSlider {
+                                        id: skyBrightness
+                                        bar: sliderPalette
+                                        Layout.fillWidth: true
+                                        minimum: 0; maximum: 100; step: 1; integer: true
+                                        value: root.environmentSettings.brightness
+                                        enabled: root.loaded && !root.busy && !!root.environmentSettings.id
+                                        opacity: enabled ? 1 : .4
+                                        trackColor: Qt.alpha(Color.foreground, .2)
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.Slider
+                                        Accessible.name: "Environment brightness"
+                                        Accessible.description: Math.round(liveValue) + "%"
+                                        Keys.onLeftPressed: if (enabled) root.setEnvironment("brightness", Math.max(0, value - 1))
+                                        Keys.onRightPressed: if (enabled) root.setEnvironment("brightness", Math.min(100, value + 1))
+                                        onReleased: function(value) { root.setEnvironment("brightness",value); }
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
+                                    Label {
+                                        Layout.minimumWidth: 44
+                                        horizontalAlignment: Text.AlignRight
+                                        text: Math.round(skyBrightness.liveValue) + "%"
+                                    }
                                 }
                                 Hint {
                                     visible: !!root.performance.environmentError
                                     text: root.performance.environmentError || ""
                                     color: Color.urgent
                                 }
-                            }
-                            Card {
-                                Heading { text: "Import panorama" }
-                                Hint { text: "2:1 JPEG, PNG or BMP. Images stay on this computer." }
-                                RowLayout {
-                                    spacing: 12
-                                    Ui.Dropdown {
-                                        label: "Maximum resolution"
-                                        value: String(root.imageResolution)
-                                        options: [{value:"4096",label:"4K · Recommended"},{value:"8192",label:"8K"}]
-                                        onChanged: function(value) { root.imageResolution=Number(value); }
+                                Disclosure {
+                                    title: "Environment options"
+                                    helpText: "Adjust the background or import your own panorama."
+                                    RowLayout {
+                                        visible: root.environmentSettings.id === "builtin:tron"
+                                        Layout.fillWidth: true
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Animate glow"
+                                            helpText: "Gently vary the horizon and structure glow over 24 seconds. The grid stays stationary; no geometry moves."
+                                        }
+                                        Ui.ToggleSwitch {
+                                            checked: root.environmentSettings.animated !== false
+                                            enabled: root.loaded && !root.busy
+                                            activeFocusOnTab: true
+                                            Accessible.role: Accessible.CheckBox
+                                            Accessible.name: "Animate glow"
+                                            Accessible.description: "Slow stationary glow; no moving geometry"
+                                            Accessible.checked: checked
+                                            Keys.onSpacePressed: if (enabled) toggled()
+                                            Accessible.onToggleAction: if (enabled) toggled()
+                                            onToggled: root.setEnvironment("animated", !checked)
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                anchors.margins: -3
+                                                color: "transparent"
+                                                border.width: parent.activeFocus ? 1 : 0
+                                                border.color: Color.accent
+                                                radius: Style.cornerRadius
+                                            }
+                                        }
                                     }
-                                    Action {
-                                        Layout.alignment: Qt.AlignBottom
-                                        text: "Choose image…"
-                                        enabled: root.loaded && !root.busy && root.canImportEnvironment
-                                        onClicked: environmentFile.open()
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 12
+                                        Ui.NumberField {
+                                            label: "Rotation (°)"
+                                            from: -180; to: 180; stepSize: 5
+                                            value: root.environmentSettings.rotation
+                                            enabled: root.loaded && !root.busy && !!root.environmentSettings.id
+                                            onModified: function(value) { root.setEnvironment("rotation",value); }
+                                        }
+                                        BoundDropdown {
+                                            label: "Import resolution"
+                                            sourceValue: String(root.imageResolution)
+                                            options: [{value:"4096",label:"4K"},{value:"8192",label:"8K"}]
+                                            onChanged: function(picked) { root.imageResolution=Number(picked); }
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Action {
+                                            Layout.alignment: Qt.AlignBottom
+                                            text: "Import panorama…"
+                                            helpText: root.canImportEnvironment
+                                                ? "Choose a 2:1 JPEG, PNG or BMP. Images stay on this computer. 4K is recommended."
+                                                : "Install ImageMagick to import a panorama: sudo pacman -S imagemagick"
+                                            enabled: root.loaded && !root.busy && root.canImportEnvironment
+                                            onClicked: environmentFile.open()
+                                        }
                                     }
-                                }
-                                Hint {
-                                    visible: !root.canImportEnvironment
-                                    text: "Import requires ImageMagick: sudo pacman -S imagemagick"
+                                    Label {
+                                        visible: !root.canImportEnvironment
+                                        text: "ImageMagick required for import"
+                                        helpText: "Install with: sudo pacman -S imagemagick"
+                                    }
                                 }
                             }
                         }
                         ColumnLayout {
                             visible: root.activeTab === 3
                             Layout.fillWidth: true
-                            spacing: 20
-                            Heading {
-                                text: "Connection & diagnostics"
-                            }
-                            Hint {
-                                text: "Connection status and recovery tools."
-                            }
+                            spacing: 12
                             Card {
+                                id: sdkControls
+                                readonly property var sdk: root.glasses.sdk || ({})
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Heading { text: "Mono window for OBS"; Layout.fillWidth: true }
-                                    Ui.ToggleSwitch {
-                                        checked: root.spectatorEnabled
-                                        busy: root.busy
-                                        onToggled: root.send("set_spectator", !root.spectatorEnabled)
+                                    Heading { text: "Glasses connection" }
+                                    Action {
+                                        text: "Check connection"
+                                        helpText: "Refresh USB, video output, and tracking status"
+                                        enabled: root.loaded && !root.busy
+                                        onClicked: root.send("check")
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: (root.glasses.usb ? "USB connected" : "USB not detected") + " · " + (root.glasses.dedicatedDisplay ? "XR on " + root.glasses.dedicatedDisplay : root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length ? "Video on " + root.glasses.displays.join(", ") : "No glasses display"))
+                                }
+                                Hint {
+                                    text: sdkControls.sdk.tracking ? "Head tracking active" : sdkControls.sdk.communication ? "Waiting for head tracking" : sdkControls.sdk.available ? "Tracking disconnected" : "Tracking SDK not installed"
+                                    helpText: "SDK: " + (!sdkControls.sdk.available ? "not installed" : sdkControls.sdk.communication ? "communicating" : "disconnected") + " · Tracking samples: " + (sdkControls.sdk.samples || 0) + (sdkControls.sdk.displayMode !== undefined && sdkControls.sdk.displayMode !== null ? " · Display mode: 0x" + sdkControls.sdk.displayMode.toString(16) : "")
+                                }
+                                Label {
+                                    visible: !!(sdkControls.sdk.trackingError || sdkControls.sdk.displayError)
+                                    text: [sdkControls.sdk.trackingError, sdkControls.sdk.displayError].filter(function (x) { return !!x; }).join(" · ")
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    color: Color.urgent
+                                }
+                                Label {
+                                    visible: !!root.glasses.recoveryMessage
+                                    text: root.glasses.recoveryMessage || ""
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    color: Qt.alpha(Color.foreground, .68)
+                                }
+                            }
+                            Disclosure {
+                                title: "Connection tools"
+                                helpText: "Reconnect tracking, restore the display mode, or recover the USB-C connection"
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Action {
+                                        text: "Get tracking SDK"
+                                        helpText: "Open the VITURE developer website"
+                                        visible: !sdkControls.sdk.available
+                                        onClicked: Qt.openUrlExternally("https://www.viture.com/developer")
+                                    }
+                                    Action {
+                                        text: sdkControls.sdk.busy ? "Connecting…" : sdkControls.sdk.communication ? "Reconnect tracking" : "Connect tracking"
+                                        helpText: "Initialize communication with the glasses and start head tracking"
+                                        enabled: root.loaded && !root.busy && !root.directOutput && !sdkControls.sdk.busy && !root.glasses.recovering
+                                        onClicked: root.send("sdk_connect")
+                                    }
+                                    Action {
+                                        text: "Restore display mode"
+                                        helpText: "Retry the glasses display-mode handshake"
+                                        enabled: root.loaded && !root.busy && !root.directOutput && !!sdkControls.sdk.communication && !sdkControls.sdk.busy && !root.glasses.recovering
+                                        onClicked: root.send("sdk_restore")
+                                    }
+                                    Action {
+                                        text: root.viewing ? "Stop XR & disconnect" : "Disconnect tracking"
+                                        helpText: "Stop any viewer and release the tracking connection"
+                                        enabled: root.loaded && !root.busy && (!!sdkControls.sdk.communication || !!sdkControls.sdk.busy)
+                                        onClicked: root.send("sdk_disconnect")
+                                    }
+                                    Action {
+                                        text: root.glasses.recovering ? "Reinitializing…" : "Reinitialize USB-C…"
+                                        helpText: root.glasses.canReset ? "Review the USB-C reset confirmation before reconnecting the glasses" : "Automatic recovery is unavailable. Reconnect the USB-C cable."
+                                        enabled: root.loaded && !root.busy && !!root.glasses.canReset
+                                        onClicked: root.requestRecovery()
                                     }
                                 }
                                 Hint {
-                                    text: "Separate mono recording window, up to 30 fps. Opens with stereo."
+                                    visible: root.loaded && !root.glasses.canReset && !root.glasses.recovering && !root.glasses.usb
+                                    text: "Reconnect the USB-C cable to restore the connection."
+                                }
+                            }
+                            Disclosure {
+                                title: root.performance.spectatorError ? "Recording · needs attention" : "Recording"
+                                helpText: root.performance.spectatorError || "Create a separate mono window for OBS, up to 30 fps; it opens with stereo"
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "Mono recording window"
+                                        helpText: "In OBS, capture the window named ‘Omarchy XR — Mono spectator’"
+                                    }
+                                    Ui.ToggleSwitch {
+                                        checked: root.spectatorEnabled
+                                        busy: root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.CheckBox
+                                        Accessible.name: "Mono recording window"
+                                        Accessible.checked: checked
+                                        Keys.onSpacePressed: if (enabled && !busy) toggled()
+                                        Accessible.onToggleAction: if (enabled && !busy) toggled()
+                                        onToggled: root.send("set_spectator", !root.spectatorEnabled)
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
                                 }
                                 Hint {
-                                    text: root.performance.spectatorError ? root.performance.spectatorError : root.performance.spectator ? "Active · Capture ‘Omarchy XR — Mono spectator’ in OBS." : root.spectatorEnabled ? (root.directOutput ? "Window closed or opening." : "Enabled for the next stereo session.") : "Off"
+                                    visible: root.spectatorEnabled || !!root.performance.spectatorError
+                                    text: root.performance.spectatorError ? root.performance.spectatorError : root.performance.spectator ? "Recording window active" : root.directOutput ? "Window closed or opening" : "Ready for the next stereo session"
+                                    color: root.performance.spectatorError ? Color.urgent : Qt.alpha(Color.foreground, .68)
                                 }
                                 Action {
                                     visible: root.directOutput && root.spectatorEnabled && !root.performance.spectator
-                                    text: "Reopen mono window"
+                                    text: "Reopen recording window"
                                     enabled: !root.busy
                                     onClicked: root.send("set_spectator", true)
                                 }
                             }
-                            Card {
-                                Heading {
-                                    text: "Glasses connection"
+                            Disclosure {
+                                title: "Performance"
+                                helpText: "Rendering timings and capture diagnostics; off-screen monitors pause capture and presentation follows the display refresh rate"
+                                Hint {
+                                    text: root.directOutput ? "Stereo · dedicated display" : "Mono · desktop rendering"
+                                    helpText: root.directOutput ? "Dedicated DRM output, side-by-side stereo, native desktop cursor" : sdkControls.sdk.nativeDof === false ? "Host-rendered on the glasses display; on-device native tracking is unsupported" : "Host-rendered on the glasses display"
                                 }
-                                ColumnLayout {
+                                QQC.ScrollView {
+                                    id: performanceScroll
                                     Layout.fillWidth: true
+                                    Layout.preferredHeight: Math.min(180, performanceDetails.implicitHeight + 12)
+                                    contentWidth: availableWidth
+                                    clip: true
+                                    QQC.ScrollBar.horizontal.policy: QQC.ScrollBar.AlwaysOff
                                     ColumnLayout {
-                                        Layout.fillWidth: true
-                                        Label {
-                                            Layout.fillWidth: true
-                                            wrapMode: Text.WordWrap
-                                            text: "Glasses: " + (root.glasses.usb ? "USB detected" : "USB not detected") + " · " + (root.glasses.dedicatedDisplay ? "Dedicated XR on " + root.glasses.dedicatedDisplay : root.glasses.detectionError || (root.glasses.displays && root.glasses.displays.length ? "Video on " + root.glasses.displays.join(", ") : "No VITURE video output"))
+                                        id: performanceDetails
+                                        width: performanceScroll.availableWidth
+                                        spacing: 8
+                                        Hint {
+                                            text: root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" fps · CPU p95 "+root.performance.workP95.toFixed(2)+" ms · frame p95 "+root.performance.frameP95.toFixed(2)+" ms"
+                                                +(root.performance.gpuSceneP95 !== undefined ? " · GPU scene p95 "+root.performance.gpuSceneP95.toFixed(2)+" ms · GPU capture p95 "+root.performance.gpuCaptureP95.toFixed(2)+" ms" : "")
+                                                +(root.performance.refreshHz ? " · missed vblanks "+root.performance.missedVblanksWindow+" / "+root.performance.missedVblanks : "")
+                                                : "Start XR to measure performance."
+                                            helpText: "p95 is the time within which 95% of frames finish; vblanks count missed display refreshes"
                                         }
-                                        Action {
-                                            text: "Check connection"
-                                            enabled: root.loaded && !root.busy
-                                            onClicked: root.send("check")
-                                        }
-                                        Action {
-                                            text: root.glasses.recovering ? "Reinitializing…" : "Reinitialize USB-C…"
-                                            enabled: root.loaded && !root.busy && !!root.glasses.canReset
-                                            onClicked: root.requestRecovery()
-                                        }
-                                    }
-                                    ColumnLayout {
-                                        id: sdkControls
-                                        Layout.fillWidth: true
-                                        readonly property var sdk: root.glasses.sdk || ({})
-                                        Label {
-                                            Layout.fillWidth: true
-                                            wrapMode: Text.WordWrap
-                                            text: "SDK: " + (!sdkControls.sdk.available ? "not installed" : sdkControls.sdk.communication ? "communicating" : "disconnected") + " · Tracking: " + (sdkControls.sdk.tracking ? "receiving (" + sdkControls.sdk.samples + " samples)" : "no recent samples") + (sdkControls.sdk.displayMode !== undefined && sdkControls.sdk.displayMode !== null ? " · Mode: 0x" + sdkControls.sdk.displayMode.toString(16) : "")
-                                        }
-                                        Label {
-                                            Layout.fillWidth: true
-                                            wrapMode: Text.WordWrap
-                                            text: root.directOutput ? "Presentation: dedicated DRM output · stereo SBS · native desktop cursor" : sdkControls.sdk.nativeDof === false ? "Presentation: host-rendered on the glasses’ display · on-device native tracking unsupported · stereo not enabled" : "Presentation: host-rendered on the glasses’ display · stereo not enabled"
-                                            color: Qt.alpha(Color.foreground, .68)
-                                        }
-                                        Flow {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            Action {
-                                                text: "Get SDK"
-                                                visible: !sdkControls.sdk.available
-                                                onClicked: Qt.openUrlExternally("https://www.viture.com/developer")
-                                            }
-                                            Action {
-                                                text: sdkControls.sdk.busy ? "Connecting / working…" : sdkControls.sdk.communication ? "Reconnect glasses" : "Connect glasses"
-                                                enabled: root.loaded && !root.busy && !sdkControls.sdk.busy && !root.glasses.recovering
-                                                onClicked: root.send("sdk_connect")
-                                            }
-                                            Action {
-                                                text: "Retry display mode"
-                                                enabled: root.loaded && !root.busy && !!sdkControls.sdk.communication && !sdkControls.sdk.busy && !root.glasses.recovering
-                                                onClicked: root.send("sdk_restore")
-                                            }
-                                            Action {
-                                                text: "Disconnect SDK"
-                                                enabled: root.loaded && !root.busy && (!!sdkControls.sdk.communication || !!sdkControls.sdk.busy)
-                                                onClicked: root.send("sdk_disconnect")
+                                        Repeater {
+                                            model: root.captureRows
+                                            Hint {
+                                                required property var modelData
+                                                text: modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight+(modelData.importMs !== undefined ? " · import "+Number(modelData.importMs).toFixed(1)+" ms" : "")
                                             }
                                         }
-                                    }
-                                    Label {
-                                        visible: !!((root.glasses.sdk || {}).trackingError || (root.glasses.sdk || {}).displayError)
-                                        text: [(root.glasses.sdk || {}).trackingError, (root.glasses.sdk || {}).displayError].filter(function (x) {
-                                            return !!x;
-                                        }).join(" · ")
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        color: Color.urgent
-                                    }
-                                    Label {
-                                        visible: !!root.glasses.recoveryMessage
-                                        text: root.glasses.recoveryMessage || ""
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        color: Qt.alpha(Color.foreground, .68)
-                                    }
-                                    Label {
-                                        visible: root.loaded && !root.glasses.canReset && !root.glasses.recovering
-                                        text: "Automatic recovery unavailable. Reconnect the USB-C cable."
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        color: Qt.alpha(Color.foreground, .68)
                                     }
                                 }
                             }
-                            Card {
-                                Heading { text: "Rendering & capture" }
-                                Hint {
-                                    text:root.performance.fps !== undefined ? root.performance.fps.toFixed(1)+" presented fps · CPU work p95 "+root.performance.workP95.toFixed(2)+" ms · frame p95 "+root.performance.frameP95.toFixed(2)+" ms"
-                                        +(root.performance.gpuSceneP95 !== undefined ? " · GPU scene p95 "+root.performance.gpuSceneP95.toFixed(2)+" ms · GPU capture p95 "+root.performance.gpuCaptureP95.toFixed(2)+" ms" : "")
-                                        +(root.performance.refreshHz ? " · missed vblanks "+root.performance.missedVblanksWindow+" / "+root.performance.missedVblanks : "")
-                                        : "Start XR to measure performance."
-                                }
-                                Repeater {
-                                    model: root.captureRows
-                                    Hint {
-                                        required property var modelData
-                                        text:modelData.output+" · "+(modelData.visible ? modelData.width+" × "+modelData.height : "Capture paused")+" · "+modelData.transport+" · source "+modelData.nativeWidth+" × "+modelData.nativeHeight+(modelData.importMs !== undefined ? " · import "+Number(modelData.importMs).toFixed(1)+" ms" : "")
-                                    }
-                                }
-                                Hint { text:"Adaptive capture resolution. Off-screen capture paused. Presentation rate follows the display mode." }
-                            }
-                            Card {
-                                Heading {
-                                    text: "Preview & cleanup"
-                                }
-                                Hint {
-                                    text: "Desktop preview and monitor cleanup."
-                                }
+                            Disclosure {
+                                title: "Preview & cleanup"
+                                helpText: "Open a desktop preview or stop XR and remove its virtual monitors"
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
                                     enabled: root.loaded
                                     Action {
-                                        text: "Windowed preview"
+                                        text: "Open windowed preview"
+                                        helpText: "Preview the applied monitor layout on the desktop; apply pending changes first"
                                         enabled: root.activeCount > 0 && !root.dirty && !root.viewing && !root.busy
                                         onClicked: root.send("start")
                                     }
                                     Action {
-                                        text: "Fullscreen mono"
+                                        text: "Open fullscreen mono"
+                                        helpText: "Present a mono preview on the glasses; requires exactly one glasses display"
                                         enabled: !!root.glasses.displays && root.glasses.displays.length === 1 && !root.viewing && !root.busy
                                         onClicked: root.send("present")
                                     }
                                     Action {
                                         text: "Stop & remove monitors"
+                                        helpText: "Stop XR and move windows from its virtual monitors to another display"
                                         enabled: root.activeCount > 0
                                         onClicked: root.send("stop")
                                     }
                                 }
-                                Hint {
-                                    text: "Apply a layout before previewing. Removing monitors moves their windows to another display."
-                                }
                             }
-                            Card {
+                            Disclosure {
+                                title: "Session activity"
+                                helpText: "Recent actions, newest first; select text and press Ctrl+C to copy"
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Heading {
-                                        text: "Session activity"
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: root.history.length + " events"
                                     }
                                     Action {
-                                        text: "Clear"
+                                        text: "Clear activity"
+                                        helpText: "Clear this session's activity list"
                                         enabled: root.history.length > 0
                                         onClicked: root.history = []
                                     }
                                 }
-                                Hint {
-                                    text: "Newest first. Select text and Ctrl+C to copy."
-                                }
                                 QQC.ScrollView {
                                     id: activityScroll
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 220
+                                    Layout.preferredHeight: 160
                                     contentWidth: availableWidth
                                     clip: true
                                     QQC.ScrollBar.horizontal.policy: QQC.ScrollBar.AlwaysOff
@@ -1671,23 +1992,16 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    ColumnLayout {
+                    Label {
                         Layout.fillWidth: true
-                        spacing: 3
-                        Label {
-                            text: root.backendSlow ? "Backend is still working. Stop remains available." : root.busy ? "Working…" : root.activeCount + " active monitors"
-                            color: root.busy ? Color.accent : Color.foreground
-                        }
-                        Label {
-                            text: (root.totalPixels / 1e6).toFixed(1) + " MP · " + root.fps + " fps"
-                            color: Qt.alpha(Color.foreground, .68)
-                            font.pixelSize: Style.font.bodySmall
-                        }
+                        text: root.backendSlow ? "Still working…" : root.busy ? "Working…" : root.activeCount + " active monitors"
+                        helpText: root.backendSlow ? "The backend is taking longer than expected. Stop & remove monitors remains available in Utilities." : "Virtual monitors currently active on the desktop"
+                        color: root.busy ? Color.accent : Color.foreground
                     }
                     Action {
                         visible: root.activeTab === 1
                         text: "Save layout"
-                        tooltipText: "Save for the next session without applying"
+                        helpText: "Save for the next session without applying"
                         enabled: root.loaded && !root.busy
                         onClicked: root.send("save")
                     }

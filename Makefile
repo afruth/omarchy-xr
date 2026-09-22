@@ -182,10 +182,18 @@ check-lint:
 .PHONY: check-lint
 
 # Requires a GL-capable graphical session (or xvfb-run on CI).
-$(BUILD)/test-environment: tests/environment.cpp src/environment.hpp | $(BUILD)
+$(BUILD)/test-environment: tests/environment.cpp src/environment.hpp src/tron_environment.hpp src/theme.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -Isrc $< -o $@ $(shell pkg-config --libs sdl2 gl)
 
-check-environment: $(BUILD)/test-environment
+$(BUILD)/test-tron-environment: tests/tron_environment.cpp src/environment.hpp src/tron_environment.hpp src/theme.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -Isrc $< -o $@ $(shell pkg-config --libs sdl2 gl)
+
+check-environment: $(BUILD)/test-environment $(BUILD)/test-tron-environment
 	./$(BUILD)/test-environment
+	./$(BUILD)/test-tron-environment
 
 -include $(wildcard $(BUILD)/*.d)
+
+# Manual visuals and GPU timings: build/environment-preview OUT_DIR [PANORAMA_BMP]
+$(BUILD)/environment-preview: tests/environment_preview.cpp src/environment.hpp src/tron_environment.hpp src/theme.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -Isrc $< -o $@ $(shell pkg-config --libs sdl2 gl)

@@ -34,29 +34,39 @@ copies only this project's plugin files and binary into your user configuration
 and registers that bar icon; it never edits `/usr/share/omarchy`. Move the icon
 with `omarchy bar move afruth.omarchy-xr --section right`.
 
-Studio has three tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3**):
-- **Controls**: start/close stereo, recenter, fit, and zoom, with live connection status.
-- **Monitors**: arrange panels, edit resolution, curvature and spacing, then save/apply
-  using the persistent action bar. Switching tabs preserves unapplied edits.
-- **Utilities & Debug**: connection checks, SDK controls, USB-C recovery, previews,
-  monitor cleanup, and selectable session activity (up to 40 recent events).
+Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**):
+- **Controls**: start/stop stereo, recenter, fit, and zoom, with live connection status.
+  Expand **Shortcuts & gestures** or **Laptop display** for preferences.
+- **Monitors**: choose a setup, arrange panels, and edit resolution, scale and bend.
+  **Monitor settings…**, **Workspace settings…**, and **Save setup…** contain
+  additional options. The persistent action bar applies changes; switching tabs
+  preserves unapplied edits.
+- **Environment**: choose the theme-colored Tron grid, a panorama, or black background and adjust brightness.
+  Expand **Environment options** for glow animation, rotation, and local image import.
+- **Utilities**: check the glasses connection, then expand connection tools,
+  recording, performance, previews/cleanup, or session activity as needed.
 
-1. In **Monitors**, choose a monitor count, or use **+ Add / Remove selected**.
-2. Select a rectangle and edit its width/height or X/Y position. Drag to reposition
-   in 20-pixel increments. Scroll to zoom; drag empty space to pan. Row/Grid and
-   Fit help arrange large layouts. Resolutions range from 320×200 to 8192×8192,
+Extra guidance appears in tooltips. Expandable sections and the panorama gallery
+limit their height and scroll when necessary. Colors, fonts, and controls follow
+the selected Omarchy theme.
+
+1. In **Monitors**, choose a setup or use **Add monitor**. Remove a monitor through
+   **Monitor settings…**.
+2. Select a rectangle and choose a resolution; open **Monitor settings…** for custom
+   width/height or X/Y position. Drag to reposition with edge snapping and a
+   20-pixel grid fallback. Ctrl+scroll zooms; drag empty space to pan. **Arrange…**
+   contains row, grid and fit actions. Resolutions range from 320×200 to 8192×8192,
    subject to actual compositor/GPU support. X/Y are in desktop pixels.
 3. **Apply layout** creates/resizes/removes app-owned virtual outputs. Overlapping
    layouts are moved apart on Apply to preserve the selected gutter. All virtual outputs use scale 1 and refresh at max(60, capture fps) Hz; capture fps is
    independently configurable from 1–120. Dedicated stereo applies changes live.
-4. **Open terminal here** launches a terminal on the selected monitor. Run apps
-   from those terminals, or place windows using your usual Hyprland controls.
+4. Place application windows on the XR workspaces using your usual Omarchy controls.
 5. **Start stereo** on **Controls** applies the draft, connects the SDK, switches the
    glasses to SBS, and takes a temporary DRM lease through the installed helper. The renderer has no desktop window and
    the headset disappears from the normal desktop layout until you stop it.
-   **Fullscreen mono** retains the regular-window fallback.
-   **Windowed preview** opens the applied layout in a regular window.
-   **Close viewer** stops presentation and returns XR workspaces and their open windows
+   **Utilities → Preview & cleanup → Open fullscreen mono** retains the regular-window fallback.
+   **Open windowed preview** opens the applied layout in a regular window.
+   **Stop stereo** (or **Close preview**) stops presentation and returns XR workspaces and their open windows
    to the laptop or another available desktop display, then removes the virtual monitors.
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
@@ -170,6 +180,19 @@ python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions 
 python3 tests/live_dedicated.py # opt-in stereo/DRM handoff/restoration test
 ```
 
+For UI review without changing a running XR session, use a native preview with
+a recorded Studio snapshot. It loads Omarchy's real controls and current theme;
+backend commands and external links only record local preview actions:
+
+```sh
+python3 scripts/preview-ui.py prepare
+python3 scripts/preview-ui.py run # keep running; use another terminal for the following commands
+python3 scripts/preview-ui.py float 780 600
+python3 scripts/preview-ui.py call tab 1
+python3 scripts/preview-ui.py capture /tmp/xr-monitors.png
+quickshell kill -p /tmp/omarchy-xr-ui-preview
+```
+
 Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
 libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev python3`. The Studio UI requires Omarchy itself.
 VS Code build/run/check tasks are included. Build artifacts stay in `build/`.
@@ -206,7 +229,7 @@ The screencopy protocol still requires a native-size source buffer; logical desk
 resolution is unchanged. This removes CPU readback/upload on the GPU path, rather
 than eliminating all GPU copies. A reusable shared-memory fallback converts only
 the reduced target resolution (`OMARCHY_XR_SHM_CAPTURE=1` forces it for diagnostics).
-Utilities & Debug reports transport, texture sizes, presentation rate and frame
+**Utilities → Performance** reports transport, texture sizes, presentation rate and frame
 cost. CPU work excludes presentation waits and is not a GPU execution measurement.
 Capture supports up to 120 fps, but actual throughput depends on source refresh,
 GPU load and the physical display mode; Pro 2 stereo is verified at 60 Hz.
@@ -318,13 +341,13 @@ fullscreen presentation development.
 
 ### Head-tracked presentation
 
-**Start dedicated stereo** is the XR path. It switches the Pro 2 to standard SBS
+**Start stereo** is the XR path. It switches the Pro 2 to standard SBS
 3840×1080 at 60 Hz, preserving its prior mode for restoration. The SDK acknowledges
 the request before the computer drives the new timing, so verification happens
 after scanout starts. Left and right views use parallel cameras separated by IPD;
 the eye offset is applied in head coordinates. The native desktop cursor is included in capture.
 
-Use Studio's **Recenter**, **Fit view**, **Zoom in/out**, and **Close viewer** while
+Use Studio's **Recenter**, **Fit workspace**, **Fit monitor**, **Zoom in/out**, and **Stop stereo** while
 wearing the glasses. Direct output has no desktop window, keyboard focus, or
 mouse surface. Recenter resets heading and preserves gravity-based pitch/roll,
 matching the bundled VITURE SDK Gen1/Gen2 demo. The wearer confirmed all axes.
@@ -423,7 +446,7 @@ running (including dedicated stereo with Studio hidden):
 Zoom uses exponential, frame-rate-independent easing, with no momentum after
 release beyond the short smoothing tail. Existing spacing safety limits still
 apply and can limit zoom. Target-height fit can crop the sides of a wide monitor.
-The Controls tab also provides a **Fit looked-at monitor** button.
+The Controls tab also provides a **Fit monitor** button for this action.
 
 The Lua integration uses live gesture callbacks and an atomic cumulative motion
 mailbox, without spawning a process per gesture event. Only vertical three-finger
@@ -472,32 +495,32 @@ the same touchpad). External mice retain their middle button. Tap-to-click must
 be enabled; this machine already has it enabled. Rerun `make install-controls`
 after adding a new touchpad. The binding follows the global LRM/LMR tap mapping.
 
-The main tab's **Input controls** card configures fit workspace, fit selected
+**Controls → Shortcuts & gestures** configures fit workspace, fit selected
 monitor, recenter, zoom-in and zoom-out hotkeys. Leave a field blank to disable
 that shortcut; use modifier combinations such as `CTRL + ALT + R`. Swipe finger
 count can be 3 or 5 (hardware support required); four fingers pan. Tap remains three fingers.
-Apply controls saves preferences and updates the running Lua bindings without
+**Save shortcuts** saves preferences and updates the running Lua bindings without
 restarting XR or reloading Hyprland. Duplicate and conflicting desktop shortcuts
-are rejected. Reset to defaults changes the draft; Apply confirms it.
+are rejected. **Reset to defaults** changes the draft; **Save shortcuts** confirms it.
 
 Focused zoom uses heading-only navigation: head roll/pitch are never saved as
 workspace tilt. Live head tracking still preserves its gravity reference.
 
 ### Mono window for recording
 
-Enable **Utilities & Debug → Mono window for OBS** to open a separate computer window alongside stereo on the glasses. The preference is saved; it can also be toggled while stereo runs. Select **Omarchy XR — Mono spectator** in your recording application's window picker. Closing that window leaves stereo running; Studio can reopen it.
+Enable **Utilities → Recording → Mono recording window** to open a separate computer window alongside stereo on the glasses. The preference is saved; it can also be toggled while stereo runs. Select **Omarchy XR — Mono spectator** in your recording application's window picker. Closing that window leaves stereo running; Studio can reopen it.
 
 The window renders the same head-controlled camera from its center, without stereo separation. It shares captured desktop textures, uses GPU DMA-BUF buffers with no CPU readback, and renders at up to 30 fps. Resizing preserves the glasses' aspect ratio with letterboxing. Hidden or busy windows skip rendering instead of waiting on the compositor. The extra scene rendering still adds GPU work. CLI: `--direct OUTPUT --stereo --spectator`.
 
 ### Saved monitor setups
 
-The **Saved setups** picker appears in Monitors. Enter a name and choose **Save new** to keep the editor's complete layout: monitor identities, dimensions, positions and surface curvature, workspace curvature, spacing, and capture rate. **Update selected** replaces that named setup (and can rename it). Names are unique ignoring case.
+The setup picker appears in Monitors. Open **Save setup…**, enter a name and choose **Save as new** to keep the editor's complete layout: monitor identities, dimensions, positions and surface curvature, workspace curvature, spacing, and capture rate. **Update selected** replaces that named setup (and can rename it). Names are unique ignoring case.
 
 Click a saved setup to switch. Running virtual monitors update through the normal live apply path; dedicated stereo keeps its renderer and lease. Before startup, selecting a setup just loads it for the next session. Unapplied edits prompt before replacement. Layouts are stored atomically in `~/.local/state/omarchy-xr/setups.json` (or under `XDG_STATE_HOME`). Hotkeys, mono-window preference, running applications, and transient head/camera position remain session/global settings.
 
 Studio's background status checks do not disable editing or interrupt mouse grabs. Monitor dragging snaps to nearby sibling edges and the configured gutter, falling back to a 20-pixel grid. A thicker selection border indicates snapping; moves that would overlap another monitor or reduce its gutter are blocked. `make check-ui` exercises numeric editing, dragging during status polling, request correlation, and monitor snapping with Qt Quick Test.
 
-**Workspace wrap (°)** accepts 0–360 degrees and stays independent of camera zoom. Enable **Monitors follow workspace curvature** to project all monitor surfaces onto the same vertical cylinder (horizontal curvature, straight vertical edges). Disable it to restore each monitor's independent **Surface bend (°)** setting. The checkbox and angle are saved with layouts and setups. Older percentage-based layouts retain their existing geometry until the workspace angle is edited. Surface bend still uses the monitor's geometry radius for degree conversion. Positive monitor spacing remains enforced in both modes.
+**Workspace settings… → Workspace wrap (°)** accepts 0–360 degrees and stays independent of camera zoom. Enable **Match monitor bend to workspace** to project all monitor surfaces onto the same vertical cylinder (horizontal curvature, straight vertical edges). Disable it to restore each monitor's independent **Surface bend (°)** setting. The toggle and angle are saved with layouts and setups. Older percentage-based layouts retain their existing geometry until the workspace angle is edited. Surface bend still uses the monitor's geometry radius for degree conversion. Positive monitor spacing remains enforced in both modes.
 
 ### Computer graphics limits
 
@@ -507,16 +530,34 @@ These are dimension guards, not a guarantee of successful buffer allocation or s
 
 ## Environment backgrounds
 
-The Environment tab selects a local 360° panorama or a black background.
+The Environment tab selects the built-in **Tron grid**, a local 360° panorama, or a black background.
 Brightness and rotation apply live to stereo, desktop preview, and the mono OBS
-window, independently of monitor layout. The sky follows camera rotation, with
-no positional parallax or change from monitor zoom. Settings persist across runs.
+window, independently of monitor layout. Backgrounds follow camera rotation and stay
+anchored when monitor zoom or pan changes. Panoramas have no positional parallax;
+the Tron floor uses the stereo eye offset. Settings persist across runs.
 
-Import a 2:1 JPEG, PNG or BMP using Choose image. ImageMagick prepares a maximum
+**Tron grid** is generated in OpenGL: a perspective floor, a soft horizon, and
+sparse light structures. It follows the current Omarchy accent even while Studio
+is closed, and needs no image files or ImageMagick. The floor stays stationary;
+the horizon and structures vary gently between 92% and 100% intensity over 24
+seconds. Turn off **Environment options → Animate glow** for a fully static scene.
+Grid lines fade at subpixel sizes to reduce distant shimmer. Switching to Tron
+releases the resident panorama texture; it uses no image texture or bloom buffer.
+
+To measure background GPU time and capture the actual rendered scene without
+opening an XR output, run `make build/environment-preview`, then
+`build/environment-preview /tmp/xr-backgrounds /path/to/sky.bmp` (the panorama
+argument is optional). The probe reports median/p95 GPU time for one 1920 × 1080
+eye at the renderer’s default 28° vertical field of view and writes PPM captures. It measures background drawing only; full frame
+rate still depends on capture, monitors, head direction, and hardware.
+`make check-environment` exercises panorama and Tron rendering in a GL session.
+
+Import a 2:1 JPEG, PNG or BMP using **Environment options → Import panorama…**. ImageMagick prepares a maximum
 4096 × 2048 texture by default; optional 8K uses more GPU memory. Smaller images
 are not upscaled. HDR/EXR and cubemap imports are not currently supported.
 The original file stays unchanged. Decode runs off the renderer thread and uploads
-are spread across frames; switching retains the previous sky until loading finishes.
+are spread across frames; switching between panoramas retains the previous image
+until loading finishes.
 A static panorama adds one cached mesh draw per eye; 120 Hz performance still needs
 hardware measurement. Brightness zero disables the sky draw.
 
@@ -540,7 +581,7 @@ Mixed-height monitors are vertically centered.
 
 Selecting a preset follows the saved-layout switching flow and checks the
 computer's resolution limits. Unsaved edits require confirmation before switching.
-Built-ins cannot be overwritten; use Save new to keep a customized copy.
+Built-ins cannot be overwritten; use **Save setup… → Save as new** to keep a customized copy.
 Environment, SDK, and input preferences remain independent of workspace presets.
 
 ## Laptop display during stereo
@@ -550,7 +591,7 @@ stereo starts and the renderer reports presented frames. The preference defaults
 to off and persists independently of monitor layouts. It never disables an
 external monitor or changes a Hyprland configuration file.
 
-The Restore laptop display button turns it back on for the current session;
+The **Restore display** button turns it back on for the current session;
 unchecking the toggle also disables automatic shutoff for future sessions.
 Stopping stereo restores the panel before SDK/display-mode recovery, even if
 headset recovery fails. A separate unprivileged watchdog restores it on renderer
