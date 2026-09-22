@@ -468,17 +468,50 @@ Item {
     }
     component HelpTip: Ui.PanelToolTip {
         id: tip
-        width: Math.min(420, window.width - 40, tooltipMetrics.width + 24)
+        readonly property real edge: 8
+        readonly property real cap: Math.min(420, Math.max(1, window.width - 40))
+        width: Math.min(cap, Math.ceil(tooltipMetrics.width + 24))
+        implicitWidth: width
         TextMetrics { id: tooltipMetrics; text: tip.text; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+        x: {
+            var show = visible;
+            var originX = parent ? parent.x : 0;
+            if (!parent || !parent.window || !show || !window.contentItem)
+                return 0;
+            var origin = parent.mapToItem(window.contentItem, originX - parent.x, 0);
+            var preferred = origin.x + (parent.width - width) / 2;
+            var limit = Math.max(edge, window.width - width - edge);
+            return Math.min(Math.max(preferred, edge), limit) - origin.x;
+        }
+        y: {
+            var show = visible;
+            var originY = parent ? parent.y : 0;
+            if (!parent || !parent.window || !show || !window.contentItem)
+                return 0;
+            var origin = parent.mapToItem(window.contentItem, 0, originY - parent.y);
+            var box = implicitHeight;
+            var preferred = origin.y - box - 3;
+            if (preferred < edge)
+                preferred = origin.y + parent.height + 3;
+            var limit = Math.max(edge, window.height - box - edge);
+            return Math.min(Math.max(preferred, edge), limit) - origin.y;
+        }
         contentItem: Text {
             text: tip.text
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
+            width: tip.width
             color: Color.tooltip.text
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             padding: 12
         }
+    }
+    component BoundDropdown: Ui.Dropdown {
+        id: picker
+        property string sourceValue: ""
+        onSourceValueChanged: value = sourceValue
+        Component.onCompleted: value = sourceValue
     }
     component Label: Text {
         id: label
@@ -923,11 +956,11 @@ Item {
                                     text: "Zoom gesture"
                                     helpText: "Flick up to fit the selected monitor; flick down to fit the workspace. Hold a swipe to zoom. Double tap with three fingers to recenter; swipe with four fingers to pan the selected monitor."
                                 }
-                                Ui.Dropdown {
+                                BoundDropdown {
                                     label: "Swipe fingers"
                                     options: ["3", "5"]
-                                    value: String(root.controlDraft.fingers)
-                                    onChanged: function(value) {root.setControl("fingers",Number(value));}
+                                    sourceValue: String(root.controlDraft.fingers)
+                                    onChanged: function(picked) {root.setControl("fingers",Number(picked));}
                                 }
                                 Repeater {
                                     model: [{key:"recenter",title:"Recenter camera"},{key:"fit_all",title:"Fit workspace"},{key:"fit_target",title:"Fit selected monitor"},{key:"zoom_in",title:"Zoom in"},{key:"zoom_out",title:"Zoom out"}]
@@ -1025,17 +1058,21 @@ Item {
                                     text: "Setup"
                                     helpText: "Choosing a setup applies it immediately. Save your current layout as a setup to reuse it."
                                 }
-                                Ui.Dropdown {
+                                BoundDropdown {
+                                    id: setupPicker
                                     Layout.fillWidth: true
                                     label: "Apply setup"
                                     showLabel: false
-                                    value: root.setupId
+                                    sourceValue: root.pendingSetupId !== "" ? root.pendingSetupId : root.setupId
                                     options: [{value:"",label:"Choose a setup…"}].concat(root.builtInSetups.filter(root.supportsSetup).map(function(s) {
                                         return {value:s.id,label:s.name};
                                     }), root.savedSetups.map(function(s) { return {value:s.id,label:s.name}; }))
                                     enabled: root.loaded && !root.busy
                                     Accessible.name: "Apply monitor setup"
-                                    onChanged: function(value) { if (value) root.chooseSetup(value); }
+                                    onChanged: function(picked) {
+                                        if (picked) root.chooseSetup(picked);
+                                        else setupPicker.value = sourceValue;
+                                    }
                                 }
                                 Action {
                                     text: "Add monitor"
@@ -1192,34 +1229,36 @@ Item {
                                     Layout.alignment: Qt.AlignTop
                                     spacing: 12
                                     enabled: root.loaded && !root.busy
-                                    Ui.Dropdown {
+                                    BoundDropdown {
                                         Layout.fillWidth: true
                                         label: "Selected monitor"
                                         showLabel: false
-                                        value: String(root.selected)
+                                        sourceValue: String(root.selected)
                                         options: root.monitors.map(function(m,i) {return {value:String(i),label:"Monitor " + (i+1)};})
                                         Accessible.name: "Selected monitor"
-                                        onChanged: function(value) {root.selected=Number(value);}
+                                        onChanged: function(picked) {root.selected=Number(picked);}
                                     }
-                                    Ui.Dropdown {
+                                    BoundDropdown {
+                                        id: resolutionPicker
                                         Layout.fillWidth: true
                                         label: "Resolution"
-                                        value: MonitorPresets.match(root.current)
+                                        sourceValue: MonitorPresets.match(root.current)
                                         options: MonitorPresets.options(root.graphicsLimits).map(function(p) {
                                             return p.value === "custom" ? {value:"custom", label:"Custom · " + root.current.width + " × " + root.current.height} : p;
                                         })
-                                        onChanged: function(value) {
-                                            var preset = MonitorPresets.find(value);
+                                        onChanged: function(picked) {
+                                            var preset = MonitorPresets.find(picked);
                                             if (preset) root.resizeMonitor(preset.width,preset.height);
                                             else monitorSettings.open();
+                                            resolutionPicker.value = sourceValue;
                                         }
                                     }
-                                    Ui.Dropdown {
+                                    BoundDropdown {
                                         Layout.fillWidth: true
                                         label: "Display scale"
-                                        value: String(root.current.scale || 1)
+                                        sourceValue: String(root.current.scale || 1)
                                         options: ["1", "1.25", "1.6", "2", "3", "4"].map(function(v) {return {value:v,label:Math.round(Number(v)*100)+"%"};})
-                                        onChanged: function(value) { root.edit("scale",Number(value)); }
+                                        onChanged: function(picked) { root.edit("scale",Number(picked)); }
                                     }
                                     AngleField {
                                         visible: !root.workspaceFollow
@@ -1393,13 +1432,13 @@ Item {
                                             }
                                         }
                                     }
-                                    Ui.Dropdown {
+                                    BoundDropdown {
                                         Layout.fillWidth:true
                                         label:"Text size · all desktops"
-                                        value:String(Math.round(Style.font.baseSize))
+                                        sourceValue:String(Math.round(Style.font.baseSize))
                                         options:["9","10","11","12","14","16","20"]
                                         enabled:root.loaded && !root.busy
-                                        onChanged:function(value){root.send("set_text_size",Number(value));}
+                                        onChanged:function(picked){root.send("set_text_size",Number(picked));}
                                     }
                                     Action {Layout.alignment:Qt.AlignRight;text:"Done";onClicked:workspaceSettings.close()}
                                 }
@@ -1610,11 +1649,11 @@ Item {
                                             enabled: root.loaded && !root.busy && !!root.environmentSettings.id
                                             onModified: function(value) { root.setEnvironment("rotation",value); }
                                         }
-                                        Ui.Dropdown {
+                                        BoundDropdown {
                                             label: "Import resolution"
-                                            value: String(root.imageResolution)
+                                            sourceValue: String(root.imageResolution)
                                             options: [{value:"4096",label:"4K"},{value:"8192",label:"8K"}]
-                                            onChanged: function(value) { root.imageResolution=Number(value); }
+                                            onChanged: function(picked) { root.imageResolution=Number(picked); }
                                         }
                                         Item { Layout.fillWidth: true }
                                         Action {
