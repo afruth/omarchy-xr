@@ -70,7 +70,7 @@ class InstalledPackageTests(unittest.TestCase):
         self.assertEqual(set(state['enabled']), {PLUGIN, NOTIFICATIONS})
         self.assertEqual(state['bar'], [PLUGIN])
         launcher = '/home/package-user/.config/omarchy/plugins/' + PLUGIN + '/bin/omarchy-xr'
-        self.assertEqual(self.successful(launcher, '--version'), 'omarchy-xr 0.3.0')
+        self.assertEqual(self.successful(launcher, '--version'), 'omarchy-xr 0.3.1')
         saved = self.home / '.local/state/omarchy-xr/layout.json'
         saved.write_text('{"personal": true}')
         self.install()
