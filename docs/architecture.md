@@ -356,6 +356,16 @@ default `gaze-v1 500 15 120 1`. The head speed a dwell watches is that of the st
 output, smoothed at 4 Hz, so it settles within a quarter second of a turn and a smoothed shake
 still counts as settled.
 
+Selection pauses while the look point is being driven rather than rested: during a pan or zoom
+gesture, for 400 ms after any fit, zoom or pan input, and while the camera easing has not settled.
+
+The flick gestures step through three zoom levels. Flick in: workspace overview -> the looked-at
+monitor face-on -> the active window on that monitor, fitted to the eye (`fitPane`, from the
+`.controls.pane` mailbox the adapter writes with the active window's rectangle on its XR output).
+Flick out: pane -> monitor -> overview. A flick in on a different monitor than the current level's
+restarts at the monitor level. The socket commands `fit` and `fit_target` (Studio buttons, Ctrl+Up
+and Ctrl+Down) stay direct: overview and monitor.
+
 Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
 The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the
 window under it if it is not already active; halo transitions still only focus the workspace.

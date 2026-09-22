@@ -299,7 +299,29 @@ local function selectGazeWorkspace()
     if gazeTarget==name then return end
     focusMonitor(name)
 end
-local function updatePointer() selectGazeWorkspace() end
+-- The active window's rectangle on its XR output, for the pane zoom level; written on change only.
+local paneSerial,paneLast=0,nil
+local function publishPane()
+    if not active then paneLast=nil;return end
+    local ok,win=pcall(hl.get_active_window)
+    local line="-"
+    if ok and win and type(win)=="table" and win.monitor and win.monitor.name and win.monitor.name:match("^OMXR%-")
+       and type(win.at)=="table" and type(win.size)=="table" then
+        local m=win.monitor
+        local ax,ay=win.at.x or win.at[1],win.at.y or win.at[2]
+        local sw,sh=win.size.x or win.size[1],win.size.y or win.size[2]
+        if ax and ay and sw and sh and m.x and m.y then
+            line=string.format("%s %d %d %d %d",m.name,math.floor(ax-m.x+.5),math.floor(ay-m.y+.5),math.floor(sw+.5),math.floor(sh+.5))
+        end
+    end
+    if line==paneLast then return end
+    paneLast=line;paneSerial=paneSerial+1
+    local file=io.open(path..".pane.tmp","w")
+    if not file then return end
+    file:write(string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
+    file:close();os.rename(path..".pane.tmp",path..".pane")
+end
+local function updatePointer() selectGazeWorkspace();publishPane() end
 local hoverTimer
 setHoverTimer = function(enabled)
     if enabled then

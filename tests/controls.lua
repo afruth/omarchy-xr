@@ -147,6 +147,14 @@ local function dwell(pointerSerial,px,py,name)
  files[path..".hover"]=string.format("v3 42 %d 1 %s 0 0 %d %g %g",serial,name or "OMXR-test-1",pointerSerial,px,py)
  omarchy_xr_controls.hover()
 end
+-- The active window's rectangle on an XR output goes to the pane mailbox, once per change.
+local activeWindow={monitor={name="OMXR-test-1",x=2020,y=100},at={x=2120,y=150},size={x=800,y=600}}
+hl.get_active_window=function() return activeWindow end
+omarchy_xr_controls.hover()
+local paneSerial=files[path..".pane"]:match("^v1 42 (%d+) OMXR%-test%-1 100 50 800 600 %d+");assert(paneSerial)
+omarchy_xr_controls.hover();assert(files[path..".pane"]:match("^v1 42 "..paneSerial.." "))   -- unchanged: not rewritten
+activeWindow={monitor={name="eDP-1",x=0,y=0},at={x=10,y=10},size={x=100,y=100}}
+omarchy_xr_controls.hover();assert(files[path..".pane"]:match("^v1 42 "..(paneSerial+1).." %- %d+"))
 dwell(0,0,0);assert(#movements==0)                        -- no dwell yet
 dwell(1,100,200);assert(#movements==1 and movements[1].x==2120 and movements[1].y==300 and windowFocuses[1]=="0xa")
 dwell(1,100,200);dwell(1,150,220);assert(#movements==1)  -- same serial: once

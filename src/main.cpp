@@ -191,6 +191,11 @@ struct View {
     std::string trackingPath, gazePath;
     double nextGazeCheck=0;
     gaze::Dwell dwell;
+    // Zoom level reached by the last fit: flick in steps overview -> monitor -> pane, flick out steps back.
+    enum class Level { Overview, Monitor, Pane };
+    Level level=Level::Overview;
+    std::string levelOutput;
+    double interactionUntil=0;
     theme::Accent accent;
     unsigned pointerSerial=0;
     float pointerX=0, pointerY=0;
@@ -246,6 +251,7 @@ struct View {
         return true;
     }
     void fit() {
+        level=Level::Overview; levelOutput.clear(); interactionUntil=monotonicSeconds()+.4;
         recenterUntil=0; panCamera=false; zoomGaze.reset(); focusFromGaze=false;
         focusOutput.clear(); focusX=focusY=0; targetRotation={};
         targetDistance=distance;
@@ -259,7 +265,10 @@ struct View {
         selection.validate(geometry);
         // A glance never selects: the look point has to rest on one area with the head settled.
         const double now=monotonicSeconds();
-        const auto settled=dwell.update(gaze.current, tracking.camera.headSpeed(), now);
+        // Scrolling, zooming, fitting and the camera's own easing all pause selection: the look
+        // point sweeps the scene then, and nothing rests.
+        const bool interacting=panGestureActive || now<interactionUntil || cameraMoving();
+        const auto settled=dwell.update(interacting ? std::nullopt : gaze.current, tracking.camera.headSpeed(), now);
         if (settled && !panGestureActive && now>=recenterUntil) {
             const auto previous=selection.output;
             selection.observe(gaze.current);
@@ -267,6 +276,12 @@ struct View {
             if (dwell.settings.pointer) { ++pointerSerial; pointerX=settled->pixelX; pointerY=settled->pixelY; }
             std::cout << "Gaze: settled on " << settled->output << " at " << int(settled->pixelX) << "," << int(settled->pixelY) << std::endl;
         }
+    }
+    bool cameraMoving() const {
+        const auto& a=navigationRotation; const auto& b=targetRotation;
+        const double dot=std::abs(a.w*b.w+a.x*b.x+a.y*b.y+a.z*b.z);
+        return std::abs(targetPanX-panX)>.005f || std::abs(targetPanY-panY)>.005f || std::abs(targetPanZ-panZ)>.005f
+            || std::abs(std::log(distance/targetDistance))>1e-3f || dot<.99995;
     }
     bool focusSelected(bool fitHeight, float zoom) {
         recenterUntil=0; panCamera=false;
@@ -386,6 +401,7 @@ struct View {
         return true;
     }
     void zoomBy(float amount) {
+        interactionUntil=monotonicSeconds()+.4;
         if (!focusSelected(false, amount)) {
             targetDistance=distance;
             targetPanZ=distance-navigation::zoomDepth(distance-targetPanZ, amount, maxZoomDepth());
@@ -394,8 +410,46 @@ struct View {
     void fitTarget() {
         // An explicit command targets what is looked at now; it does not wait for a dwell.
         if (gaze.current) { const auto previous=selection.output; selection.observe(gaze.current); if (selection.output!=previous) selectionAnchor=baseView(); }
-        if (focusSelected(true, 0)) std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl;
+        interactionUntil=monotonicSeconds()+.4;
+        if (focusSelected(true, 0)) { level=Level::Monitor; levelOutput=selection.output; std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl; }
         else std::cout << "Camera: no selected monitor; fit ignored" << std::endl;
+    }
+    // The flick gestures step through the levels. In: workspace -> monitor -> the active window on
+    // that monitor. Out: pane -> monitor -> workspace. A monitor fit on a different monitor than the
+    // current level's restarts at the monitor level.
+    void flickIn() {
+        if (gaze.current) { const auto previous=selection.output; selection.observe(gaze.current); if (selection.output!=previous) selectionAnchor=baseView(); }
+        if (level==Level::Monitor && levelOutput==selection.output && fitPane()) return;
+        fitTarget();
+    }
+    void flickOut() {
+        if (level==Level::Pane) { fitTarget(); return; }
+        fit(); tracking.camera.recenter(monotonicSeconds());
+    }
+    bool fitPane() {
+        if (!controls->paneValid || controls->paneOutput!=selection.output) { std::cout << "Camera: no active window known on " << selection.output << "; pane fit ignored" << std::endl; return false; }
+        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==selection.output; });
+        if (found==geometry.end()) return false;
+        const auto& p=*found;
+        recenterUntil=0; panCamera=false; zoomGaze.reset(); focusFromGaze=false; targetDistance=distance;
+        interactionUntil=monotonicSeconds()+.4;
+        const auto pose=monitorPose(p);
+        int viewportW, viewportH; drawable(viewportW, viewportH);
+        const float aspect=float(viewportW/(stereo?2:1))/std::max(viewportH, 1);
+        // Surface coordinates of the window's centre: x along the arc, y up, from the monitor centre.
+        focusOutput=p.output; focusAnchor=selectionAnchor;
+        focusX=(controls->paneX+controls->paneW/2-p.width/2)/900;
+        focusY=-(controls->paneY+controls->paneH/2-p.height/2)/900;
+        focusDepth=navigation::rectDistance(controls->paneW, controls->paneH, fov, aspect);
+        const float sag=spatial::bendZ(p.width/1800, pose.surfaceBend);
+        focusDepth=std::max(focusDepth, sag+.15f);
+        const auto limited=navigation::applyPanLimits(p, pose, focusDepth, fov, aspect, {focusX, focusY, 0}, false);
+        focusX=limited.x; focusY=limited.y;
+        const auto target=navigation::panFocus(pose, focusAnchor, focusDepth, focusX, focusY);
+        targetRotation=target.rotation; targetPanX=target.pan.x; targetPanY=target.pan.y; targetPanZ=target.pan.z;
+        level=Level::Pane; levelOutput=p.output;
+        std::cout << "Camera: fit active window " << int(controls->paneW) << "x" << int(controls->paneH) << " on " << p.output << std::endl;
+        return true;
     }
     bool ensureLease() {
         if (!output || output->pump()) return true;
@@ -629,11 +683,12 @@ struct View {
     void steer() {
         controls->update();
         panGestureActive=controls->panActive;
+        if (controls->panStarted || controls->panX || controls->panY) interactionUntil=monotonicSeconds()+.4;
         if (controls->panStarted || controls->panX || controls->panY) panSelected(float(controls->panX), float(controls->panY), controls->panStarted);
         sampleTarget();
         if (controls->zoom) zoomBy(float(controls->zoom));
-        if (controls->fit==1) tracking.fitRequested=true;
-        if (controls->fit==2) tracking.fitTargetRequested=true;
+        if (controls->fit==1) flickOut();
+        if (controls->fit==2) flickIn();
         if (controls->fit==3) tracking.recenterRequested=true;
         if (controls->fit==4) zoomBy(-std::log(.9f));
         if (controls->fit==5) zoomBy(std::log(.9f));
@@ -844,6 +899,8 @@ struct View {
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
             << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
             << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
+            << ",\"zoomLevel\":" << std::quoted(level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane")
+            << ",\"activePane\":" << (controls->paneValid ? "\""+controls->paneOutput+"\"" : std::string("null"))
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
