@@ -192,6 +192,14 @@ check-environment: $(BUILD)/test-environment $(BUILD)/test-tron-environment
 	./$(BUILD)/test-environment
 	./$(BUILD)/test-tron-environment
 
+$(BUILD)/test-workspace-focus: tests/workspace_focus.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Hidden SDL window; exercises the actual renderer without capturing the desktop.
+check-workspace-focus: $(BUILD)/test-workspace-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
+.PHONY: check-workspace-focus
+
 -include $(wildcard $(BUILD)/*.d)
 
 # Manual visuals and GPU timings: build/environment-preview OUT_DIR [PANORAMA_BMP]

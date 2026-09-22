@@ -82,6 +82,19 @@ class LiveControls {
     unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0, hoverPointerSerial = 0;
     long heartbeat = 0;
     std::string paneSeen; timespec paneStamp{};
+    timespec focusStamp{};
+    unsigned long long focusSerial=0;
+    void updateFocus() {
+        const auto filePath=path+".focus";
+        if (!newer(filePath, focusStamp)) return;
+        std::ifstream file(filePath);
+        std::string version, owner, name, extra;
+        unsigned long long seq; long stamp;
+        if (!(file>>version>>owner>>seq>>name>>stamp) || file>>extra || version!="v1" || owner!=session
+            || !seq || seq<=focusSerial || !stampFresh(stamp) || !name.starts_with("OMXR-") || name.size()>256
+            || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=std::string::npos) return;
+        focusSerial=seq; focusOutput=name;
+    }
     // The adapter publishes the active window's rectangle on its monitor: v1 owner serial name x y w h stamp,
     // or v1 owner serial - stamp when the active window is not on an XR output.
     void updatePane() {
@@ -103,6 +116,7 @@ class LiveControls {
         paneOutput = name; paneX = float(x); paneY = float(y); paneW = float(w); paneH = float(h); paneValid = true;
     }
 public:
+    std::string focusOutput;
     std::string paneOutput;
     float paneX = 0, paneY = 0, paneW = 0, paneH = 0;
     bool paneValid = false;
@@ -112,7 +126,7 @@ public:
     explicit LiveControls(const std::string& pose) : path(pose.empty() ? "" : pose + ".controls"), session(std::to_string(getpid())) {
         if (const char* mirrored = std::getenv("OMARCHY_XR_MIRROR_STATE")) mirror = mirrored;
         if (mirror == path) mirror.clear();
-        if (!path.empty()) { unlink(path.c_str()); unlink((path + ".pan").c_str()); update(); }
+        if (!path.empty()) { unlink(path.c_str()); unlink((path + ".pan").c_str()); unlink((path + ".focus").c_str()); update(); }
     }
     ~LiveControls() {
         AsyncFile::instance().flush();
@@ -121,6 +135,7 @@ public:
             if (base.empty()) continue;
             unlink((base + ".pan").c_str()); unlink((base + ".pane").c_str()); unlink((base + ".active").c_str()); unlink(base.c_str());
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
+            unlink((base + ".focus").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
@@ -140,9 +155,10 @@ public:
         if (!mirror.empty()) writeFile(mirror + ".hover", values.str() + '\n');
     }
     void update() {
-        zoom = 0; fit = 0; if (path.empty()) return;
+        zoom = 0; fit = 0; focusOutput.clear(); if (path.empty()) return;
         updatePan();
         updatePane();
+        updateFocus();
         const auto now = bootSeconds();
         if (now != heartbeat) {
             writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');

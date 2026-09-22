@@ -174,6 +174,7 @@ omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm imagem
 make                 # optimized build with debug symbols and warnings
 make run             # synthetic preview without creating monitors
 make check           # pixel conversion, lifecycle and CLI tests
+make check-workspace-focus # workspace-to-camera integration; hidden offscreen window
 make smoke           # ten rendered frames; requires a graphical session
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first
@@ -439,6 +440,12 @@ running (including dedicated stereo with Studio hidden):
 
 - Three-finger swipe **up** zooms in; **down** zooms out continuously.
 - **Ctrl+Up** fits the complete workspace, accounting for curved panel bounds.
+- **Super+1…0** keeps Omarchy's normal workspace switching and smoothly fits the
+  XR monitor showing that workspace, just like the first upward flick. This also
+  works when the workspace is already visible on another XR monitor. Other
+  workspace changes and external monitor focus follow the same behavior;
+  gaze-driven focus does not trigger a camera fit. Physical monitors and special
+  workspaces leave the camera unchanged. Requires `make install-controls` after updating.
 - **Ctrl+Down** fits the height of the monitor you are looking at, with a 4%
   margin. Selection follows headset direction, not eye movements. Looking into a
   gap or losing tracking leaves the view unchanged.
