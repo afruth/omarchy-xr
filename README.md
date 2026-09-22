@@ -22,6 +22,7 @@ make
 make install-studio
 make install-helper # one-time administrator setup for dedicated stereo
 make install-controls # optional live touchpad and keyboard controls
+make install-notifications # optional 3D notifications and head-shake dismissal
 omarchy-shell shell rescanPlugins
 omarchy plugin enable afruth.omarchy-xr
 omarchy bar put afruth.omarchy-xr
@@ -195,10 +196,52 @@ quickshell kill -p /tmp/omarchy-xr-ui-preview
 ```
 
 Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
-libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev python3`. The Studio UI requires Omarchy itself.
+libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev libpango1.0-dev
+libcairo2-dev libjson-c-dev python3`. On Arch, the additional notification rendering
+dependencies are `pango cairo json-c`. The Studio UI requires Omarchy itself.
 VS Code build/run/check tasks are included. Build artifacts stay in `build/`.
 
 ## Viewer controls and direct capture
+
+### Spatial notifications (experimental)
+
+`make install-notifications` enables **Notifications with XR**, a thin extension
+of Omarchy's installed notification service. Native desktop cards, actions,
+expiry, Do Not Disturb and history remain available. No packaged files are edited.
+
+In stereo, the newest desktop notification becomes a small, theme-colored 3D
+card with a shallow rim. It uses the same perspective and eye separation as the
+monitors. It chooses the nearest clear position beside or above the workspace,
+at approximately the monitor's depth. It never moves onto a monitor merely to
+stay visible at close zoom. Curved surfaces and both eyes are included in placement.
+
+After you turn and briefly settle, it follows with a damped motion. It first
+retreats behind the furthest screen, travels around the screens, then approaches
+its new position. Monitor depth occludes it during the flight. Looking directly
+at the card holds it still for reading. A small, slow-pulsing directional arrow
+at the view edge points toward a card that is outside the frame or behind a screen;
+the arrow is also drawn at a finite stereo depth. Large turns take longer to follow.
+
+Briefly settle while the card is in view, then shake **no** (left, right, centre,
+or the reverse) to dismiss that exact notification in XR and on the monitors.
+A cooldown and rejection of slow turns, nods, stale tracking and changing card
+identities guard against accidental dismissal. Long content is truncated; desktop
+actions remain on the original notification. Text shaping runs off the render
+thread and uploads a bounded texture only when content or theme changes.
+
+To turn off XR mirroring, run `omarchy plugin enable omarchy.notifications`.
+The installer refuses to replace another enabled custom notification clone.
+`make check-notifications` exercises placement, safe flight paths, motion,
+reading, directional cues, stereo rendering, depth occlusion, and dismissal.
+`make check-ui` includes native-model synchronization and exact-ID dismissal.
+
+For a synthetic preview using the real renderer (no desktop captures or SDK):
+
+```sh
+make build/notification-preview
+SDL_VIDEODRIVER=offscreen build/notification-preview /tmp/xr-notifications --video
+# Six screenshots, a motion trace, and a 30 fps PNG sequence in frames/.
+```
 
 - Right-drag: look around; middle-drag: pan across the panel plane.
 - Mouse wheel: zoom; **F**: fit every panel; **R**: recenter; **Esc**: exit.

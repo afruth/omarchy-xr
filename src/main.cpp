@@ -19,6 +19,7 @@
 #include "sky_cull.hpp"
 #include "dwell.hpp"
 #include "theme.hpp"
+#include "notification_hud.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -158,6 +159,7 @@ struct View {
     std::unique_ptr<DirectOutput> output;
     std::unique_ptr<Spectator> spectator;
     std::unique_ptr<SkyEnvironment> environment;
+    std::unique_ptr<notifications::Hud> notificationHud;
     std::optional<LiveControls> controls;
     std::string spectatorError;
     SDL_Window* window=nullptr;
@@ -472,6 +474,7 @@ struct View {
                 }
                 spectator.reset();
                 environment->release();
+                if(notificationHud) notificationHud->release();
                 halo.release();
                 gpuTimers.reset();
                 output=std::make_unique<DirectOutput>(display, stereo);
@@ -793,6 +796,7 @@ struct View {
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
         for (const auto& p:panels) if (p.visible) drawHalo(halo, accent.rgb, p, cx, cy, span(), distance, workspace);
         for (size_t i=0;i<panels.size();++i) if (panels[i].visible) drawPanel(panels[i], i, cx, cy, span(), distance, workspace);
+        if(stereoView && notificationHud) notificationHud->draw(lastCameraTime);
     }
     // One opaque panel filling this eye makes the full-screen sky draw pointless.
     bool skyHidden(float eyePosition, float tanV, float tanH) const {
@@ -909,6 +913,9 @@ struct View {
             << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
             << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
             << ",\"zoomLevel\":" << std::quoted(level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane")
+            << ",\"notificationVisible\":" << (notificationHud && notificationHud->visible()?"true":"false")
+            << ",\"notificationCount\":" << (notificationHud?notificationHud->count():0)
+            << ",\"notificationInView\":" << (notificationHud && notificationHud->placement().onscreen?"true":"false")
             << ",\"activePane\":" << (controls->paneValid ? "\""+controls->paneOutput+"\"" : std::string("null"))
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
@@ -972,12 +979,17 @@ struct View {
         reloadGaze(workStarted);
         accent.update(workStarted);
         tracking.update();
+        if(notificationHud) {
+            notificationHud->update(tracking.camera,workStarted);
+            if(notificationHud->interacting(workStarted)) interactionUntil=workStarted+.25;
+        }
         predictPose();
         reloadLayout();
         steer();
         pollInput();
         const float cameraDt=easeCamera();
         sampleTarget();
+        placeNotification(workStarted);
         showTracking();
         int viewportWidth, viewportHeight; drawable(viewportWidth, viewportHeight);
         int w, h; drawable(w, h);
@@ -996,6 +1008,19 @@ struct View {
         recordWork(workMs, frameStarted);
         if (!output && SDL_GL_GetSwapInterval()==0) SDL_Delay(1);
         return true;
+    }
+    void placeNotification(double now) {
+        if(!notificationHud || !notificationHud->visible())return;
+        notifications::space::Scene scene;
+        scene.view=currentView();scene.eye={-panX,-panY,-panZ};
+        scene.tanV=std::tan(fov*pi/360);scene.tanH=scene.tanV*aspect();scene.ipd=ipd/1000;
+        scene.depth=std::max(.85f,distance-panZ);
+        const std::string& focused=focusOutput.empty()?selection.output:focusOutput;
+        for(const auto& panel:geometry)if(panel.output==focused){
+            scene.depth=notifications::space::length(targeting::sub(monitorPose(panel).center,scene.eye));break;
+        }
+        scene.monitors(geometry,cx,cy,span(),distance,workspace);
+        notificationHud->place(std::move(scene),now);
     }
     void collectGpu() {
         const auto gpuBefore=gpuSceneTimes.size();
@@ -1024,6 +1049,7 @@ struct View {
         spectator.reset();
         halo.release();
         if (environment) environment->release();
+        if (notificationHud) {notificationHud->release();notificationHud.reset();}
         if (context) SDL_GL_DeleteContext(context);
         if (window) SDL_DestroyWindow(window);
         output.reset(); SDL_Quit();
@@ -1033,6 +1059,7 @@ struct View {
         if (direct) output=std::make_unique<DirectOutput>(display, stereo);
         if (!openWindow()) return 1;
         environment=std::make_unique<SkyEnvironment>(layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"environment.tsv").string());
+        if(stereo && !posePath.empty()) notificationHud=std::make_unique<notifications::Hud>(std::filesystem::path(posePath).parent_path().string());
         std::signal(SIGTERM, stopSignal); std::signal(SIGINT, stopSignal);
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
         std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\nPanels: " << panels.size() << std::endl;
