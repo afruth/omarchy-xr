@@ -171,7 +171,7 @@ class GlassesTests(unittest.TestCase):
             finished = recovery.status()
         self.assertFalse(finished["recovering"])
         self.assertIsNone(recovery.process)
-        self.assertIn("timed out", finished["recoveryMessage"])
+        self.assertIn("took too long", finished["recoveryMessage"])
         self.assertNotIn(signal.SIGKILL, [call.args[1] for call in kill.call_args_list])
 
     def test_term_after_unbind_binds_the_controller(self):

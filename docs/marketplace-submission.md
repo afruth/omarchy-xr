@@ -7,8 +7,9 @@ Tags: Hyprland, Quickshell, Workspaces
 ## Maintainer notes
 
 XR Monitor Studio creates a spatial desktop using independently captured virtual
-monitors. Supports Gen1/Gen2 glasses and includes head tracking, stereo output,
-workspace layouts and optional spatial notifications.
+monitors. It currently works with VITURE XR glasses only, including supported
+Gen1/Gen2 models, and includes head tracking, stereo output, workspace layouts
+and optional spatial notifications.
 
 Requires Arch Linux x86_64, Omarchy 4's Quickshell plugin system and companion
 package `omarchy-xr-bin`. The package supplies the renderer, licensed proprietary

@@ -63,8 +63,10 @@ Add the public plugin using Omarchy's standard command:
 omarchy plugin add https://github.com/afruth/omarchy-xr.git --enable
 ```
 
-Open XR Monitor Studio from the bar, then choose **Utilities → Connection tools
-→ Install XR runtime**. The button opens a terminal, downloads the complete
+Open XR Monitor Studio from the bar, then choose **Utilities → Setup & integrations
+→ Install XR runtime**. A missing runtime also produces a prominent install card
+on the **Controls** tab, so setup is visible before the first stereo attempt.
+The button opens a terminal, downloads the complete
 v0.3.0 package from GitHub, enforces its pinned size of 2,804,714 bytes while
 streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
@@ -73,6 +75,12 @@ and notifications. Neither an AUR account nor the vendor SDK download is needed.
 The package manager runs only after verification; a failed download or checksum
 stops installation. Oversized downloads stop before excess bytes are written;
 incomplete or unverified downloads are deleted. No downloaded script is executed.
+
+**Utilities → Setup & integrations** also provides buttons to install or update
+the optional shortcuts/gestures and spatial-notification integration. A source
+installation with a developer-supplied SDK gets an **Install stereo helper**
+button there. These actions keep terms and administrator prompts visible in the
+terminal, but users do not need to type the underlying setup commands.
 
 If you installed the package directly already, run
 `omarchy-xr-setup --controls --notifications` to finish setup.

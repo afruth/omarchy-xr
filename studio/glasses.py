@@ -78,19 +78,19 @@ class Recovery:
 
     def start(self):
         if self.process is not None:
-            raise RuntimeError("USB-C recovery is already running")
+            raise RuntimeError("Glasses connection recovery is already running.")
         candidates = controllers()
         if len(candidates) != 1:
-            raise RuntimeError("Automatic recovery requires exactly one supported USB-C controller")
+            raise RuntimeError("Automatic recovery is not available on this computer. Unplug and reconnect the glasses instead.")
         if not shutil.which("pkexec"):
-            raise RuntimeError("pkexec is required for the administrator prompt")
+            raise RuntimeError("The administrator approval tool is not installed. Unplug and reconnect the glasses instead.")
         self.process = subprocess.Popen(
             ["pkexec", "/bin/sh", "-c", RESET_SCRIPT, "omarchy-xr-reset", candidates[0]],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.started = 0.0
         self.worker = None
         self.signaled = False
-        self.message = "Authorize the administrator prompt; then wait for USB-C to reconnect."
+        self.message = "Approve the system prompt, then wait for the glasses to reconnect."
 
     def status(self):
         self.note_worker()
@@ -131,7 +131,7 @@ class Recovery:
                 code = process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 code = None
-        self.message = "USB-C recovery timed out. You can retry."
+        self.message = "Glasses connection recovery took too long. You can try again."
         if code is not None:
             self.process = None
 
@@ -144,7 +144,7 @@ class Recovery:
             return
         self.process = None
         if code == 0:
-            self.message = "USB-C reinitialized. Waiting for video; if absent, unplug and reconnect the glasses."
+            self.message = "The glasses connection was restarted. Waiting for video; if it does not return, unplug and reconnect the glasses."
         elif code in (126, 127):
             self.message = "Recovery was cancelled or authorization failed. You can retry."
         else:

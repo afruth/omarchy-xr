@@ -41,7 +41,7 @@ class WorkspacePresetsTests(unittest.TestCase):
                 manager.save_setup('My portrait layout',manager.load())
                 saved=manager.setups()['items'][0]
                 self.assertFalse(saved['id'].startswith('builtin:'))
-                with self.assertRaisesRegex(ValueError,'Saved setup'):
+                with self.assertRaisesRegex(ValueError,'saved setup'):
                     manager.save_setup('Overwrite built-in',manager.load(),'builtin:one-fhd')
                 before=manager.profile.read_text()
                 manager.graphics_limits={'maxWidth':1920,'maxHeight':1920}

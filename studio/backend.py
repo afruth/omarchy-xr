@@ -22,7 +22,7 @@ from workspace_presets import built_in_setups
 from environment import Environment
 from glasses import Recovery, detect
 from sdk import SDK
-from dedicated import Dedicated
+from dedicated import Dedicated, HELPER
 import socket
 from input_settings import DEFAULTS, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
@@ -59,7 +59,7 @@ def add_gutters(layout):
             else:
                 m["y"] += down
         else:
-            raise ValueError("Could not resolve this layout. Use Row or Grid")
+            raise ValueError("The monitors overlap. Choose Arrange in row or Arrange in grid.")
         placed.append(m)
     return validate(result)
 
@@ -90,10 +90,10 @@ def _layout_monitors(layout):
         raise ValueError("Use at most 16 monitors")
     _curvature(layout.get("curvature", 0))
     if type(layout.get("workspaceFollow", False)) is not bool:
-        raise ValueError("Workspace wrapping must be on or off")
+        raise ValueError("Match monitor bend to workspace must be on or off.")
     degrees = layout.get("workspaceDegrees", -1)
     if type(degrees) not in (int, float) or not math.isfinite(degrees) or (degrees != -1 and not 0 <= degrees <= 360):
-        raise ValueError("Workspace wrap must be 0–360 degrees")
+        raise ValueError("Workspace bend must be between 0° and 360°.")
     return monitors
 
 
@@ -114,7 +114,7 @@ def _validate_monitor(monitor, seen):
         if type(monitor.get(key)) is not int:
             raise ValueError(f"{key} must be a whole number")
     if not 320 <= monitor["width"] <= 8192 or not 200 <= monitor["height"] <= 8192:
-        raise ValueError("Resolution must be 320–8192 wide and 200–8192 high")
+        raise ValueError("Monitor size must be 320–8192 pixels wide and 200–8192 pixels high.")
     if abs(monitor["x"]) > 100000 or abs(monitor["y"]) > 100000:
         raise ValueError("Positions must be within ±100,000 pixels")
 
@@ -125,7 +125,7 @@ def _validate_gaps(monitors, gap):
     for monitor in sorted(monitors, key=lambda item: item["x"]):
         active = [peer for peer in active if peer["x"] + peer["width"] + gap > monitor["x"]]
         if any(monitor["y"] < peer["y"] + peer["height"] + gap and peer["y"] < monitor["y"] + monitor["height"] + gap for peer in active):
-            raise ValueError("Monitor gutter is too small. Apply to separate monitors or choose Row / Grid")
+            raise ValueError("The monitors are too close together. Choose Arrange in row or Arrange in grid.")
         active.append(monitor)
 
 
@@ -153,6 +153,17 @@ def runtime_dir():
     return path
 
 
+def runtime_installed(renderer, system=Path("/usr/bin/omarchy-xr")):
+    """Accept the package runtime or a compiled renderer copied by source setup."""
+    if system.is_file():
+        return True
+    try:
+        with Path(renderer).open("rb") as executable:
+            return executable.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
 def die_with_parent():
     # PR_SET_PDEATHSIG: the viewer exits if this worker is killed.
     libc = ctypes.CDLL(None, use_errno=True)
@@ -173,7 +184,7 @@ def run_hypr(*args):
     result = subprocess.run(["hyprctl", *args], capture_output=True, text=True, timeout=15)
     text = result.stdout.strip()
     if result.returncode or text.lower().startswith(("error", "invalid", "unknown")):
-        raise RuntimeError(text or result.stderr.strip() or "Hyprland command failed")
+        raise RuntimeError(text or result.stderr.strip() or "The desktop could not complete that change. Try again.")
     return text
 
 
@@ -186,7 +197,7 @@ class Manager:
         try:
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(json.dumps({"ok": False, "message": "Monitor manager is already running"}), flush=True)
+            print(json.dumps({"ok": False, "message": "XR Monitor Studio is already open."}), flush=True)
             raise SystemExit(1)
         self.runner, self.renderer = runner, str(renderer)
         self.presentation_profile = self.directory / "presentation.json"
@@ -230,7 +241,7 @@ class Manager:
         try:
             names = json.loads(self.journal.read_text())
             if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", n) for n in names):
-                raise ValueError("Invalid output recovery journal")
+                raise ValueError("The previous XR session did not close cleanly. Studio will recover its virtual monitors.")
             self.owned = set(names)
         except (OSError, ValueError) as exc:
             self.adopt_visible_outputs(exc)
@@ -311,11 +322,11 @@ class Manager:
             return {"version": 1, "selected": "", "items": []}
         data = json.loads(path.read_text())
         if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("items"), list):
-            raise ValueError("Saved setups file is invalid")
+            raise ValueError("Saved monitor setups could not be read.")
         seen = set()
         for item in data["items"]:
             if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] in seen:
-                raise ValueError("Invalid saved setup identity")
+                raise ValueError("A saved monitor setup is damaged and could not be opened.")
             seen.add(item["id"])
             self.setup_name(item.get("name"))
             validate(item.get("layout"))
@@ -333,7 +344,7 @@ class Manager:
         data = self.setups()
         item = next((s for s in data["items"] if s["id"] == identity), None)
         if identity and item is None:
-            raise ValueError("Saved setup no longer exists")
+            raise ValueError("That saved setup no longer exists. Choose another setup.")
         if any(s["name"].casefold() == name.casefold() and s is not item for s in data["items"]):
             raise ValueError("That name is already used. Select it and choose Update selected, or use a new name")
         if item is None:
@@ -348,7 +359,7 @@ class Manager:
         data = self.setups()
         item = next((s for s in built_in_setups() + data["items"] if s["id"] == identity), None)
         if item is None:
-            raise ValueError("Setup no longer exists")
+            raise ValueError("That setup no longer exists. Choose another setup.")
         layout = add_gutters(item["layout"])
         validate_dimensions(layout, self.hardware_limits())
         # Reuse live layout application, preserving the renderer and display lease.
@@ -359,7 +370,7 @@ class Manager:
             self.save(layout)
         data["selected"] = identity
         atomic_json(self.directory / "setups.json", data)
-        return {"layout": layout, "layoutDirty": False, "message": "Setup selected: " + item["name"]}
+        return {"layout": layout, "layoutDirty": False, "message": "Using setup: " + item["name"]}
 
     def halt_viewer(self, failures):
         try:
@@ -440,7 +451,7 @@ class Manager:
                 failures.append("Workspace release: " + str(exc))
         self.restoration_error = "; ".join(failures)
         if failures:
-            raise RuntimeError("XR display restoration needs retry: " + self.restoration_error)
+            raise RuntimeError("XR could not close cleanly. Choose Stop & remove monitors again. " + self.restoration_error)
 
     def wait_for_output(self, original, family):
         name = original["name"]
@@ -456,7 +467,7 @@ class Manager:
             if actual and any(str(mode).startswith(family) for mode in actual.get("availableModes", [])):
                 return name
             time.sleep(.1)
-        raise RuntimeError("The glasses video output did not return after leaving side-by-side mode")
+        raise RuntimeError("The glasses did not return to normal video. Unplug and reconnect them, then try again.")
 
     def wait_for_refresh(self, name, original):
         wanted = f'{original["width"]}x{original["height"]}@'
@@ -466,7 +477,7 @@ class Manager:
             if any(mode.startswith(wanted) and abs(float(mode.split("@")[1].removesuffix("Hz")) - original["refreshRate"]) < 1 for mode in modes):
                 return
             time.sleep(.1)
-        raise RuntimeError("The previous refresh rate has not reconnected")
+        raise RuntimeError("The glasses did not restore their previous display settings. Unplug and reconnect them.")
 
     def restore_saved_output(self):
         if not self.original_output:
@@ -492,7 +503,7 @@ class Manager:
                                     m["name"] in glasses,
                                     m["name"] not in laptop_names))
         if not targets:
-            raise RuntimeError("No reachable display for XR workspaces; restore a display and retry Stop")
+            raise RuntimeError("There is no computer display available for your XR windows. Turn on a display, then choose Stop again.")
         target = targets[0]["name"]
         workspaces = json.loads(self.runner("-j", "workspaces"))
         for workspace in workspaces:
@@ -505,7 +516,7 @@ class Manager:
         remaining = json.loads(self.runner("-j", "workspaces"))
         stranded = [w for w in remaining if w.get("monitor") in removing and w.get("windows", 0) > 0]
         if stranded:
-            raise RuntimeError("XR windows have not reached the desktop; retry Stop")
+            raise RuntimeError("Some XR windows could not return to your computer display. Choose Stop again.")
 
     def remove(self, names):
         names = set(names)
@@ -526,7 +537,7 @@ class Manager:
             except Exception as exc:
                 failures.append(str(exc))
         if failures:
-            raise RuntimeError("Some outputs could not be removed: " + "; ".join(failures))
+            raise RuntimeError("Some virtual monitors could not be removed. Choose Stop again. " + "; ".join(failures))
 
     def cleanup(self):
         self.stop_viewer()
@@ -577,14 +588,14 @@ class Manager:
                    for name, pos in positions.items()):
                 return updated
             time.sleep(.1)
-        raise RuntimeError("Hyprland did not stage the monitor layout update")
+        raise RuntimeError("The desktop could not prepare the new monitor layout. Try Apply again.")
 
     def reject_live_resize(self, layout):
         if not (self.applied and self.viewer and self.viewer.poll() is None and not self.direct):
             return
         previous_sizes = {monitor["id"]: (monitor["width"], monitor["height"]) for monitor in self.applied["monitors"]}
         if any(monitor["id"] in previous_sizes and previous_sizes[monitor["id"]] != (monitor["width"], monitor["height"]) for monitor in layout["monitors"]):
-            raise RuntimeError("Close the windowed/fullscreen preview before resizing monitors. Dedicated stereo supports live resizing.")
+            raise RuntimeError("Close the preview before changing monitor sizes. You can resize monitors while stereo is active.")
 
     def presentation_unchanged(self, layout, rate):
         def geometry(config):
@@ -602,7 +613,7 @@ class Manager:
             return max(self.output_rect(monitor)[2] for monitor in other) + 100
         leftover = [monitor for monitor in existing if monitor["name"] in self.owned]
         if not leftover:
-            raise RuntimeError("Keep at least one existing display for the editor and viewer")
+            raise RuntimeError("Keep at least one computer display active while setting up XR.")
         # Keep the current virtual-desktop origin when no physical leftover remains.
         return min(monitor["x"] for monitor in leftover)
 
@@ -632,7 +643,7 @@ class Manager:
                 name = self.prefix + m["id"]
                 scale = effective_scale(m)
                 if name in existing_names and name not in self.owned:
-                    raise RuntimeError("Output name collision: " + name)
+                    raise RuntimeError("A virtual monitor name is already in use. Stop XR, then try again.")
                 x, y = base_x + m["x"] - min_x, m["y"] - min_y
                 if name not in existing_names:
                     # Install explicit scale/resolution before advertising a new output.
@@ -654,7 +665,7 @@ class Manager:
                     break
                 time.sleep(.1)
             else:
-                raise RuntimeError("Hyprland did not apply the requested resolution, scale and position")
+                raise RuntimeError("The desktop could not apply the monitor size or position. Try Apply again.")
             self.remove(self.owned - desired)
             self.output_geometry = {name:{k:actual[name][k] for k in ("x","y")} for name in desired}
             self.persist_applied(layout)
@@ -678,7 +689,7 @@ class Manager:
         changed = False
         for m in self.applied["monitors"]:
             name = self.prefix+m["id"]
-            if name not in actual: raise RuntimeError("XR output disconnected: " + name)
+            if name not in actual: raise RuntimeError("A virtual monitor disconnected. Choose Apply to restore it.")
             position = self.output_geometry.get(name, actual[name])
             if (self.output_matches(actual[name], m, rate)
                     and all(actual[name].get(k)==position[k] for k in ("x","y"))): continue
@@ -688,13 +699,13 @@ class Manager:
         if not changed: return
         verified = {m["name"]:m for m in self.monitors()}
         if not all(self.output_matches(verified.get(self.prefix+m["id"],{}),m,rate) for m in self.applied["monitors"]):
-            raise RuntimeError("XR output mode restoration pending")
+            raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
 
     def redistribute_laptop_windows(self, workspace_ids, monitors):
         targets = [m["activeWorkspace"]["id"] for m in monitors if m["name"] in self.owned
                    and m.get("activeWorkspace",{}).get("id",0)>0]
         if not workspace_ids: return
-        if not targets: raise RuntimeError("No visible XR workspace for laptop windows")
+        if not targets: raise RuntimeError("There is no active XR monitor for the windows from your laptop display.")
         clients = json.loads(self.runner("-j", "clients"))
         index = 0
         for client in clients:
@@ -729,14 +740,14 @@ class Manager:
         if present:
             displays = detect(self.monitors())["displays"]
             if len(displays) != 1:
-                raise RuntimeError("Connect exactly one active VITURE display before opening on glasses")
+                raise RuntimeError("Connect one pair of VITURE glasses before opening the preview.")
             args += ["--display", displays[0]]
         return args
 
     def direct_arguments(self):
         headset = self.dedicated.output
         if not isinstance(headset, str):
-            raise RuntimeError("Glasses display is not reserved")
+            raise RuntimeError("The glasses are not ready for stereo. Stop XR, then try again.")
         args = ["--direct", headset, "--stereo"]
         if self.spectator_enabled:
             self.place_spectator()
@@ -747,7 +758,7 @@ class Manager:
         if not self.applied:
             raise RuntimeError("Apply your layout first")
         if not Path(self.renderer).is_file():
-            raise RuntimeError("Renderer not installed. Run make install-studio")
+            raise RuntimeError("XR runtime not installed. Open Setup & integrations and choose Install XR runtime")
         args = self.viewer_command(present, direct)
         if not direct:
             self.stop_viewer(release_outputs=False)
@@ -761,7 +772,7 @@ class Manager:
         threading.Thread(target=self._watch_viewer, args=(self.viewer,), daemon=True).start()
         time.sleep(.25)
         if self.viewer.poll() is not None:
-            raise RuntimeError("Viewer could not start. See " + str(self.directory / "viewer.log"))
+            raise RuntimeError("The XR view could not start. Try again; if it keeps failing, reopen Studio.")
 
     def display_event(self, stage, error=None, output=None):
         # Append rather than overwrite so a later recovery attempt keeps the cause.
@@ -795,7 +806,7 @@ class Manager:
             self.display_event("stereo-restore-skipped", str(exc))
         displays = detect(self.monitors())["displays"]
         if len(displays) != 1:
-            detail = self.restoration_error or "Connect exactly one VITURE video output"
+            detail = self.restoration_error or "Connect one pair of VITURE glasses, then try again."
             raise RuntimeError(detail)
         current = next(m for m in self.monitors() if m["name"] == displays[0])
         family = f'{saved_output["width"]}x{saved_output["height"]}@' if isinstance(saved_output, dict) else ""
@@ -808,14 +819,14 @@ class Manager:
         self.run_stereo(displays)
 
     def run_stereo(self, displays):
-        stage = "SDK stereo request"
+        stage = "switching the glasses to stereo"
         try:
             self.display_event("stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
             self.record_stereo()
             self.sdk.stereo(True)
             self.display_event("stereo-request-acknowledged")
-            stage = "waiting for stereo EDID"
+            stage = "waiting for stereo video"
             # Wait for the device's new EDID before taking a snapshot for the handoff.
             for _ in range(100):
                 monitors = self.monitors()
@@ -824,26 +835,26 @@ class Manager:
                     break
                 time.sleep(.1)
             else:
-                raise RuntimeError("The glasses did not advertise their stereo video mode")
-            stage = "leasing glasses display"
+                raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+            stage = "preparing the glasses display"
             self.display_event("stereo-edid-ready")
             self.dedicated.start(displays[0])
-            stage = "starting renderer"
+            stage = "opening the XR view"
             self.start(present=True, direct=True)
-            stage = "verifying stereo scanout"
+            stage = "checking the stereo image"
             self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
-                stage = "disabling laptop display"
+                stage = "turning off the laptop display"
                 self.disable_laptop_display()
         except Exception as exc:
-            message = f"Stereo startup failed at {stage}: {exc}"
+            message = f"Could not start stereo while {stage}. {exc}"
             self.display_event("stereo-start-failed", message)
             try:
                 self.stop_viewer()
             except Exception as recovery:
                 self.display_event("stereo-rollback-failed", recovery)
-                raise RuntimeError(message + "; recovery also failed: " + str(recovery)) from exc
+                raise RuntimeError(message + " Studio also could not restore the displays: " + str(recovery)) from exc
             raise RuntimeError(message) from exc
 
     def place_spectator(self):
@@ -854,7 +865,7 @@ class Manager:
                       and not m.get("disabled", False)]
         candidates.sort(key=lambda m: not m["name"].startswith("eDP"))
         if not candidates:
-            raise RuntimeError("Connect a computer display for the mono window")
+            raise RuntimeError("Connect or turn on a computer display before opening the recording window.")
         workspace = int(candidates[0]["activeWorkspace"]["id"])
         self.runner("eval", 'if omarchy_xr_spectator_rule then omarchy_xr_spectator_rule:set_enabled(false) end; '
                     'omarchy_xr_spectator_rule = hl.window_rule({name="omarchy-xr-spectator", '
@@ -877,7 +888,7 @@ class Manager:
 
     def disable_laptop_display(self):
         if not self.direct or not self.stereo_active or not self.viewer or self.viewer.poll() is not None:
-            raise RuntimeError("Start stereo before disabling the laptop display")
+            raise RuntimeError("Start stereo before turning off the laptop display.")
         # A live process alone does not establish that the glasses are displaying frames.
         for _ in range(80):
             if self.viewer.poll() is not None: break
@@ -892,7 +903,7 @@ class Manager:
                     return
             except (OSError,ValueError,KeyError): pass
             time.sleep(.1)
-        raise RuntimeError("Stereo frames not confirmed; laptop display left on")
+        raise RuntimeError("Stereo video was not ready, so the laptop display was left on.")
 
     def set_laptop_off(self, enabled):
         if type(enabled) is not bool: raise ValueError("Laptop display setting must be on or off")
@@ -907,35 +918,35 @@ class Manager:
         if action not in ("recenter", "fit", "fit_target", "zoom_in", "zoom_out"):
             raise ValueError("Unknown camera action")
         if not self.viewer or self.viewer.poll() is not None:
-            raise RuntimeError("Open the XR viewer first")
+            raise RuntimeError("Start stereo or a preview before using view controls.")
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
             connection.sendto(action.encode(), str(self.pose_socket))
 
     def present(self, layout):
         if len(detect(self.monitors())["displays"]) != 1:
-            raise RuntimeError("Connect exactly one active VITURE display before opening on glasses")
+            raise RuntimeError("Connect one pair of VITURE glasses before opening the preview.")
         # Start is one action: apply the current draft, then present every panel.
         self.stop_viewer()
         self.apply(layout)
-        tracking_message = "Head tracking is connecting; R recenters."
+        tracking_message = "Head tracking is starting. Press R to recenter."
         if not self.sdk.process or self.sdk.process.poll() is not None:
             try:
                 self.sdk.connect()
             except RuntimeError as exc:
-                tracking_message = "Mouse look available. " + str(exc)
+                tracking_message = "Head tracking is unavailable, but mouse look still works. " + str(exc)
         applied = self.applied
         self.start(present=True)
         if not applied:
             raise RuntimeError("Apply your layout first")
-        return f"{len(applied['monitors'])} desktops open on glasses. {tracking_message} Esc closes the viewer."
+        return f"{len(applied['monitors'])} virtual monitors are open on the glasses. {tracking_message} Press Esc to close the preview."
 
     def terminal(self, identity):
         if not self.applied or identity not in [m["id"] for m in self.applied["monitors"]]:
-            raise RuntimeError("Apply this monitor before opening an application")
+            raise RuntimeError("Apply this monitor before opening an app on it.")
         name = self.prefix + identity
         monitor = next((m for m in self.monitors() if m["name"] == name), None)
         if not monitor:
-            raise RuntimeError("Monitor is disconnected")
+            raise RuntimeError("This virtual monitor is disconnected. Choose Apply to restore it.")
         workspace = int(monitor["activeWorkspace"]["id"])
         self.runner("eval", f'hl.exec_cmd("foot", {{workspace="{workspace} silent"}})')
 
@@ -950,7 +961,7 @@ class Manager:
         except (OSError, ValueError):
             version = 0
         if version != 5:
-            return "Reinstall XR controls with make install-controls"
+            return "XR controls need setup — open Utilities → Setup & integrations"
         return ""
 
     def reconcile_status(self, monitors):
@@ -967,8 +978,9 @@ class Manager:
     def note_exited_viewer(self):
         if not self.viewer or self.viewer.poll() is None:
             return
-        self.viewer_exit = f"Viewer exited (code {self.viewer.returncode})"
-        self.append_backend_log(self.viewer_exit)
+        detail = f"XR viewer exited (code {self.viewer.returncode})"
+        self.viewer_exit = "The XR view stopped unexpectedly. Start it again to retry."
+        self.append_backend_log(detail)
         try:
             self.stop_viewer()
         except Exception as exc:
@@ -983,6 +995,8 @@ class Manager:
             glasses = detect([])
             glasses["detectionError"] = "Display status unavailable"
         glasses["dedicatedDisplay"] = self.dedicated.output if self.direct else None
+        glasses["runtimeInstalled"] = runtime_installed(self.renderer)
+        glasses["helperAvailable"] = HELPER.is_file()
         glasses.update(self.recovery.status())
         glasses["sdk"] = self.sdk.status()
         pending = self.sdk.state.get("displayError") or ""
@@ -1102,12 +1116,12 @@ def action_use_setup(manager, request):
 
 def action_save_controls(manager, request):
     settings = save_controls(manager.directory, request["controls"], manager.runner)
-    return {"controls": settings, "message": "Controls saved — applied live; viewer stays running"}
+    return {"controls": settings, "message": "Shortcuts and gestures saved."}
 
 
 def action_save(manager, request):
     manager.save(request["layout"])
-    return {"layout": manager.load(), "message": "Layout saved"}
+    return {"layout": manager.load(), "message": "Monitor layout saved."}
 
 
 def action_apply(manager, request):
@@ -1124,7 +1138,7 @@ def action_present_direct(manager, request):
 
 
 def action_camera(manager, request):
-    messages = {"recenter": "View recentered", "fit": "Workspace fitted", "fit_target": "Target monitor fit requested", "zoom_in": "Zoomed in", "zoom_out": "Zoomed out"}
+    messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out."}
     manager.camera_control(request["action"])
     return {"message": messages[request["action"]]}
 
@@ -1146,28 +1160,28 @@ def action_restore_laptop(manager, _request):
 
 def action_spectator(manager, request):
     manager.set_spectator(request["enabled"])
-    message = "Mono window enabled for stereo sessions" if manager.spectator_enabled else "Mono window closed and disabled"
+    message = "Recording window enabled for stereo sessions." if manager.spectator_enabled else "Recording window disabled."
     return {"message": message}
 
 
 def action_stop_viewer(manager, _request):
     manager.stop_viewer()
-    return {"message": "Viewer closed; workspaces returned to the desktop"}
+    return {"message": "XR view closed. Windows returned to your computer display."}
 
 
 def action_start(manager, _request):
     manager.start()
-    return {"message": "Live viewer opened"}
+    return {"message": "Preview opened."}
 
 
 def action_stop(manager, _request):
     manager.cleanup()
-    return {"message": "Viewer stopped and virtual monitors removed"}
+    return {"message": "XR stopped and virtual monitors removed."}
 
 
 def action_terminal(manager, request):
     manager.terminal(request["id"])
-    return {"message": "Terminal opened on selected monitor"}
+    return {"message": "Terminal opened on the selected monitor."}
 
 
 def action_reinitialize(manager, _request):
@@ -1179,9 +1193,9 @@ def action_reinitialize(manager, _request):
 
 def action_sdk_connect(manager, _request):
     if manager.recovery.status()["recovering"]:
-        raise RuntimeError("Wait for USB-C recovery to finish")
+        raise RuntimeError("Wait for the glasses connection recovery to finish.")
     if manager.stereo_active:
-        raise RuntimeError("Close the dedicated viewer before reconnecting the SDK")
+        raise RuntimeError("Stop stereo before reconnecting head tracking.")
     manager.sdk.connect()
     return {}
 
@@ -1189,12 +1203,12 @@ def action_sdk_connect(manager, _request):
 def action_sdk_disconnect(manager, _request):
     manager.stop_viewer()
     manager.sdk.disconnect()
-    return {"message": "SDK disconnected"}
+    return {"message": "Head tracking disconnected."}
 
 
 def action_sdk_restore(manager, _request):
     if manager.stereo_active:
-        raise RuntimeError("Close the dedicated viewer before retrying display mode")
+        raise RuntimeError("Stop stereo before restoring the glasses video.")
     manager.sdk.restore()
     return {}
 
@@ -1251,8 +1265,8 @@ def serve(manager):
                 extra = manager.status()
             except Exception as status_exc:
                 manager.append_backend_log(traceback.format_exc())
-                extra = {"statusError": f"{type(status_exc).__name__}: {status_exc}"}
-            print(json.dumps({"ok": False, "requestId": request_id, "message": f"{type(exc).__name__}: {exc}", **extra}), flush=True)
+                extra = {"statusError": str(status_exc)}
+            print(json.dumps({"ok": False, "requestId": request_id, "message": str(exc) or "Something went wrong. Try again.", **extra}), flush=True)
 
 
 def main():
