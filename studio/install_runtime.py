@@ -4,7 +4,6 @@ import hashlib
 import os
 from pathlib import Path
 import platform
-import shutil
 import subprocess
 import tempfile
 import urllib.request
@@ -12,15 +11,35 @@ import urllib.request
 PACKAGE = 'omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst'
 URL = 'https://github.com/afruth/omarchy-xr/releases/download/v0.3.0/' + PACKAGE
 SHA256 = '9960d7397fb1d846e5e5c05112c7db3720d05b07a179310f5c6aad2f011630d1'
+# Pin size alongside the URL and digest; never trust the server's Content-Length.
+PACKAGE_SIZE = 2_804_714
 
 
 def download(destination):
-    with urllib.request.urlopen(URL, timeout=60) as response, destination.open('wb') as output:
-        shutil.copyfileobj(response, output)
-    with destination.open('rb') as package:
-        actual = hashlib.file_digest(package, 'sha256').hexdigest()
-    if actual != SHA256:
-        raise RuntimeError('Package checksum mismatch; installation stopped')
+    try:
+        remaining = PACKAGE_SIZE
+        with urllib.request.urlopen(URL, timeout=60) as response, destination.open('wb') as output:
+            while True:
+                # Read at most one byte beyond the pinned size to detect overflow
+                # without writing excess data or consuming an unbounded response.
+                chunk = response.read(min(64 * 1024, remaining + 1))
+                if not chunk:
+                    break
+                if len(chunk) > remaining:
+                    raise RuntimeError('Package exceeds expected size; installation stopped')
+                output.write(chunk)
+                remaining -= len(chunk)
+        if remaining:
+            raise RuntimeError('Package size mismatch (incomplete download); installation stopped')
+        with destination.open('rb') as package:
+            actual = hashlib.file_digest(package, 'sha256').hexdigest()
+        if actual != SHA256:
+            raise RuntimeError('Package checksum mismatch; installation stopped')
+    except BaseException:
+        # Close the stream/file first, then discard partial or unverified bytes,
+        # including on interruption. Pacman is only called after this returns.
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def install(controls=False, notifications=False):
