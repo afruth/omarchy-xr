@@ -75,6 +75,7 @@ struct Camera {
     // however fast it is; and the speed term starts above restSpeed, so a slow drift stays smoothed.
     struct Axis { double raw=0, filtered=0, velocity=0; };
     Axis axes[3]{};
+    double settledSpeed=0;   // deg/s of the stabilised output, 4 Hz smoothed: what a dwell watches
     bool filterReady=false;
     double filterTime=-1, cutoffHz=0, coherence=1;
     struct Step { double t=0, d[3]{}; };
@@ -97,6 +98,7 @@ struct Camera {
     }
     void resetFilter(const double value[3], double t) {
         for(int i=0;i<3;++i) axes[i]={value[i],value[i],0};
+        settledSpeed=0;
         filterReady=true; filterTime=t; stepCount=stepNext=0; cutoffHz=prediction.minCutoff; coherence=1;
     }
     // Returns the stabilised angles for one sample taken at time t (seconds, on the sample clock).
@@ -128,15 +130,25 @@ struct Camera {
         }
         speed=std::sqrt(speed);
         cutoffHz=prediction.minCutoff+prediction.beta*std::max(0.0,speed-prediction.restSpeed)*coherenceGate();
+        double moved=0;
         for(int i=0;i<3;++i){
+            const double before=axes[i].filtered;
             axes[i].filtered=lowpass(axes[i].filtered, value[i], dt, cutoffHz);
+            moved+=(axes[i].filtered-before)*(axes[i].filtered-before);
             axes[i].raw=value[i];
             value[i]=axes[i].filtered;
         }
+        // The dwell watches the stabilised output, so a smoothed shake still counts as settled,
+        // and it needs a quick estimate: a 4 Hz smoothing settles within a quarter second of a turn.
+        settledSpeed=lowpass(settledSpeed, std::sqrt(moved)/dt, dt, 4.0);
         filterTime=t;
     }
-    // Filtered angular speed of the head in deg/s (one-hertz smoothed velocity magnitude).
-    double headSpeed() const { return std::sqrt(axes[0].velocity*axes[0].velocity+axes[1].velocity*axes[1].velocity+axes[2].velocity*axes[2].velocity); }
+    // Angular speed of the stabilised output in deg/s, 4 Hz smoothed. With the filter off it is the
+    // one-hertz smoothed raw velocity magnitude.
+    double headSpeed() const {
+        if(prediction.minCutoff<=0) return std::sqrt(axes[0].velocity*axes[0].velocity+axes[1].velocity*axes[1].velocity+axes[2].velocity*axes[2].velocity);
+        return settledSpeed;
+    }
     double coherenceGate() const { const double g=std::clamp((coherence-0.6)/0.3,0.0,1.0); return g*g*(3-2*g); }
     // Extrapolate to a scanout time. A stale pose, a still head, a shaking head and a gap in the
     // samples are left as measured.

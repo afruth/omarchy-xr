@@ -5,6 +5,8 @@
 
 int main() {
     gaze::Dwell d;
+    assert(d.settings.dwellMs==500 && d.settings.settleSpeed==15);
+    d.settings.dwellMs=1000; d.settings.settleSpeed=10;   // the timings below are written for one second
     auto hit=[](const char* out,float x,float y){ targeting::Hit h; h.output=out; h.pixelX=x; h.pixelY=y; return std::optional<targeting::Hit>(h); };
     // Resting on one spot with a settled head fires once after the dwell time, not before.
     double t=0;

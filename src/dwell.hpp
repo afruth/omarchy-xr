@@ -10,8 +10,8 @@
 // once; the gaze has to leave the area, or the head has to move, before it can fire again.
 namespace gaze {
 struct Settings {
-    double dwellMs=1000;   // how long the look point has to rest
-    double settleSpeed=10; // deg/s; above this the head is moving and nothing rests
+    double dwellMs=500;    // how long the look point has to rest
+    double settleSpeed=15; // deg/s; above this the head is moving and nothing rests
     double radiusPx=120;   // monitor pixels the look point may wander while resting
     bool pointer=true;     // warp the desktop pointer to a dwelled look point
 };

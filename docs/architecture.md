@@ -352,7 +352,9 @@ speed); leaving the area, a miss, or a fast head resets it, and it re-arms only 
 leaves the area. Monitor selection (halo, workspace focus, zoom target) follows the dwell; the
 explicit fit command still targets what is looked at now. Settings live-reload from an optional
 `gaze.tsv` beside the layout: `gaze-v1 <dwellMs> <settleSpeed deg/s> <radiusPx> <pointer 0|1>`,
-default `gaze-v1 1000 10 120 1`.
+default `gaze-v1 500 15 120 1`. The head speed a dwell watches is that of the stabilised
+output, smoothed at 4 Hz, so it settles within a quarter second of a turn and a smoothed shake
+still counts as settled.
 
 Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
 The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the

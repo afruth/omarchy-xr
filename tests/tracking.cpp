@@ -148,6 +148,7 @@ void prediction() {
         if(i>=120){ lo=std::min(lo,drifting.yaw-base); hi=std::max(hi,drifting.yaw-base); }
     }
     assert(drifting.coherence<0.6 && drifting.cutoffHz<1.2 && hi-lo<0.2);
+    assert(turning.headSpeed()>25 && turning.headSpeed()<35);   // the dwell's speed follows the stabilised turn
     const double turnLag=30*(240/120.0-1/120.0)-turning.yaw;
     assert(turnLag>0 && turnLag<0.7);
     // Prediction from the filtered turn covers most of that lag.
@@ -162,6 +163,7 @@ void prediction() {
         if(i>=240) peak=std::max(peak,std::abs(shaking.yaw));
     }
     assert(peak<0.3 && shaking.coherence<0.3);
+    assert(shaking.headSpeed()<15);   // a smoothed shake still counts as a settled head for the dwell
     shaking.predict(300+359/120.0+0.02,300+359/120.0+0.001);
     assert(shaking.predictionMs<6);
     // After a gap the filter restarts on the new sample instead of slewing towards it.

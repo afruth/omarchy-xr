@@ -761,7 +761,8 @@ struct View {
         }
     }
     bool draw(float cameraDt, int w, int h) {
-        for (auto& p:panels) p.halo=navigation::ease(p.halo, selection.output==p.layout.output ? 1.f:0.f, cameraDt);
+        // The selection rim comes in within about 120 ms; the camera easing would take half a second.
+        for (auto& p:panels) { const float target=selection.output==p.layout.output ? 1.f:0.f; p.halo+=(target-p.halo)*std::min(1.f, cameraDt/.12f); }
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
         environment->update(monotonicSeconds());
         // The spectator render queues ahead of the stereo scene, so both must finish before the flip;
