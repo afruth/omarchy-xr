@@ -1,4 +1,4 @@
-"""Isolated VITURE C API session; no SDK binaries are distributed with this app."""
+"""Isolated VITURE C API session; releases include the licensed Gen1/Gen2 runtime."""
 import ctypes as C
 import json
 import math

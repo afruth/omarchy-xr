@@ -1786,10 +1786,14 @@ Item {
                                     Layout.fillWidth: true
                                     spacing: 8
                                     Action {
-                                        text: "Get tracking SDK"
-                                        helpText: "Open the VITURE developer website"
-                                        visible: !sdkControls.sdk.available
-                                        onClicked: Qt.openUrlExternally("https://www.viture.com/developer")
+                                        text: sdkControls.sdk.available ? "Finish XR setup" : "Install XR runtime"
+                                        helpText: "Open a terminal to install the companion package, read its terms, and enable desktop integration"
+                                        visible: !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false
+                                        onClicked: {
+                                            var setup = "omarchy-xr-setup --controls --notifications";
+                                            var command = sdkControls.sdk.available ? setup : "yay -S --needed omarchy-xr-bin && " + setup;
+                                            Quickshell.execDetached(["omarchy", "launch", "terminal", "bash", "-lc", command]);
+                                        }
                                     }
                                     Action {
                                         text: sdkControls.sdk.busy ? "Connecting…" : sdkControls.sdk.communication ? "Reconnect tracking" : "Connect tracking"

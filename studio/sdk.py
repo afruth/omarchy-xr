@@ -1,5 +1,6 @@
-"""Nonblocking supervisor for the optional, locally installed VITURE SDK."""
+"""Nonblocking supervisor for the VITURE runtime shipped with the application."""
 import json
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,9 @@ import time
 
 from clock import boot_time
 from glasses import read
+
+PACKAGED_LIBRARY = Path("/usr/lib/omarchy-xr/sdk/libglasses.so")
+PACKAGED_TERMS = Path("/usr/share/omarchy-xr/LICENSE")
 
 
 class SDK:
@@ -27,7 +31,20 @@ class SDK:
         configured = os.environ.get("VITURE_SDK_LIBRARY")
         if configured:
             return Path(configured).expanduser()
+        packaged = PACKAGED_LIBRARY
+        if packaged.is_file():
+            return packaged
         return Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "omarchy-xr/sdk/libglasses.so"
+
+    def license_accepted(self):
+        if self.library() != PACKAGED_LIBRARY:
+            return True  # A developer supplied their own SDK and its licence.
+        try:
+            terms = PACKAGED_TERMS.read_bytes()
+            accepted = json.loads((self.directory / "license-acceptance.json").read_text())
+            return accepted.get("sha256") == hashlib.sha256(terms).hexdigest()
+        except (OSError, ValueError, AttributeError):
+            return False
 
     def devices(self):
         return [int(read(p / "idProduct"), 16) for p in Path("/sys/bus/usb/devices").glob("*")
@@ -35,7 +52,9 @@ class SDK:
 
     def connect(self):
         if not self.library().is_file():
-            raise RuntimeError("VITURE SDK missing. Install the Linux x86_64 SDK with scripts/install-sdk.py")
+            raise RuntimeError("XR SDK missing. Install or reinstall omarchy-xr-bin, then reopen Studio.")
+        if not self.license_accepted():
+            raise RuntimeError("Run omarchy-xr-setup to read and accept the application and SDK terms first")
         devices = self.devices()
         if len(devices) != 1:
             raise RuntimeError("Connect exactly one pair of VITURE glasses")
@@ -135,4 +154,4 @@ class SDK:
             if failure:
                 self.disconnect()
                 self.state.update(message=failure, error=True)
-        return {"available": self.library().is_file(), "busy": self.pending, **self.state}
+        return {"available": self.library().is_file(), "licenseAccepted": self.license_accepted(), "busy": self.pending, **self.state}

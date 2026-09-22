@@ -2,11 +2,14 @@
   "schemaVersion": 1,
   "id": "afruth.omarchy-xr",
   "name": "XR Monitor Studio",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Andreas Fruth",
-  "license": "MIT",
+  "license": "LicenseRef-Omarchy-XR",
   "description": "Create and arrange virtual monitors for a live spatial desktop.",
-  "kinds": ["panel", "bar-widget"],
+  "kinds": [
+    "panel",
+    "bar-widget"
+  ],
   "keepLoaded": true,
   "entryPoints": {
     "panel": "studio/MonitorStudio.qml",
