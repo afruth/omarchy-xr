@@ -8,11 +8,11 @@ import subprocess
 import tempfile
 import urllib.request
 
-PACKAGE = 'omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst'
-URL = 'https://github.com/afruth/omarchy-xr/releases/download/v0.3.0/' + PACKAGE
-SHA256 = '9960d7397fb1d846e5e5c05112c7db3720d05b07a179310f5c6aad2f011630d1'
+PACKAGE = 'omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst'
+URL = 'https://github.com/afruth/omarchy-xr/releases/download/v0.3.1/' + PACKAGE
+SHA256 = 'e1e7f5eae86b63b9ec3fd8e3c4b697bf99e1110a5506d12ecbd08915bb49816f'
 # Pin size alongside the URL and digest; never trust the server's Content-Length.
-PACKAGE_SIZE = 2_804_714
+PACKAGE_SIZE = 2_933_400
 
 
 def download(destination):
@@ -43,7 +43,7 @@ def download(destination):
 
 
 def install(controls=False, notifications=False):
-    print('Downloading Omarchy XR 0.3.0 with its bundled glasses runtime.', flush=True)
+    print('Downloading Omarchy XR 0.3.1 with its bundled glasses runtime.', flush=True)
     with tempfile.TemporaryDirectory(prefix='omarchy-xr-install-') as directory:
         package = Path(directory) / PACKAGE
         download(package)
