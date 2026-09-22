@@ -12,20 +12,21 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.3.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.0).
+[Download the 0.3.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.1).
 The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
 Run setup as your desktop user. It presents the terms and privacy notice before
 enabling the UI; the controls and notification integrations are optional.
 No AUR account or listing is required. You can also add the [marketplace plugin](docs/distribution.md#install-from-the-omarchy-marketplace)
-and use its **Install XR runtime** button. The [marketplace submission](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
-is awaiting maintainer approval.
+and use its **Install XR runtime** button. The plugin is available in the Omarchy
+marketplace; its [submission record](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
+is retained for reference.
 See [installation, migration, updates and removal](docs/distribution.md).
 This release uses [reserved-rights end-user terms](LICENSE), not an open-source
 licence. Existing copies distributed under MIT retain those terms.

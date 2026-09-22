@@ -5,20 +5,20 @@ Hyprland Lua controls. Runtime package: `omarchy-xr-bin`; marketplace plugin:
 `afruth.omarchy-xr`. This release uses reserved-rights application terms, not an
 open-source licence. Earlier MIT-licensed versions keep their existing terms.
 
-**Release status:** [v0.3.0 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.0)
+**Release status:** [v0.3.1 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.1)
 with the bundled SDK, Arch package, AUR recipe and SHA-256 checksums. The source
 repository is public. Installation uses GitHub releases directly and does not
 require AUR. The [marketplace submission](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
-has passed structure/compatibility validation and awaits maintainer review.
+is approved and the plugin is available in the Omarchy marketplace.
 AUR publication is deferred; its recipe remains available in the release.
 
 ## Install the published package
 
-Download `omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the
+Download `omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the
 release page. Verify the package hash against that file, then run:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -67,7 +67,7 @@ Open XR Monitor Studio from the bar, then choose **Utilities → Setup & integra
 → Install XR runtime**. A missing runtime also produces a prominent install card
 on the **Controls** tab, so setup is visible before the first stereo attempt.
 The button opens a terminal, downloads the complete
-v0.3.0 package from GitHub, enforces its pinned size of 2,804,714 bytes while
+v0.3.1 package from GitHub, enforces its pinned size while
 streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
 It then runs setup as your desktop user to display the terms and enable controls
@@ -157,7 +157,7 @@ updates and removal, not live shell rendering or head tracking.
    and third-party notices together in the complete application release.
 2. Make the repository and release downloads publicly accessible for AUR and
    the marketplace. Public visibility does not grant an open-source licence.
-3. Tag v0.3.0 and publish the complete archive and
+3. Tag the release and publish the complete archive and
    checksums as GitHub release assets. Confirm the generated source URL downloads
    the archive with the recorded hash from a clean machine.
 4. Check official repositories and AUR for naming collisions, then submit the
