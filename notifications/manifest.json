@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "afruth.omarchy-xr-notifications",
+  "name": "Notifications with XR",
+  "version": "0.1.0",
+  "author": "Andreas Fruth",
+  "description": "Omarchy notifications with a spatial stereo card and head-shake dismissal",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": {"service": "Service.qml"},
+  "omarchy": {"clonedFrom": "omarchy.notifications"}
+}

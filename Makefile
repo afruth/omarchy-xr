@@ -1,12 +1,12 @@
 CXX ?= c++
 CC ?= cc
 BUILD ?= build
-CPPFLAGS += -I$(BUILD) $(shell pkg-config --cflags sdl2 gl wayland-client egl gbm libdrm)
+CPPFLAGS += -I$(BUILD) $(shell pkg-config --cflags sdl2 gl wayland-client egl gbm libdrm pangocairo json-c)
 CXXFLAGS ?= -O2 -g
 override CXXFLAGS += -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread
 DEPFLAGS = -MMD -MP
 WL_CFLAGS := $(shell pkg-config --cflags wayland-client)
-LDLIBS += $(shell pkg-config --libs sdl2 gl wayland-client egl gbm libdrm)
+LDLIBS += $(shell pkg-config --libs sdl2 gl wayland-client egl gbm libdrm pangocairo json-c)
 
 APP_OBJS = $(BUILD)/main.o $(BUILD)/capture.o $(BUILD)/direct_output.o \
 	$(BUILD)/xdg-shell-protocol.o $(BUILD)/linux-dmabuf-protocol.o \
@@ -158,6 +158,10 @@ install-controls:
 	hyprctl reload
 	hyprctl configerrors
 
+install-notifications:
+	python3 scripts/install-notifications.py
+.PHONY: install-notifications
+
 # Opt-in hardware probe; not part of unattended checks (moves the real pointer).
 $(BUILD)/capture-timing: tests/capture_timing.cpp src/capture.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc tests/capture_timing.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o -o $@ $(LDFLAGS) $(LDLIBS)
@@ -199,6 +203,20 @@ $(BUILD)/test-workspace-focus: tests/workspace_focus.cpp $(APP_OBJS)
 check-workspace-focus: $(BUILD)/test-workspace-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
 .PHONY: check-workspace-focus
+
+$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp src/head_shake.hpp | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDLIBS)
+
+$(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_space.hpp src/targeting.hpp src/curvature.hpp | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@
+
+check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notifications
+	./$(BUILD)/test-notification-space
+.PHONY: check-notifications
+
+$(BUILD)/notification-preview: tests/notification_preview.cpp src/notification_space.hpp src/notification_draw.hpp src/notification_hud.hpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
 -include $(wildcard $(BUILD)/*.d)
 

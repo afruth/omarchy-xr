@@ -1,0 +1,39 @@
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import qs.Commons
+import "@NATIVE_NOTIFICATIONS@" as Native
+
+// Extend the installed service instead of copying its notification daemon/UI.
+// Omarchy's clone mechanism runs this service in place of the built-in instance.
+Native.Service {
+    id: service
+    readonly property string xrRuntime: Quickshell.env("OMARCHY_XR_RUNTIME") ||
+        ((Quickshell.env("XDG_RUNTIME_DIR") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy-xr")
+    Bridge {
+        id: bridge
+        service: service
+        palette: ({background:String(Color.notifications.background),text:String(Color.notifications.text),
+            accent:String(Color.notifications.countdown),urgent:String(Color.urgent)})
+        onPacketReady: function(packet) { feed.setText(JSON.stringify(packet)); }
+    }
+    FileView { id: feed; path: service.xrRuntime + "/notifications.json"; atomicWrites: true; printErrors: false }
+    FileView {
+        id: dismissal
+        path: service.xrRuntime + "/notification-dismiss.json"
+        watchChanges: true
+        printErrors: false
+        onLoaded: bridge.dismiss(text())
+        onFileChanged: reload()
+    }
+    Process {
+        command: ["mkdir", "-p", service.xrRuntime]
+        running: true
+        onExited: function(code) { bridge.ready=code===0; }
+    }
+    Timer {
+        interval: 1000; repeat: true
+        running: bridge.ready && service.popupModel.count>0
+        onTriggered: bridge.publish()
+    }
+}
