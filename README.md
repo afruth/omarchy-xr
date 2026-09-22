@@ -176,12 +176,12 @@ Saved JSON profiles without curvature fields also load as zero.
 
 ## Build and development
 
-Omarchy/Arch dependencies: `gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm`.
+Omarchy/Arch dependencies: `gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm pango cairo json-c`.
 Studio additionally uses the already installed `quickshell`, `python`, `hyprctl`,
 Omarchy shell UI components. Panorama import uses `imagemagick`.
 
 ```sh
-omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm imagemagick
+omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm pango cairo json-c imagemagick
 make                 # optimized build with debug symbols and warnings
 make run             # synthetic preview without creating monitors
 make check           # pixel conversion, lifecycle and CLI tests
@@ -207,8 +207,7 @@ quickshell kill -p /tmp/omarchy-xr-ui-preview
 
 Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
 libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev libpango1.0-dev
-libcairo2-dev libjson-c-dev python3`. On Arch, the additional notification rendering
-dependencies are `pango cairo json-c`. The Studio UI requires Omarchy itself.
+libcairo2-dev libjson-c-dev python3`. The Studio UI requires Omarchy itself.
 VS Code build/run/check tasks are included. Build artifacts stay in `build/`.
 
 ## Viewer controls and direct capture
