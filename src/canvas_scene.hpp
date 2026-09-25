@@ -6,6 +6,7 @@
 #include "canvas_placement.hpp"
 #include "capture_governor.hpp"
 #include "capture_plan.hpp"
+#include "capture.hpp"
 #include "frame_source.hpp"
 #include "gl_texture.hpp"
 #include "window_capture.hpp"
@@ -13,6 +14,7 @@
 #include <SDL_opengl.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -42,6 +44,15 @@ struct CanvasWindow {
     bool visible=false, candidate=false, staged=false, gone=false, closed=false, sized=false;
     adaptive::Quality quality;
     governor::Decision decision;
+    // The staged window's region source (M3): a screencopy of its rectangle on the canvas output, so
+    // popups and the native cursor show. While its frames keep coming (regionShown) the export idles.
+    // stageFrame: the shown frame came from it; stageX/Y/W/H: the region, output-local logical px.
+    std::unique_ptr<FrameSource> stageSource;
+    double stageRetryAt=0, stageLastFrame=0;
+    int stageRetryMs=500;
+    bool regionShown=false, stageFrame=false;
+    int stageX=0, stageY=0;
+    unsigned stageW=0, stageH=0, stageFrames=0, stageReportFrames=0;
 };
 inline const char* tierName(governor::Tier tier) {
     switch(tier) {
@@ -67,6 +78,9 @@ public:
     std::unique_ptr<WindowCaptureHub> hub;
     governor::Fixed governor;
     std::string stagedName, gazed, memoryPath;
+    // The canvas output from the window list header (global origin, name); empty for a header without it.
+    std::string outputName;
+    int outputX=0, outputY=0;
     // Navigation: the landed window, Hyprland's focused one, the View's selection and last settled dwell.
     std::string landed, focusedName, selected, lastDwell;
     Fov fov;
@@ -123,7 +137,9 @@ public:
             if(it==windows.end()) add(*r, now);
             else update(*it, *r);
         }
+        outputName=list.outputName; outputX=list.outputX; outputY=list.outputY;
         chooseStaged(incoming);
+        trackStage();
         refresh(now);
         return stagedName!=before;
     }
@@ -178,6 +194,42 @@ public:
         focusedName=focused ? focused->name() : std::string();
         for(auto& w:windows) w.staged=!w.gone && w.name==stagedName;
     }
+    // Only a window Hyprland really hosts on the stage is on the canvas output: the focus fallback of
+    // chooseStaged may be parked on the hidden workspace, where the output shows no window.
+    static bool onStage(const CanvasWindow& w) { return w.staged && w.record.place==windows::Place::Stage; }
+    // The region follows the window on the stage: a moved or resized one closes its source so openStage
+    // reopens it at the new rectangle; every other window has none.
+    void trackStage() {
+        for(auto& w:windows) {
+            if(!onStage(w) || outputName.empty()) { if(w.stageW || w.stageSource) closeStage(w); continue; }
+            const int x=w.record.atX-outputX, y=w.record.atY-outputY;
+            if(w.stageW && x==w.stageX && y==w.stageY && w.record.w==w.stageW && w.record.h==w.stageH) continue;
+            closeStage(w); w.stageX=x; w.stageY=y; w.stageW=w.record.w; w.stageH=w.record.h;
+        }
+    }
+    // OMARCHY_XR_NO_REGION=1 keeps the staged window on the export (troubleshooting, measurements).
+    void openStage(CanvasWindow& w, double now) {
+        static const bool disabled=std::getenv("OMARCHY_XR_NO_REGION")!=nullptr;
+        if(offline || disabled || !onStage(w) || w.gone || w.closed || outputName.empty() || !w.stageW || !w.stageH || w.stageSource || now<w.stageRetryAt) return;
+        auto s=std::make_unique<RegionCapture>();
+        if(s->open(outputName, w.stageX, w.stageY, int(w.stageW), int(w.stageH), std::min(60u, unsigned(settings.fps)))) { w.stageSource=std::move(s); return; }
+        failStage(w, s->error(), now);
+    }
+    // Logged once per rectangle; the export keeps serving the window meanwhile.
+    void failStage(CanvasWindow& w, const std::string& error, double now) {
+        if(w.stageRetryMs==500) std::cerr << "Region capture of " << w.name << ": " << error << "; the window export serves it (retrying)" << std::endl;
+        dropStage(w);
+        w.stageRetryAt=now+w.stageRetryMs/1000.0; w.stageRetryMs=FrameSource::nextRetryMs(w.stageRetryMs);
+    }
+    // A shown region frame's texture belongs to the region source's capture slots: it goes with it.
+    static void dropStage(CanvasWindow& w) {
+        if(w.stageFrame && w.frame.texture) { w.frame.texture=0; w.width=w.height=0; }
+        w.stageSource.reset(); w.stageFrame=false; w.regionShown=false; w.stageLastFrame=0;
+    }
+    static void closeStage(CanvasWindow& w) {
+        dropStage(w);
+        w.stageX=w.stageY=0; w.stageW=w.stageH=0; w.stageRetryAt=0; w.stageRetryMs=500;
+    }
     // The first imported frame, and every resize after it, sets the size.
     void sizeFromBuffer(CanvasWindow& w) {
         if(!w.sourceWidth || !w.sourceHeight) return;
@@ -199,12 +251,12 @@ public:
     // keeps its own texture only when the last frame was a CPU upload; otherwise it shows its status.
     static void dropSource(CanvasWindow& w) {
         if(w.frame.texture) { w.frame.texture=0; w.width=w.height=0; }
-        w.source.reset();
+        w.source.reset(); dropStage(w);
     }
     // A closed window leaves its textures and frees its memory slot for the next claim.
     void release(CanvasWindow& w, double now) {
         if(w.texture) glDeleteTextures(1, &w.texture);
-        w.texture=0; w.frame.texture=0; w.source.reset(); governor.forget(w.name);
+        w.texture=0; w.frame.texture=0; w.source.reset(); closeStage(w); governor.forget(w.name);
         for(auto& e:memory.entries) if(e.cls==w.record.cls && e.title==w.record.title) { e.claimed=false; e.seen=now; e.rect=w.rect; }
         memory.touch(now);
     }
@@ -243,10 +295,14 @@ public:
         for(size_t i=0;i<windows.size();++i) {
             auto& w=windows[i]; const auto& d=decisions[i];
             w.decision=d;
+            // Region frames within 0.5 s replace the export, which idles with its session kept alive.
+            w.regionShown=onStage(w) && w.stageSource && w.stageSource->error().empty() && w.stageLastFrame>0 && now-w.stageLastFrame<.5;
+            // The region follows the same decision as the export: its rate, capped at 60 Hz, and demand.
+            if(w.stageSource) { w.stageSource->setFrameRate(std::min(d.rateHz, 60u)); w.stageSource->setDemand(w.visible && d.rateHz>0, w.demandW, w.demandH); }
             if(!w.source) continue;
             w.source->setFrameRate(d.rateHz, d.inFlight, d.phase);
             w.source->setIgnoreDamage(d.ignoreDamage);
-            w.source->setDemand(w.visible && d.rateHz>0, w.demandW, w.demandH);
+            w.source->setDemand(!w.regionShown && w.visible && d.rateHz>0, w.demandW, w.demandH);
         }
     }
     void openSources(double now) {
@@ -271,18 +327,22 @@ public:
         hubRetryAt=now+hubRetryMs/1000.0; hubRetryMs=FrameSource::nextRetryMs(hubRetryMs);
     }
     void pump() { if(hub) hub->pump(); }
-    void settle(double maxSeconds) { if(hub) hub->settle(maxSeconds); }
+    void service() { pump(); for(auto& w:windows) if(w.stageSource) w.stageSource->service(); }
+    void settle(double maxSeconds) {
+        if(hub) hub->settle(maxSeconds);
+        for(auto& w:windows) if(auto* region=dynamic_cast<RegionCapture*>(w.stageSource.get())) region->settle(maxSeconds);
+    }
     // Lease loss: the GL context goes, so textures, capture slots and the hub's device go with it.
     void releaseGpu() {
         for(auto& w:windows) {
             if(w.texture) glDeleteTextures(1, &w.texture);
-            w.texture=0; w.frame.texture=0; w.cpuWidth=w.cpuHeight=0; w.source.reset();
+            w.texture=0; w.frame.texture=0; w.cpuWidth=w.cpuHeight=0; w.source.reset(); dropStage(w);
         }
         labels.release(); hub.reset();
     }
     void regenerate(double now) {
         for(auto& w:windows) {
-            w.texture=gltex::create(); w.retryAt=now; w.retryMs=500;
+            w.texture=gltex::create(); w.retryAt=now; w.retryMs=500; w.stageRetryAt=now; w.stageRetryMs=500;
             if(!w.closed) w.captureStatus="reconnecting after lease";
         }
         hubRetryAt=0; hubRetryMs=500;

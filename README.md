@@ -99,6 +99,16 @@ the selected Omarchy theme.
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
 
+**Window canvas** (preview) is the second mode. With stereo stopped, choose **Window canvas**
+above the Start buttons on **Controls**. Each application window then gets its own panel on a ring
+around you, instead of sitting on a virtual monitor. At start Studio moves your windows to one
+hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
+SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
+and tiling. The second tab becomes **Canvas** with the ring and capture settings. Window canvas
+needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
+shortcuts & gestures** (or `make install-controls`). Until you do, the option is disabled. See
+[docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
+
 Hide, Escape, or closing the Studio window parks the editor as an icon on the
 Omarchy top bar and leaves virtual monitors and any running viewer up. Hide is
 not Stop. Click the top-bar icon, launch **XR Monitor Studio**, or run

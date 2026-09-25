@@ -1,10 +1,13 @@
 #pragma once
 #include "async_file.hpp"
 #include "hex_token.hpp"
+#include "window_list.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <cmath>
@@ -16,7 +19,9 @@
 // Mailboxes sit beside the pose socket. Hover and the heartbeat are also
 // mirrored to OMARCHY_XR_MIRROR_STATE temporarily, until the Lua adapter
 // installed by make install-controls reads the runtime path. Hyprland writes
-// cumulative motion, so coalescing never drops swipe distance.
+// cumulative motion, so coalescing never drops swipe distance. In canvas mode
+// (docs/infinite-canvas-plan.md §3.4, §6.2) the adapter also publishes the window
+// list and the cursor, `.hover` is v4 and `.focus` names window addresses.
 class LiveControls {
     std::string path, mirror, session;
     std::string controlsSeen, panSeen;
@@ -86,6 +91,14 @@ class LiveControls {
     std::string paneSeen; timespec paneStamp{};
     timespec focusStamp{};
     unsigned long long focusSerial=0;
+    unsigned long long windowsSeq=0, cursorSeq=0;
+    timespec windowsStamp{}, cursorStamp{};
+    // Canvas focus names a window address, canonicalised to Record::name(); monitor focus an OMXR- output.
+    bool focusName(const std::string& name) const {
+        if (canvasMode) return bool(::windows::parseAddress(name));
+        return name.starts_with("OMXR-") && name.size()<=256
+            && name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")==std::string::npos;
+    }
     void updateFocus() {
         const auto filePath=path+".focus";
         if (!newer(filePath, focusStamp)) return;
@@ -93,9 +106,28 @@ class LiveControls {
         std::string version, owner, name, extra;
         unsigned long long seq; long stamp;
         if (!(file>>version>>owner>>seq>>name>>stamp) || file>>extra || version!="v1" || owner!=session
-            || !seq || seq<=focusSerial || !stampFresh(stamp) || !name.starts_with("OMXR-") || name.size()>256
-            || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=std::string::npos) return;
-        focusSerial=seq; focusOutput=name;
+            || !seq || seq<=focusSerial || !stampFresh(stamp) || !focusName(name)) return;
+        focusSerial=seq;
+        if (canvasMode) { ::windows::Record r; r.address=*::windows::parseAddress(name); focusOutput=r.name(); }
+        else focusOutput=name;
+    }
+    static std::string readAll(const std::string& file) {
+        std::ifstream in(file);
+        return std::string((std::istreambuf_iterator<char>(in)), {});
+    }
+    // The adapter's window list (§3.1): this session's, strictly newer and fresh; canvas mode only.
+    void updateWindows() {
+        if (!canvasMode || !newer(path + ".windows", windowsStamp)) return;
+        auto list = ::windows::parse(readAll(path + ".windows"));
+        if (!list || list->owner != session || list->seq <= windowsSeq || !stampFresh(list->stamp)) return;
+        windowsSeq = list->seq; windows = std::move(*list);
+    }
+    // The compositor cursor and its overflow beyond the staged window (§3.4); canvas mode only.
+    void updateCursor() {
+        if (!canvasMode || !newer(path + ".cursor", cursorStamp)) return;
+        const auto line = ::windows::parseCursor(readAll(path + ".cursor"));
+        if (!line || line->owner != session || line->seq <= cursorSeq || !stampFresh(line->stamp)) return;
+        cursorSeq = line->seq; cursor = *line;
     }
     // The adapter publishes the active window's rectangle on its monitor: v1 owner serial name x y w h stamp,
     // or v1 owner serial - stamp when the active window is not on an XR output.
@@ -125,6 +157,11 @@ public:
     double zoom = 0, panX = 0, panY = 0;
     bool panStarted = false, panActive = false;
     int fit = 0;
+    bool canvasMode = false;
+    std::optional<::windows::List> windows;    // a new list this update, else nullopt
+    std::optional<::windows::Cursor> cursor;   // a new cursor line this update, else nullopt
+    // The mode is announced with the next heartbeat.
+    void setCanvasMode(bool m) { canvasMode = m; heartbeat = 0; }
     explicit LiveControls(const std::string& pose) : path(pose.empty() ? "" : pose + ".controls"), session(std::to_string(getpid())) {
         if (const char* mirrored = std::getenv("OMARCHY_XR_MIRROR_STATE")) mirror = mirrored;
         if (mirror == path) mirror.clear();
@@ -138,10 +175,12 @@ public:
             unlink((base + ".pan").c_str()); unlink((base + ".pane").c_str()); unlink((base + ".active").c_str()); unlink(base.c_str());
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
             unlink((base + ".focus").c_str());unlink((base + ".notification").c_str());
+            unlink((base + ".mode").c_str()); unlink((base + ".windows").c_str()); unlink((base + ".cursor").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
-    // coordinates. The adapter warps the desktop pointer there exactly once per serial.
+    // coordinates (window-buffer pixels in canvas mode). The adapter warps the desktop pointer there
+    // exactly once per serial. Canvas mode writes v4 (same fields, output = window address) to both files.
     void publishHover(bool enabled, const std::string& output, float u, float v, unsigned pointerSerial=0, float pointerX=0, float pointerY=0) {
         if (path.empty()) return;
         const auto now = bootSeconds();
@@ -153,8 +192,8 @@ public:
         values << body << std::setprecision(9) << u << ' ' << v;
         std::ostringstream pointer;
         pointer << values.str() << ' ' << pointerSerial << ' ' << std::setprecision(9) << pointerX << ' ' << pointerY << '\n';
-        writeFile(path + ".hover", "v3 " + pointer.str());
-        if (!mirror.empty()) writeFile(mirror + ".hover", values.str() + '\n');
+        writeFile(path + ".hover", (canvasMode ? "v4 " : "v3 ") + pointer.str());
+        if (!mirror.empty()) writeFile(mirror + ".hover", canvasMode ? "v4 " + pointer.str() : values.str() + '\n');
     }
     void publishNotification(const std::string& identity) {
         if(path.empty())return;
@@ -165,16 +204,28 @@ public:
     }
     static std::string decodeTarget(const std::string& token) { return hextoken::decodeHex(token); }
     void update() {
-        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); if (path.empty()) return;
+        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); if (path.empty()) return;
         updatePan();
         updatePane();
         updateFocus();
+        updateWindows();
+        updateCursor();
+        beat();
+        updateControls();
+    }
+    // Once per second: .active (owner + stamp) and .mode (v1 owner canvas|monitors takeover stamp; the
+    // SUPER+F takeover flag is fixed to 1 until the optional takeovers arrive).
+    void beat() {
         const auto now = bootSeconds();
-        if (now != heartbeat) {
-            writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');
-            if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
-            heartbeat = now;
-        }
+        if (now == heartbeat) return;
+        writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');
+        writeFile(path + ".mode", "v1 " + session + " " + (canvasMode ? "canvas" : "monitors") + " 1 " + std::to_string(now) + "\n");
+        if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
+        heartbeat = now;
+    }
+    // Modes 0..7 everywhere, 8..17 (canvas verbs, §5.5) in canvas mode only; modes >= 6 need v3 and a
+    // fresh stamp, and a target only for 6, 7 (notifications) and 14, 15 (direction tokens).
+    void updateControls() {
         const auto filePath = existing("");
         if (filePath != controlsSeen) { controlsSeen = filePath; controlsStamp = {}; }
         if (!newer(filePath, controlsStamp)) return;
@@ -184,7 +235,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 7 || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > (canvasMode ? 17 : 7) || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;
@@ -192,7 +243,8 @@ public:
             target=decodeTarget(token);
         }
         if(file>>extra)return;
-        if(mode>=6 && (first!="v3" || target.empty() || !stampFresh(stamp)))return;
+        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15;
+        if(mode>=6 && (first!="v3" || (needsTarget && target.empty()) || !stampFresh(stamp)))return;
         if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit;notificationTarget=target; }
         else zoom = std::clamp(total - previousZoom, -4., 4.);
         serial = nextSerial; previousZoom = total;

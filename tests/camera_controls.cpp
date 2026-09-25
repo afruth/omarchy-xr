@@ -10,6 +10,8 @@
 #include <iostream>
 #include <iomanip>
 #include <optional>
+#include <sstream>
+#include <iterator>
 
 void easeZoom();
 void cylinderFit();
@@ -17,6 +19,9 @@ void gazeZoom();
 void adjacentPanelZoom();
 void gutterAndInput();
 void workspaceInput();
+void canvasMailboxes();
+void canvasModes();
+void canvasFocusAndHover();
 int main() {
     easeZoom();
     cylinderFit();
@@ -24,7 +29,10 @@ int main() {
     adjacentPanelZoom();
     gutterAndInput();
     workspaceInput();
-    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup passed\n";
+    canvasMailboxes();
+    canvasModes();
+    canvasFocusAndHover();
+    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup, canvas mailboxes, modes, address focus and hover v4 passed\n";
 }
 
 void workspaceInput() {
@@ -340,4 +348,117 @@ void gutterAndInput() {
     else unsetenv("OMARCHY_XR_MIRROR_STATE");
     assert(!std::filesystem::exists(mirror+".active"));
     std::filesystem::remove_all(mirrorDir);
+}
+
+namespace {
+long bootNow(){timespec boot{};clock_gettime(CLOCK_BOOTTIME,&boot);return boot.tv_sec;}
+void writeFile(const std::string& path,const std::string& body){usleep(2000);std::ofstream file(path);file<<body;}
+std::string readFile(const std::string& path){std::ifstream file(path);return std::string((std::istreambuf_iterator<char>(file)),{});}
+std::string tempDir(){char temp[]="/tmp/xr-canvas-controls-XXXXXX";assert(mkdtemp(temp));return temp;}
+}
+
+// Canvas mode reads the .windows and .cursor mailboxes (owner, strictly newer seq, fresh stamp) and
+// announces itself in .mode; monitor mode never reads them and announces "monitors".
+void canvasMailboxes() {
+    const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls";
+    const auto owner=std::to_string(getpid());
+    const auto list=[&](const std::string& who,int seq,long stamp){
+        return "v1 "+who+" "+std::to_string(seq)+" "+std::to_string(stamp)+" 20000 0 OMXRTEST-canvas\n"
+            "0x5005 "+windows::encodeHex("foot")+" - 1280 720 20000 0 0 stage 1 42 0 1\n";
+    };
+    {
+        LiveControls input(pose);input.setCanvasMode(true);
+        writeFile(path+".windows",list(owner,3,bootNow()));input.update();
+        assert(input.windows && input.windows->seq==3 && input.windows->outputName=="OMXRTEST-canvas" && input.windows->records.size()==1);
+        input.update();assert(!input.windows); // read once per new file
+        writeFile(path+".windows",list("foreign",4,bootNow()));input.update();assert(!input.windows);
+        writeFile(path+".windows",list(owner,3,bootNow()));input.update();assert(!input.windows);
+        writeFile(path+".windows",list(owner,5,bootNow()-10));input.update();assert(!input.windows);
+        writeFile(path+".windows","v1 "+owner+" 6 "+std::to_string(bootNow())+"\nbroken\n");input.update();assert(!input.windows);
+        writeFile(path+".windows",list(owner,6,std::time(nullptr)));input.update();assert(input.windows && input.windows->seq==6);
+        writeFile(path+".cursor","v1 "+owner+" 1 20100 300.5 -40 0 "+std::to_string(bootNow())+"\n");input.update();
+        assert(input.cursor && input.cursor->x==20100 && input.cursor->y==300.5 && input.cursor->overflowX==-40 && input.cursor->overflowY==0);
+        input.update();assert(!input.cursor);
+        writeFile(path+".cursor","v1 "+owner+" 1 1 1 0 0 "+std::to_string(bootNow())+"\n");input.update();assert(!input.cursor);
+        writeFile(path+".cursor","v1 foreign 2 1 1 0 0 "+std::to_string(bootNow())+"\n");input.update();assert(!input.cursor);
+        writeFile(path+".cursor","v1 "+owner+" 2 1 1 0 0 "+std::to_string(bootNow()-10)+"\n");input.update();assert(!input.cursor);
+        writeFile(path+".cursor","v1 "+owner+" 2 nan 1 0 0 "+std::to_string(bootNow())+"\n");input.update();assert(!input.cursor);
+        writeFile(path+".cursor","v1 "+owner+" 2 5 6 7 8 "+std::to_string(bootNow())+"\n");input.update();assert(input.cursor && input.cursor->seq==2);
+        AsyncFile::instance().flush();
+        std::istringstream mode(readFile(path+".mode"));std::string version,who,kind;int takeover=0;long stamp=0,extra;
+        assert(mode>>version>>who>>kind>>takeover>>stamp && !(mode>>extra));
+        assert(version=="v1" && who==owner && kind=="canvas" && takeover==1 && std::abs(stamp-bootNow())<=2);
+    }
+    for(auto suffix:{".mode",".windows",".cursor",".active"})assert(!std::filesystem::exists(path+suffix));
+    {
+        LiveControls input(pose);
+        writeFile(path+".windows",list(owner,9,bootNow()));writeFile(path+".cursor","v1 "+owner+" 9 1 1 0 0 "+std::to_string(bootNow())+"\n");
+        input.update();assert(!input.windows && !input.cursor);
+        AsyncFile::instance().flush();
+        assert(readFile(path+".mode").starts_with("v1 "+owner+" monitors 1 "));
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// Modes 8..17 are canvas verbs: canvas mode only, v3 with a fresh stamp, a target only for 14/15.
+void canvasModes() {
+    const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls";
+    const auto owner=std::to_string(getpid());
+    const auto line=[&](int serial,int mode,const std::string& target,long stamp){
+        return "v3 "+owner+" "+std::to_string(serial)+" 0 "+std::to_string(serial)+" "+std::to_string(mode)+" "+target+" "+std::to_string(stamp)+"\n";
+    };
+    {
+        LiveControls monitors(pose);
+        writeFile(path,line(1,10,"-",bootNow()));monitors.update();assert(monitors.fit==0);
+        writeFile(path,line(2,3,"-",bootNow()));monitors.update();assert(monitors.fit==3);
+    }
+    {
+        LiveControls input(pose);input.setCanvasMode(true);
+        int serial=0;
+        for(int mode=8;mode<=17;++mode){
+            if(mode==14 || mode==15)continue;
+            writeFile(path,line(++serial,mode,"-",bootNow()));input.update();assert(input.fit==mode && input.notificationTarget.empty());
+        }
+        writeFile(path,line(++serial,18,"-",bootNow()));input.update();assert(input.fit==0);
+        writeFile(path,line(++serial,14,"-",bootNow()));input.update();assert(input.fit==0);
+        writeFile(path,line(++serial,14,windows::encodeHex("left"),bootNow()));input.update();assert(input.fit==14 && input.notificationTarget=="left");
+        writeFile(path,line(++serial,15,windows::encodeHex("down"),bootNow()));input.update();assert(input.fit==15 && input.notificationTarget=="down");
+        writeFile(path,line(++serial,10,"-",bootNow()-10));input.update();assert(input.fit==0);
+        ++serial;writeFile(path,owner+" "+std::to_string(serial)+" 0 "+std::to_string(serial)+" 10\n");input.update();assert(input.fit==0); // v1 has no stamp
+        writeFile(path,line(++serial,6,"-",bootNow()));input.update();assert(input.fit==0); // notifications still need a target
+        writeFile(path,line(++serial,10,"-",bootNow()));input.update();assert(input.fit==10);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// Canvas .focus names a window address (canonical lower case); .hover is v4 in both files.
+void canvasFocusAndHover() {
+    const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls",mirror=dir+"/mirror";
+    const auto owner=std::to_string(getpid()),stamp=std::to_string(bootNow());
+    const char* saved=std::getenv("OMARCHY_XR_MIRROR_STATE");const std::string savedCopy=saved?saved:"";
+    setenv("OMARCHY_XR_MIRROR_STATE",mirror.c_str(),1);
+    {
+        LiveControls input(pose);input.setCanvasMode(true);
+        writeFile(path+".focus","v1 "+owner+" 1 0x5005 "+stamp);input.update();assert(input.focusOutput=="0x5005");
+        writeFile(path+".focus","v1 "+owner+" 2 OMXR-x "+stamp);input.update();assert(input.focusOutput.empty());
+        writeFile(path+".focus","v1 "+owner+" 3 0xABC "+stamp);input.update();assert(input.focusOutput=="0xabc");
+        writeFile(path+".focus","v1 "+owner+" 4 0x "+stamp);input.update();assert(input.focusOutput.empty());
+        writeFile(path+".focus","v1 "+owner+" 5 0x10000000000000000 "+stamp);input.update();assert(input.focusOutput.empty());
+        input.publishHover(true,"0x5005",0,0,3,640.5f,360);
+        AsyncFile::instance().flush();
+        const auto hover=readFile(path+".hover");
+        assert(hover=="v4 "+owner+" 1 1 0x5005 0 0 3 640.5 360\n");
+        assert(readFile(mirror+".hover")==hover);
+    }
+    {
+        LiveControls monitors(pose);
+        writeFile(path+".focus","v1 "+owner+" 1 0x5005 "+stamp);monitors.update();assert(monitors.focusOutput.empty());
+        monitors.publishHover(true,"OMXR-a",0,0,2,10,20);
+        AsyncFile::instance().flush();
+        assert(readFile(path+".hover")=="v3 "+owner+" 1 1 OMXR-a 0 0 2 10 20\n");
+        assert(readFile(mirror+".hover")==owner+" 1 1 OMXR-a 0 0\n");
+    }
+    if(saved)setenv("OMARCHY_XR_MIRROR_STATE",savedCopy.c_str(),1);
+    else unsetenv("OMARCHY_XR_MIRROR_STATE");
+    std::filesystem::remove_all(dir);
 }

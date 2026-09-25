@@ -216,12 +216,13 @@ void focusFollow(View& v) {
 void dwellInWork(View& v) {
     work(v);
     const auto rotation=v.targetRotation; const auto staged=v.canvas->stagedName; const auto target=v.canvas->camera.targetFocusX;
+    const auto serial=v.pointerSerial; const auto hover=v.hoverOutput;
     const auto hit=hitOn(v, "0x5004", .4f, .4f);
     const double start=monotonicSeconds()+1;
     for (double t=start;t<start+3;t+=.05) v.dwellOn(hit, t);
     assert(v.selection.output=="0x5004" && v.canvas->lastDwell=="0x5004");
     assert(sameRotation(rotation, v.targetRotation) && v.canvas->stagedName==staged && v.canvas->camera.targetFocusX==target);
-    assert(v.canvas->state==canvas::Scene::State::Work && v.pointerSerial==0);
+    assert(v.canvas->state==canvas::Scene::State::Work && v.pointerSerial==serial && v.hoverOutput==hover);
 }
 // Scene-level cases without a View: records built directly, offline scenes.
 windows::Record record(std::uint64_t address, const std::string& title, unsigned w, unsigned h, int focus, int pid, bool floating=false) {
@@ -231,6 +232,144 @@ windows::Record record(std::uint64_t address, const std::string& title, unsigned
 windows::List listOf(std::vector<windows::Record> records) { windows::List list; list.records=std::move(records); return list; }
 bool sameRect(const canvas::Rect& a, const canvas::Rect& b) { return a.x==b.x && a.y==b.y && a.w==b.w && a.h==b.h; }
 std::string readFile(const std::string& path) { std::ifstream file(path); return std::string((std::istreambuf_iterator<char>(file)), {}); }
+// M3 control plane. The mailboxes live beside the pose socket and belong to this process.
+long bootNow() { timespec boot{}; clock_gettime(CLOCK_BOOTTIME, &boot); return boot.tv_sec; }
+std::string mailbox(const View& v) { return v.posePath+".controls"; }
+std::string mailboxFile(unsigned long long seq, const std::vector<Row>& rows, int atX=20000) {
+    std::ostringstream out;
+    out << "v1 " << getpid() << ' ' << seq << ' ' << bootNow() << " 20000 0 OMXRTEST-canvas\n";
+    for (const auto& r:rows)
+        out << "0x" << std::hex << r.address << std::dec << ' ' << windows::encodeHex("foot") << ' ' << windows::encodeHex("term "+std::to_string(r.address))
+            << ' ' << r.w << ' ' << r.h << ' ' << atX << " 0 " << r.focus << ' ' << r.place << " 0 " << 1000+r.address << " 0 1\n";
+    return out.str();
+}
+// The v4 line's fields: v4 owner serial enabled output u v pointerSerial px py.
+std::vector<std::string> hoverFields(const View& v) {
+    AsyncFile::instance().flush();
+    std::istringstream in(readFile(mailbox(v)+".hover")); std::vector<std::string> out; std::string f;
+    while (in>>f) out.push_back(f);
+    assert(out.size()==10 && out[0]=="v4" && out[1]==std::to_string(getpid()));
+    return out;
+}
+// The .windows mailbox list after XR staged a window: it is on the stage and focus_history_id 0. Lua
+// publishes no .focus for XR's own staging, so a partly visible window keeps the camera where it is.
+void restagedByXr(View& v, const std::string& name) {
+    auto rows=twelve(); rows.push_back({0x8000, 900, 600, 50, "park"});
+    const auto address=*windows::parseAddress(name);
+    for (auto& r:rows) { r.place=r.address==address ? "stage" : "park"; r.focus=r.address==address ? 0 : r.focus==0 ? 40 : r.focus; }
+    partlyVisible(v, name); v.interactionUntil=0;
+    const auto rotation=v.targetRotation; const auto focus=v.canvas->camera.targetFocusX; const auto landed=v.canvas->landed;
+    write(mailbox(v)+".windows", mailboxFile(v.windowsSeq+1, rows)); v.steer();
+    assert(v.canvas->stagedName==name && v.canvas->focusedName==name);
+    assert(sameRotation(rotation, v.targetRotation) && focus==v.canvas->camera.targetFocusX && landed==v.canvas->landed);
+}
+// (f) Without --canvas-windows-file the .windows mailbox feeds the scene through steer(); with it, never.
+void mailboxList(View& v) {
+    auto rows=twelve(); rows.push_back({0x8100, 900, 600, 50, "park"});
+    write(mailbox(v)+".windows", mailboxFile(v.windowsSeq+1, rows));
+    v.steer();
+    assert(!v.canvas->find("0x8100"));
+    v.windowsPath.clear(); rows.back().address=0x8000;
+    write(mailbox(v)+".windows", mailboxFile(v.windowsSeq+2, rows));
+    v.steer();
+    assert(v.canvas->find("0x8000") && !v.canvas->find("0x8100") && v.canvas->stagedName=="0x5005");
+    assert(v.canvas->outputName=="OMXRTEST-canvas" && v.canvas->outputX==20000 && v.canvas->outputY==0);
+}
+// (g) FitTarget on a gazed hit publishes it once in buffer px; a settled dwell in Work publishes nothing.
+void hoverV4(View& v) {
+    work(v);
+    const auto serial=v.pointerSerial;
+    v.gaze.current=hitOn(v, "0x5005", .25f, .5f); v.navigate({View::Verb::FitTarget}); v.gaze.current.reset();
+    assert(v.pointerSerial==serial+1 && v.hoverOutput=="0x5005" && v.pointerX==400 && v.pointerY==450 && v.restageRequested.empty());
+    assert(v.tick());
+    auto f=hoverFields(v);
+    assert(f[3]=="1" && f[4]=="0x5005" && f[7]==std::to_string(serial+1) && f[8]=="400" && f[9]=="450");
+    ease(v, 60);
+    const auto hit=hitOn(v, "0x5004", .4f, .4f); const double start=monotonicSeconds()+1;
+    for (double t=start;t<start+3;t+=.05) v.dwellOn(hit, t);
+    assert(v.pointerSerial==serial+1 && v.hoverOutput=="0x5005");
+}
+// (h) A cursor inside the staged window is the XR cursor; overflow into a neighbour restages it once.
+void virtualCursor(View& v) {
+    const auto* staged=v.canvas->staged(); assert(staged && staged->name=="0x5005" && staged->record.atX==20000);
+    unsigned long long seq=1;
+    const auto cursor=[&](double x, double y, double ox, double oy) {
+        std::ostringstream line; line << "v1 " << getpid() << ' ' << seq++ << ' ' << x << ' ' << y << ' ' << ox << ' ' << oy << ' ' << bootNow() << '\n';
+        write(mailbox(v)+".cursor", line.str()); v.steer();
+    };
+    cursor(20100, 50, 0, 0);
+    assert(v.xrCursor.valid && v.xrCursor.window=="0x5005" && v.xrCursor.px==100 && v.xrCursor.py==50);
+    for (int frame=0;frame<3;++frame) assert(v.tick());
+    const canvas::CanvasWindow* neighbour=nullptr;
+    // A neighbour whose centre no other window covers (a radius reload may leave windows overlapping).
+    const auto covers=[&](const canvas::CanvasWindow& w, float x, float y) {
+        return !w.gone && v.canvas->ring.unwrap(x-w.rect.x)<w.rect.w && y>=w.rect.y && y<w.rect.y+w.rect.h;
+    };
+    for (const auto& w:v.canvas->windows) {
+        if (w.gone || w.staged) continue;
+        const float x=v.canvas->ring.unwrap(w.rect.cx()), y=w.rect.cy();
+        if (std::none_of(v.canvas->windows.begin(), v.canvas->windows.end(), [&](const auto& o) { return &o!=&w && covers(o, x, y); })) { neighbour=&w; break; }
+    }
+    assert(neighbour);
+    const auto name=neighbour->name; const auto& s=v.canvas->staged()->rect;
+    const double ox=v.canvas->ring.wrap(neighbour->rect.cx()-s.x)-(staged->record.w-1), oy=neighbour->rect.cy()-s.y-10;
+    const auto serial=v.pointerSerial;
+    cursor(20000+staged->record.w-1, 10, ox, oy);
+    assert(!v.xrCursor.valid || v.xrCursor.window=="0x5005");
+    assert(v.pointerSerial==serial+1 && v.hoverOutput==name && v.restageRequested==name && v.selection.output==name);
+    assert(std::abs(v.pointerX-neighbour->pixelW/2.f)<1 && std::abs(v.pointerY-neighbour->pixelH/2.f)<1);
+    assert(v.tick());
+    assert(hoverFields(v)[4]==name);
+    cursor(20000+staged->record.w-1, 10, ox, oy); cursor(20000+staged->record.w-1, 10, ox+1, oy);
+    assert(v.pointerSerial==serial+1 && v.restageRequested==name);
+    auto rows=twelve(); rows.push_back({0x8000, 900, 600, 50, "park"});
+    const auto address=*windows::parseAddress(name);
+    for (auto& r:rows) r.place=r.address==address ? "stage" : "park";
+    write(mailbox(v)+".windows", mailboxFile(v.windowsSeq+1, rows)); v.steer();
+    assert(v.canvas->stagedName==name && v.restageRequested.empty());
+    restagedByXr(v, name);
+    cursor(20010, 20, 0, 0);
+    assert(v.xrCursor.valid && v.xrCursor.window==name && v.xrCursor.px==10 && v.xrCursor.py==20);
+}
+// The view (u, v) of a window's centre, as a 2D click would give it.
+std::optional<std::pair<float,float>> projectCentre(const View& v, const std::string& name) {
+    const auto* l=v.findLayout(name); if (!l) return std::nullopt;
+    const auto c=spatial::vertex(v.monitorPose(*l), 0, 0);
+    const auto p=targeting::rotate(v.currentView(), targeting::add({c.x, c.y, c.z}, {v.panX, v.panY, v.panZ}));
+    const float t=std::tan(v.fov*pi/360), r=t*v.aspect();
+    if (p.z>=0) return std::nullopt;
+    const float u=.5f+p.x/-p.z/(2*r), w=.5f-p.y/-p.z/(2*t);
+    if (u<.05f || u>.95f || w<.05f || w>.95f) return std::nullopt;
+    return std::pair{u, w};
+}
+// (i) A click at a window's projected centre focuses that window at its buffer centre; the camera stays.
+void clickPath(View& v) {
+    v.navigate({View::Verb::FlickOut}); ease(v, 120);
+    std::string name; std::pair<float,float> at;
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (const auto p=projectCentre(v, w.name)) { name=w.name; at=*p; break; }
+    assert(!name.empty());
+    const auto serial=v.pointerSerial; const auto rotation=v.targetRotation;
+    v.clickAt(at.first, at.second);
+    const auto* w=v.canvas->find(name);
+    assert(v.pointerSerial==serial+1 && v.hoverOutput==name && sameRotation(rotation, v.targetRotation));
+    assert(std::abs(v.pointerX-w->pixelW/2.f)<.02f*w->pixelW && std::abs(v.pointerY-w->pixelH/2.f)<.02f*w->pixelH);
+    assert(v.tick());
+    const auto f=hoverFields(v);
+    assert(f[3]=="1" && f[4]==name && f[7]==std::to_string(serial+1));
+    restagedByXr(v, name);
+    restagedByXr(v, "0x5005");
+}
+// (j) The renderer's controls version gate: v6 or newer beside the pose socket.
+void versionGate(const std::string& temp) {
+    const std::string dir=temp+"/gate", pose=dir+"/pose.sock"; std::filesystem::create_directories(dir);
+    std::string why;
+    assert(!controlsVersionOk(pose, why) && why.find("missing")!=std::string::npos);
+    std::ofstream(dir+"/controls.version") << "5\n"; assert(!controlsVersionOk(pose, why) && why=="found version 5");
+    std::ofstream(dir+"/controls.version") << "6\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "7\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "six\n"; assert(!controlsVersionOk(pose, why));
+    assert(!controlsVersionOk("", why));
+}
 // A closed window's entry is released, so the same class and title reopen at its rect under a new
 // address; a taken rect starts the ring search there.
 canvas::Rect reopenAndTaken(canvas::Scene& s) {
@@ -298,18 +437,115 @@ void noFreePlace() {
     assert(s.live()==40 && stacked>=2);
     for (const auto& w:s.windows) assert(w.rect.x>=0 && w.rect.x<s.ring.period());
 }
+// deliver: every update is a new w x h CPU frame; demanded: the last setDemand visibility.
 struct FakeSource final : FrameSource {
-    bool living=true; std::string none;
-    bool update(CapturedFrame&) override { return false; }
+    bool living=true, deliver=false, demanded=true; unsigned w=1, h=1; std::string failure;
+    bool update(CapturedFrame& f) override {
+        if(!deliver) return false;
+        f.width=f.sourceWidth=w; f.height=f.sourceHeight=h; f.texture=0; f.rgba.assign(size_t(w)*h*4, 255);
+        return true;
+    }
     void service() override {}
-    void setDemand(bool, unsigned, unsigned) override {}
+    void setDemand(bool visible, unsigned, unsigned) override { demanded=visible; }
     void setFrameRate(unsigned, unsigned, double) override {}
     const char* transport() const override { return "fake"; }
     unsigned requests() const override { return 0; }
     double importLatencyMs() const override { return -1; }
-    const std::string& error() const override { return none; }
+    const std::string& error() const override { return failure; }
     bool alive() const override { return living; }
 };
+canvas::CanvasWindow& stagedWindow(View& v) {
+    const auto it=std::find_if(v.canvas->windows.begin(), v.canvas->windows.end(), [&](const auto& w) { return !w.gone && w.staged; });
+    assert(it!=v.canvas->windows.end());
+    return *it;
+}
+// (k) Region frames of the staged window replace the export (idled) and hide the XR cursor; 0.6 s
+// without one, or an error, brings the export back.
+void stageSourceFallback(View& v) {
+    auto& w=stagedWindow(v);
+    auto owned=std::make_unique<FakeSource>(), region=std::make_unique<FakeSource>();
+    auto *exported=owned.get(), *stage=region.get();
+    stage->deliver=true; stage->w=w.pixelW; stage->h=w.pixelH;
+    if (!w.texture) w.texture=gltex::create();
+    w.source=std::move(owned); w.stageSource=std::move(region); w.visible=true;
+    const auto before=w.frames;
+    v.updateWindowCaptures();
+    assert(w.stageFrame && w.stageFrames==1 && w.frames==before+1 && w.stageLastFrame>0 && w.width==w.pixelW);
+    v.canvas->schedule(false, monotonicSeconds());
+    assert(w.regionShown && !exported->demanded && stage->demanded);
+    v.xrCursor={true, w.name, 10, 10};
+    assert(!v.xrCursorLayout());
+    stage->deliver=false;
+    v.canvas->schedule(false, monotonicSeconds()+.6);
+    assert(!w.regionShown && exported->demanded && v.xrCursorLayout());
+    stage->deliver=true; v.updateWindowCaptures(); v.canvas->schedule(false, monotonicSeconds());
+    assert(w.regionShown);
+    stage->failure="Captured output was disconnected";
+    v.canvas->schedule(false, monotonicSeconds());
+    assert(!w.regionShown && exported->demanded);
+    v.updateWindowCaptures();
+    assert(!w.stageSource && !w.stageFrame && w.stageRetryAt>monotonicSeconds() && w.stageW);
+    w.source.reset(); v.xrCursor={};
+}
+// (l) The region follows the staged window's rectangle; unstaging drops it. The offline scene never
+// opens a source, so the rectangle fields are the observable.
+void stageRegion(View& v) {
+    const auto original=v.canvas->lastList;
+    auto& w=stagedWindow(v); const auto name=w.name;
+    assert(w.stageX==0 && w.stageY==0 && w.stageW==w.record.w && w.stageH==w.record.h);
+    v.canvas->openStage(w, monotonicSeconds()+10); assert(!w.stageSource);
+    auto moved=original;
+    for (auto& r:moved.records) if (r.name()==name) { r.atX+=40; r.atY+=8; r.w-=100; }
+    w.stageSource=std::make_unique<FakeSource>();
+    v.canvas->adopt(moved, monotonicSeconds());
+    const auto* again=v.canvas->find(name);
+    assert(again->staged && !again->stageSource && again->stageX==40 && again->stageY==8 && again->stageW==again->record.w && again->stageRetryAt==0);
+    auto other=original; std::string next;
+    for (auto& r:other.records) {
+        if (r.place==windows::Place::Stage) r.place=windows::Place::Park;
+        else if (next.empty()) { r.place=windows::Place::Stage; next=r.name(); }
+    }
+    stagedWindow(v).stageSource=std::make_unique<FakeSource>();
+    v.canvas->adopt(other, monotonicSeconds());
+    const auto* old=v.canvas->find(name); const auto* now=v.canvas->find(next);
+    assert(!old->staged && !old->stageSource && !old->stageW && now->staged && now->stageW==now->record.w);
+    // No `stage` row (session start, the staged window closed): the focus fallback is parked, so it
+    // gets no region and no XR cursor; the export serves it.
+    auto parked=original;
+    for (auto& r:parked.records) if (r.place==windows::Place::Stage) r.place=windows::Place::Park;
+    stagedWindow(v).stageSource=std::make_unique<FakeSource>();
+    v.canvas->adopt(parked, monotonicSeconds());
+    auto& fallback=stagedWindow(v);
+    assert(!canvas::Scene::onStage(fallback) && !fallback.stageSource && !fallback.stageW);
+    fallback.stageSource=std::make_unique<FakeSource>(); fallback.stageLastFrame=monotonicSeconds();
+    v.canvas->schedule(false, monotonicSeconds());
+    assert(!fallback.regionShown); fallback.stageSource.reset(); fallback.stageLastFrame=0;
+    v.lastCursor=windows::Cursor{"", 1, double(fallback.record.atX+10), double(fallback.record.atY+10)}; v.cursorAt=monotonicSeconds();
+    v.updateVirtualCursor();
+    assert(!v.xrCursor.valid);
+    v.lastCursor.reset();
+    v.canvas->adopt(original, monotonicSeconds());
+    assert(v.canvas->stagedName==name);
+}
+// (m) A Studio session has no --canvas-windows-file: the first .windows mailbox list lands on its staged window.
+void firstMailboxLands(SDL_Window* window, const std::string& temp) {
+    const std::string dir=temp+"/fresh", pose=dir+"/pose.sock", canvasPath=dir+"/canvas.tsv", empty;   // the View keeps references
+    std::filesystem::create_directories(dir);
+    std::vector<Panel> none;
+    View v(none,false,spatial::Workspace{80},24,empty,pose,false,false,64,28,canvasPath,60,false);
+    v.window=window; v.mode=View::SceneMode::Canvas;
+    v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
+    v.environment=std::make_unique<SkyEnvironment>("");
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
+    v.primeCamera(); v.startCanvas();
+    assert(v.windowsSeq==0 && v.canvas->stagedName.empty());
+    write(mailbox(v)+".windows", mailboxFile(1, twelve()));
+    v.steer();
+    assert(v.windowsSeq==1 && v.canvas->stagedName=="0x5005" && v.canvas->landed=="0x5005" && v.canvas->state==canvas::Scene::State::Work);
+    ease(v, 120);
+    assert(stagedOffset(v)<1);
+    v.finishCanvas();
+}
 // The smoke rule: the focused window needs 10 frames, near windows one; gone, closed and dead ones pass.
 void smokeRule() {
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
@@ -378,11 +614,13 @@ int main() {
         placedAndLanded(v); verbs(v); fadeAndPlace(v); reloadFile(v);
         navigationInvariants(v); workAndOverview(v); zoomAnchor(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
+        mailboxList(v); hoverV4(v); virtualCursor(v); clickPath(v); stageSourceFallback(v); stageRegion(v);
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
-    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule();
+    firstMailboxLands(window, temp);
+    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp);
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, memory, buffer size, dialogs, the full-ring fallback and the smoke rule passed\n";
+    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule and the controls version gate passed\n";
 }
