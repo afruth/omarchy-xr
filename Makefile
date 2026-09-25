@@ -18,7 +18,7 @@ UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking 
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
-.PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json
+.PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
 all: $(BUILD)/omarchy-xr compile_commands.json
 
 # $(1) source, $(2) object, $(3) extra compiler flags. Sidecar JSON feeds compile_commands.json.
@@ -52,6 +52,26 @@ $(BUILD)/wlr-screencopy-protocol.c: protocols/wlr-screencopy-unstable-v1.xml | $
 	wayland-scanner private-code $< $@
 $(BUILD)/wlr-screencopy-protocol.o: $(BUILD)/wlr-screencopy-protocol.c | $(BUILD)
 	$(call compile_c,$(BUILD)/wlr-screencopy-protocol.c,$(BUILD)/wlr-screencopy-protocol.o)
+
+$(BUILD)/hyprland-toplevel-export-client.h: protocols/hyprland-toplevel-export-v1.xml | $(BUILD)
+	wayland-scanner client-header $< $@
+$(BUILD)/hyprland-toplevel-export-protocol.c: protocols/hyprland-toplevel-export-v1.xml | $(BUILD)
+	wayland-scanner private-code $< $@
+$(BUILD)/hyprland-toplevel-export-protocol.o: $(BUILD)/hyprland-toplevel-export-protocol.c | $(BUILD)
+	$(call compile_c,$(BUILD)/hyprland-toplevel-export-protocol.c,$(BUILD)/hyprland-toplevel-export-protocol.o)
+
+$(BUILD)/wlr-foreign-toplevel-protocol.c: protocols/wlr-foreign-toplevel-management-unstable-v1.xml | $(BUILD)
+	wayland-scanner private-code $< $@
+$(BUILD)/wlr-foreign-toplevel-protocol.o: $(BUILD)/wlr-foreign-toplevel-protocol.c | $(BUILD)
+	$(call compile_c,$(BUILD)/wlr-foreign-toplevel-protocol.c,$(BUILD)/wlr-foreign-toplevel-protocol.o)
+
+# Window canvas M0 spike (docs/infinite-canvas-plan.md §3.6); not part of all/check.
+spike-canvas: $(BUILD)/spike-window-capture
+$(BUILD)/spike-window-capture.o: tools/spike_window_capture.cpp $(BUILD)/hyprland-toplevel-export-client.h $(BUILD)/linux-dmabuf-client.h | $(BUILD)
+	$(call compile_cxx,tools/spike_window_capture.cpp,$(BUILD)/spike-window-capture.o,-Isrc)
+$(BUILD)/spike-window-capture: $(BUILD)/spike-window-capture.o $(BUILD)/hyprland-toplevel-export-protocol.o \
+	$(BUILD)/wlr-foreign-toplevel-protocol.o $(BUILD)/linux-dmabuf-protocol.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(BUILD)/drm-lease-client.h: protocols/drm-lease-v1.xml | $(BUILD)
 	wayland-scanner client-header $< $@
