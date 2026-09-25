@@ -68,6 +68,17 @@ them; a lost compositor connection recreates the hub. Overview labels are a Pang
 just these), and `tests/live_canvas.py` is the opt-in live harness (`make smoke-canvas`,
 `profile zoomed-in-near-parked`).
 
+M4 adds the Search and Fill states (`canvasState` also reports `search`/`fill`), the
+ranking in `src/canvas_search.hpp` and the overlays in `src/canvas_overlay.hpp`: the
+palette, Alt-Tab switcher, radar strip, F1 help and pinned windows are body-locked
+quads that lazily follow the head at 0.9 of the eye-to-ring distance and are drawn
+depth-test-off after the surfaces, by one code path for stereo, the 2D window and the
+spectator (`make check-canvas-preview` smokes them). Search text comes from SDL text input
+when the renderer's own window has keyboard focus, otherwise from the Studio-hosted
+Quickshell layer-shell prompt (`studio/SearchPromptWindow.qml`) over the `.prompt`
+(renderer → prompt) and `.search` (prompt → renderer) mailboxes; `.fill` asks the Lua
+adapter to resize the staged window.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping

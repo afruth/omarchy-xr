@@ -130,7 +130,9 @@ class CanvasSession:
         header = " ".join(format(s[key], "g") for key in TSV_FIELDS)
         # Studio's backend and its Quickshell parent are never adopted.
         rows = [*s["exclude"], str(os.getpid()), str(os.getppid())]
-        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']}\n" + "".join(f"exclude {t}\n" for t in rows))
+        # Field 9 switches the optional window-key takeovers (read by the renderer, announced to Lua in .mode).
+        takeover = 1 if s["takeoverKeys"] else 0
+        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} {takeover}\n" + "".join(f"exclude {t}\n" for t in rows))
 
     def monitor_rule(self, settings, x):
         return (f'hl.monitor({{output="{self.name}", mode="{WIDTH}x{HEIGHT}@{settings["refresh"]}", '

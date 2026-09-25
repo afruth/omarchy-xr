@@ -678,6 +678,9 @@ Item {
         property color background: Color.background
     }
 
+    // The canvas search prompt (plan §5.4): hosted once here so it stays loaded with the plugin.
+    SearchPromptWindow { }
+
     FloatingWindow {
         id: window
         title: "XR Monitor Studio"
@@ -1003,15 +1006,15 @@ Item {
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
-                                        text: "Fit workspace"
-                                        helpText: "Bring the whole workspace into view"
-                                        onClicked: root.send("fit")
+                                        text: root.renderMode === "canvas" ? "Overview" : "Fit workspace"
+                                        helpText: root.renderMode === "canvas" ? "Zoom out to see every window on the canvas, or back in" : "Bring the whole workspace into view"
+                                        onClicked: root.send(root.renderMode === "canvas" ? "overview" : "fit")
                                     }
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
-                                        text: "Fit monitor"
-                                        helpText: "Fit the monitor selected by your head direction by height" + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
+                                        text: root.renderMode === "canvas" ? "Land on window" : "Fit monitor"
+                                        helpText: (root.renderMode === "canvas" ? "Land on the window you are looking at" : "Fit the monitor selected by your head direction by height") + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
                                         onClicked: root.send("fit_target")
                                     }
                                     Action {
@@ -1027,6 +1030,38 @@ Item {
                                         text: "Zoom in"
                                         helpText: "Bring the workspace closer"
                                         onClicked: root.send("zoom_in")
+                                    }
+                                    Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        visible: root.renderMode === "canvas"
+                                        text: "Search"
+                                        helpText: "Find a window by title, class or kind · SUPER + CTRL + G"
+                                        onClicked: root.send("search")
+                                    }
+                                    Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        visible: root.renderMode === "canvas"
+                                        text: "Fill"
+                                        helpText: "Make the current window fill your view, or restore its size · SUPER + F"
+                                        onClicked: root.send("fill")
+                                    }
+                                    Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        visible: root.renderMode === "canvas"
+                                        text: "Arrange"
+                                        helpText: "Tidy the canvas: group windows by kind without overlap"
+                                        onClicked: root.send("arrange")
+                                    }
+                                    Action {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        visible: root.renderMode === "canvas"
+                                        text: "Undo"
+                                        helpText: "Undo the last arrange, nudge or summon"
+                                        onClicked: root.send("undo")
                                     }
                                 }
                             }
@@ -1666,7 +1701,7 @@ Item {
                                     Label {
                                         Layout.fillWidth: true
                                         text: "Take over Omarchy window keys in canvas mode"
-                                        helpText: "SUPER + F is always taken over so full screen stays on the canvas; the other window keys follow this setting in a later update"
+                                        helpText: "SUPER + TAB, ALT + TAB, SUPER + arrows and SUPER + SHIFT + arrows drive the canvas while this is on; SUPER + F, SUPER + CTRL + G and SUPER + ALT + P are always taken"
                                     }
                                     Ui.ToggleSwitch {
                                         checked: root.canvasDraft.takeoverKeys !== false

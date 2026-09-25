@@ -13,7 +13,7 @@ from backend import Manager, default_layout, perform, validate as validate_layou
 from canvas import DEFAULTS, validate
 from test_studio import FakeHypr
 
-GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all"
+GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1"
 NAMED = {"omxr-canvas": -1338, "omxr-park": -1337}
 
 
@@ -199,7 +199,13 @@ class CanvasTests(unittest.TestCase):
             saved = manager.canvas.save({"refresh": 120, "outputScale": 1.25, "exclude": ["firefox"], "radius": 3})
             self.assertEqual(manager.canvas.load(), saved)
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
-            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all", "exclude firefox", f"exclude {os.getpid()}"])
+            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all 1", "exclude firefox", f"exclude {os.getpid()}"])
+            manager.canvas.save({**saved, "takeoverKeys": False})
+            header = (manager.directory / "canvas.tsv").read_text().splitlines()[0]
+            self.assertEqual(header, "# canvas v1 60 3 60 0.35 0.8 1.25 300 all 0")
+            # The Lua adapter's adopt-policy pattern still finds field 8 with field 9 appended.
+            self.assertEqual(re.match(r"^# canvas v1(?:\s+\S+){7}\s+([A-Za-z-]+)", header).group(1), "all")
+            saved = manager.canvas.save({**saved, "takeoverKeys": True})
             manager.canvas.ensure(manager.monitors())
             self.assertTrue(fake.evals('mode="2560x1440@120"'))
             self.assertTrue(fake.evals("scale=1.25"))
@@ -292,7 +298,7 @@ class CanvasTests(unittest.TestCase):
             manager.canvas.ensure(manager.monitors())
             self.assertFalse(fake.evals("window.move"))
             self.assertFalse(manager.canvas.journal.exists())
-            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty"))
+            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 1"))
         finally: self.close(manager)
 
     def test_laptop_off_adoption_targets_park(self):
@@ -411,6 +417,31 @@ class CanvasTests(unittest.TestCase):
             status = manager.status()
             self.assertEqual((status["renderMode"], status["canvasActive"], status["active"], status["canvasWindows"]),
                              ("canvas", True, 1, 4))
+            Path(str(manager.pose_socket) + ".stats").write_text(json.dumps({"pid": 123, "time": time.monotonic(), "canvasState": "search"}))
+            self.assertEqual(manager.status()["canvasState"], "search")
+        finally: self.close(manager)
+
+    def test_canvas_camera_verbs(self):
+        manager = self.manager(CanvasHypr())
+        try:
+            process = Mock(); process.poll.return_value = None; manager.viewer = process
+            pose = str(manager.pose_socket)
+            with patch("backend.socket.socket") as sock:
+                sendto = sock.return_value.__enter__.return_value.sendto
+                with self.assertRaisesRegex(ValueError, "Only available in Window canvas mode"): perform(manager, {"action": "search"})
+                sendto.assert_not_called()
+                perform(manager, {"action": "fit"})
+                sendto.assert_called_with(b"fit", pose)
+                manager.render_mode = "canvas"
+                messages = {"overview": "Overview toggled.", "search": "Search opened.", "fill": "Fill toggled.", "arrange": "Windows arranged.",
+                            "undo": "Undone.", "redo": "Redone.", "pin": "Pin toggled.", "help": "Help toggled."}
+                for action, message in messages.items():
+                    with self.subTest(action=action):
+                        self.assertEqual(perform(manager, {"action": action})["message"], message)
+                        sendto.assert_called_with(action.encode(), pose)
+                perform(manager, {"action": "fit"})
+                sendto.assert_called_with(b"fit", pose)
+                with self.assertRaisesRegex(ValueError, "Unknown camera action"): manager.camera_control("focus:0x1")
         finally: self.close(manager)
 
     def test_actions_route_render_mode_and_settings(self):

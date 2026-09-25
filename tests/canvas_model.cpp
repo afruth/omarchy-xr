@@ -1,4 +1,5 @@
 #include "canvas_model.hpp"
+#include "canvas_overlay.hpp"
 #include <cassert>
 #include <iostream>
 #include <random>
@@ -121,17 +122,55 @@ static bool rejects(const std::string& text) { try { settings(text); } catch(con
 static void parsing() {
     const auto d=settings("");
     assert(d.fps==60 && d.radius==2.4f && d.gapPx==60 && d.dimUnmatched==.35f && d.adoptPolicy=="all" && d.excludes.empty());
-    const auto s=settings("# canvas v1 120 3 40 .5 1 1.25 400 new future 7\nexclude 1234\n\nexclude foot\n");
+    const auto s=settings("# canvas v1 120 3 40 .5 1 1.25 400 new 0 future 7\nexclude 1234\n\nexclude foot\n");
     assert(s.fps==120 && s.radius==3 && s.gapPx==40 && s.dimUnmatched==.5f && s.labelDeg==1 && s.outputScale==1.25f);
-    assert(s.captureBudgetMpix==400 && s.adoptPolicy=="new" && s.excludes==std::vector<std::string>({"1234", "foot"}));
+    assert(s.captureBudgetMpix==400 && s.adoptPolicy=="new" && s.excludes==std::vector<std::string>({"1234", "foot"}) && !s.takeoverKeys);
+    assert(d.takeoverKeys && !settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 0\n").takeoverKeys);
+    assert(settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all\n").takeoverKeys && settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 x\n").takeoverKeys);
     const auto partial=settings("# canvas v1 30 2\n");
     assert(partial.fps==30 && partial.radius==2 && partial.gapPx==60 && partial.captureBudgetMpix==300);
     for(auto bad:{"# canvas v1 0", "# canvas v1 121", "# canvas v1 60 .5", "# canvas v1 60 11", "# canvas v1 60 2 501",
                   "# canvas v1 60 2 60 .3 .8 3", "# canvas v1 60 2 60 .3 .8 1 40", "# canvas v1 60 2 60 .3 .8 1 2001",
-                  "# canvas v1 sixty", "# canvas v10 60", "# settings 60", "# canvas v1 60\nfoo bar", "# canvas v1 60\nexclude a b"})
+                  "# canvas v1 sixty", "# canvas v10 60", "# settings 60", "# canvas v1 60\nfoo bar", "# canvas v1 60\nexclude a b",
+                  "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 2", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all -1", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all yes"})
         assert(rejects(bad));
 }
+// Overlay berths (canvas_overlay.hpp): pure lazy-follow math, no GL.
+static overlay::space::Scene facing(float yawDeg, overlay::space::Vec eye={0, 0, 0}) {
+    overlay::space::Scene scene; scene.view=tracking::conjugate(tracking::orientation(0, 0, yawDeg)); scene.eye=eye;
+    return scene;
+}
+static float berthYaw(const overlay::Berth& b) { return std::atan2(b.position.x, -b.position.z)/overlay::degrees; }
+static void berths() {
+    namespace space=overlay::space;
+    overlay::Berth b(0, -6);
+    b.update(facing(0), 2.16f, 10);
+    assert(near(space::length(b.position), 2.16f, 1e-4f) && near(berthYaw(b), 0, 1e-3f));
+    assert(near(std::atan2(b.position.y, -b.position.z)/overlay::degrees, -6, 1e-3f));
+    // Inside 12 degrees nothing moves, however long the head stays turned.
+    for(double t=10;t<=13;t+=1/60.) b.update(facing(10), 2.16f, t);
+    assert(near(berthYaw(b), 0, 1e-3f) && b.awaySince<0);
+    // Beyond 12 degrees: held for 0.3 s, then retargeted and eased there (tau 0.15 s).
+    overlay::Berth probe; probe.update(facing(20), 2.16f, 0);
+    const float turned=berthYaw(probe);
+    assert(std::abs(std::abs(turned)-20)<.01f);
+    overlay::Berth c; c.update(facing(0), 2.16f, 20);
+    double t=20;
+    for(;t<20.25;t+=1/60.) { c.update(facing(20), 2.16f, t); assert(near(berthYaw(c), 0, 1e-3f)); }
+    for(;t<20.32;t+=1/60.) c.update(facing(20), 2.16f, t);
+    assert(c.awaySince<0 && std::abs(std::atan2(c.target.x, -c.target.z)/overlay::degrees-turned)<.01f);
+    for(;t<21.5;t+=1/60.) c.update(facing(20), 2.16f, t);
+    assert(near(berthYaw(c), turned, .01f) && space::length(space::sub(c.position, c.target))<1e-3f);
+    // Eye-relative: a dolly carries the berth along, and a new distance applies without a retarget.
+    const auto dollied=facing(20, {0, 0, -1});
+    c.update(dollied, 1.2f, t);
+    assert(near(space::length(c.target), 1.2f, 1e-4f) && near(berthYaw(c), turned, .01f));
+    for(double u=t;u<t+1.5;u+=1/60.) c.update(dollied, 1.2f, u);
+    assert(near(space::length(c.position), 1.2f, 1e-3f) && space::length(space::sub(c.centre(dollied), space::add(dollied.eye, c.target)))<1e-3f);
+    // The ring reach: R from the centre, less from a dollied eye looking outwards.
+    assert(near(overlay::ringReach(facing(0), 2.4f), 2.4f, 1e-4f) && near(overlay::ringReach(facing(0, {0, 0, -1}), 2.4f), 1.4f, 1e-3f));
+}
 int main() {
-    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing();
-    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling and settings passed\n";
+    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing(); berths();
+    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling, settings and overlay berths passed\n";
 }

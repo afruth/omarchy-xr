@@ -137,4 +137,55 @@ inline std::optional<Cursor> parseCursor(std::string_view line) {
        || !coordinate(f[5],c.overflowX) || !coordinate(f[6],c.overflowY) || !number(f[7],c.stamp)) return {};
     c.owner=f[1]; return c;
 }
+// The `.search` mailbox (search prompt -> renderer):
+//   v1 <owner> <promptSeq> <editSeq> <hex text|-> <open 0/1> <keys> <stamp>
+// promptSeq echoes the `.prompt` request it answers; editSeq counts edits and forwarded keys, since the
+// prompt owns the keyboard while it is open. keys is `-` for a text edit, else the forwarded keys since
+// the last text edit, comma-separated, oldest first, at most 8, the last one this line's: they had the
+// editSeqs up to this one, so a reader that missed lines replays the ones it has not seen.
+constexpr size_t maxSearchKeys=8;
+struct Search {
+    std::string owner; unsigned long long promptSeq=0, editSeq=0; std::string text; bool open=false;
+    std::string key;                 // the newest key, `-` for a text edit
+    std::vector<std::string> keys;   // the key log, oldest first; empty for a text edit
+    long stamp=0;
+};
+inline bool searchKey(std::string_view key) {
+    static constexpr std::string_view keys[]={"-", "enter", "shift-enter", "up", "down", "tab", "shift-tab", "esc",
+                                             "ctrl-a", "ctrl-z", "ctrl-shift-z", "f1"};
+    if(key.size()==6 && key.starts_with("ctrl-") && key[5]>='1' && key[5]<='8') return true;
+    return std::find(std::begin(keys), std::end(keys), key)!=std::end(keys);
+}
+// `-`, or 1..8 comma-separated keys other than `-`.
+inline bool searchKeys(std::string_view field, std::vector<std::string>& keys) {
+    keys.clear();
+    if(field=="-") return true;
+    for(size_t start=0;;) {
+        const size_t end=std::min(field.find(',', start), field.size());
+        const auto key=field.substr(start, end-start);
+        if(key=="-" || !searchKey(key) || keys.size()==maxSearchKeys) return false;
+        keys.emplace_back(key);
+        if(end==field.size()) return true;
+        start=end+1;
+    }
+}
+inline std::optional<Search> parseSearch(std::string_view line) {
+    while(!line.empty() && (line.back()=='\n' || line.back()==' ')) line.remove_suffix(1);
+    const auto f=fields(line);
+    Search s;
+    if(f.size()!=8 || f[0]!="v1" || !number(f[2],s.promptSeq) || !number(f[3],s.editSeq) || !validHex(f[4]) ||
+       !flag(f[5],s.open) || !searchKeys(f[6],s.keys) || !number(f[7],s.stamp)) return {};
+    s.owner=f[1]; s.text=decodeHex(f[4]); s.key=s.keys.empty() ? "-" : s.keys.back();
+    return s;
+}
+inline std::string addressToken(std::uint64_t address) { Record r; r.address=address; return r.name(); }
+// `.prompt` (renderer -> prompt): v1 <pid> <seq> <open 0/1> <output|-> <stamp>
+inline std::string promptLine(int pid, unsigned long long seq, bool open, const std::string& output, long stamp) {
+    return "v1 "+std::to_string(pid)+' '+std::to_string(seq)+' '+(open ? '1' : '0')+' '+(output.empty() ? "-" : output)+' '+std::to_string(stamp)+'\n';
+}
+// `.fill` (renderer -> Lua): v1 <pid> <seq> <address> <w> <h> <stamp>, logical px for the staged window.
+inline std::string fillLine(int pid, unsigned long long seq, std::uint64_t address, unsigned w, unsigned h, long stamp) {
+    return "v1 "+std::to_string(pid)+' '+std::to_string(seq)+' '+addressToken(address)+' '+std::to_string(w)+' '+std::to_string(h)+' '+
+        std::to_string(stamp)+'\n';
+}
 }

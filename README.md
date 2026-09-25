@@ -104,7 +104,9 @@ above the Start buttons on **Controls**. Each application window then gets its o
 around you, instead of sitting on a virtual monitor. At start Studio moves your windows to one
 hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
 SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
-and tiling. The second tab becomes **Canvas** with the ring and capture settings. Window canvas
+and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
+SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
+F1 lists every canvas key. The second tab becomes **Canvas** with the ring and capture settings. Window canvas
 needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
 shortcuts & gestures** (or `make install-controls`). Until you do, the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
@@ -217,6 +219,7 @@ make check-scene-seam # renderer scene seam (geometry, surfaces, stats mode); hi
 make smoke           # ten rendered frames; requires a graphical session
 make check-preview   # pixel-exact renderer regression against tests/baselines; same GPU driver
 make check-canvas    # alias: just the window canvas tests (check and check-workspace-focus run them too)
+make check-canvas-preview # canvas overlay stills (palette, switcher, radar, help, Fill, pin) as PNGs; GL session
 make smoke-canvas    # opt-in, Hyprland session: canvas smoke against a temporary SPIKE-canvas output
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first

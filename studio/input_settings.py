@@ -7,7 +7,7 @@ from atomic_file import atomic_write
 ACTIONS=('fit_all','fit_target','recenter','zoom_in','zoom_out')
 DEFAULTS={'fingers':3,'fit_all':'CTRL + Up','fit_target':'CTRL + Down','recenter':'','zoom_in':'','zoom_out':''}
 MODS={'SHIFT':1,'CTRL':4,'ALT':8,'SUPER':64}
-KEYS={k.lower():k for k in ('Up','Down','Left','Right','Home','End','Page_Up','Page_Down','Return','Tab','Escape','BackSpace','space','Insert','Delete')}
+KEYS={k.lower():k for k in ('Up','Down','Left','Right','Home','End','Page_Up','Page_Down','Return','Tab','Escape','BackSpace','space','Insert','Delete','slash','period')}
 def chord(value):
     if not isinstance(value,str):raise ValueError('Hotkeys must be text')
     if not value.strip():return '',0,''
@@ -22,7 +22,12 @@ def chord(value):
     else:raise ValueError('Use a letter, digit, F1–F35, or a navigation key')
     mods=[m for m in MODS if m in mods]
     return ' + '.join(mods+[key]),sum(MODS[m] for m in mods),key.lower()
-def validate_controls(value,bindings=()):
+# Window canvas chords (config/xr-controls.lua: SUPER+F, CANVAS_KEYS, TAKEOVER_KEYS). They are bound only while
+# the canvas runs, with 'XR:' descriptions the binding check skips, so they are reserved in every mode.
+CANVAS_CHORDS=('SUPER + F','SUPER + CTRL + G','SUPER + ALT + P','SUPER + Tab','ALT + Tab','ALT + SHIFT + Tab')+tuple(
+    mods+key for mods in ('SUPER + ','SUPER + SHIFT + ') for key in ('Left','Right','Up','Down'))
+RESERVED={chord(c)[1:] for c in CANVAS_CHORDS}
+def validate_controls(value,bindings=(),reserve=True):
     if not isinstance(value,dict):raise ValueError('Invalid control settings')
     fingers=value.get('fingers')
     if type(fingers) is not int or fingers not in (3,5):raise ValueError('Choose 3 or 5 fingers for zoom; 4 fingers are reserved for pan')
@@ -32,6 +37,7 @@ def validate_controls(value,bindings=()):
         if not text:continue
         if (mask,key) in seen:raise ValueError('Each action needs a different hotkey')
         seen.add((mask,key))
+        if reserve and (mask,key) in RESERVED:raise ValueError(f'{text} is reserved for the window canvas')
         for b in bindings:
             if b.get('modmask')==mask and str(b.get('key','')).lower()==key and not str(b.get('description','')).startswith('XR:'):
                 raise ValueError(f'{text} is already used by '+(b.get('description') or 'another desktop binding'))
@@ -41,7 +47,8 @@ def load_controls(directory):
     path=directory/'controls-settings.json'
     value=json.loads(path.read_text()) if path.exists() else dict(DEFAULTS)
     if value.get('fingers')==4:value['fingers']=3
-    return validate_controls(value)
+    # A profile saved before the canvas reserved its chords still loads; saving it again asks for another chord.
+    return validate_controls(value,reserve=False)
 
 def save_controls(directory,value,runner):
     value=validate_controls(value,json.loads(runner('-j','binds')))

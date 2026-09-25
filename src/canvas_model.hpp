@@ -162,6 +162,7 @@ struct Settings {
     int fps=60;
     float radius=2.4f, gapPx=60, dimUnmatched=.35f, labelDeg=.8f, outputScale=1, captureBudgetMpix=300;
     std::string adoptPolicy="all";
+    bool takeoverKeys=true;   // the optional chords (SUPER+TAB, ALT+TAB, SUPER(+SHIFT)+arrows), via the .mode flag
     std::vector<std::string> excludes;
 };
 template<class T> bool readField(std::istream& in, T& value, T lo, T hi) {
@@ -169,7 +170,7 @@ template<class T> bool readField(std::istream& in, T& value, T lo, T hi) {
     if(!(in>>value) || !(value>=lo && value<=hi)) throw std::runtime_error("Invalid canvas setting");
     return true;
 }
-// `# canvas v1 fps radius gapPx dimUnmatched labelDeg outputScale captureBudgetMpix adoptPolicy`
+// `# canvas v1 fps radius gapPx dimUnmatched labelDeg outputScale captureBudgetMpix adoptPolicy takeoverKeys`
 // then `exclude <pid|class>` rows. Missing trailing fields keep defaults; later versions may append.
 inline Settings parseSettings(std::istream& in) {
     Settings s; std::string line;
@@ -181,6 +182,8 @@ inline Settings parseSettings(std::istream& in) {
         readField(v,s.captureBudgetMpix,50.f,2000.f) && (v>>s.adoptPolicy));
     if(s.adoptPolicy.empty() || s.adoptPolicy.find_first_not_of("abcdefghijklmnopqrstuvwxyz-")!=std::string::npos)
         throw std::runtime_error("Invalid canvas adopt policy");
+    int takeover=1;
+    if(readField(v,takeover,0,1)) s.takeoverKeys=takeover==1;
     while(std::getline(in,line)) {
         if(line.empty() || line[0]=='#') continue;
         std::istringstream row(line); std::string key, token, extra;

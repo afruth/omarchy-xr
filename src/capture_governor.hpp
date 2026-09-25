@@ -20,6 +20,7 @@ struct Input {
     float angularWidthDeg=0;
     int focusHistoryID=0;
     unsigned pixelW=0, pixelH=0;
+    bool pinned=false;   // body-locked (§5.1): always a candidate, ranked first, so it holds a Near place
 };
 struct Decision {
     Tier tier=Tier::Idle;
@@ -47,7 +48,7 @@ struct Fixed {
         std::vector<std::size_t> candidates;
         for(std::size_t i=0;i<in.size();++i){
             if(in[i].staged){ out[i]=focused(); forget(in[i].name); }
-            else if(!in[i].visible) forget(in[i].name);
+            else if(!in[i].visible && !in[i].pinned) forget(in[i].name);
             else candidates.push_back(i);
         }
         if(zoomedOut) overview(in,candidates,out);
@@ -61,11 +62,17 @@ struct Fixed {
         for(auto i:candidates) pixels+=double(in[i].pixelW)*in[i].pixelH;
         const unsigned hz=pixels*overviewHz<=budgetMpix*1e6 ? overviewHz : overviewSlowHz;
         for(auto i:candidates) out[i]=rated(Tier::Overview,hz);
+        // Pinned windows always count as near (§5.1): body-locked, they stay readable while zoomed out.
+        std::vector<std::size_t> pinned;
+        for(auto i:candidates) if(in[i].pinned) pinned.push_back(i);
+        rank(in,pinned);
+        for(std::size_t r=0;r<pinned.size() && r<nearCount;++r) out[pinned[r]]=rated(Tier::Near,nearHz);
         nearSince.clear(); farSince.clear(); near.clear();
     }
-    // Rank by angular size, then most recent use; ties by name keep the order deterministic.
+    // Pinned first, then by angular size, then most recent use; ties by name keep the order deterministic.
     static void rank(const std::vector<Input>& in,std::vector<std::size_t>& order){
         std::sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b){
+            if(in[a].pinned!=in[b].pinned) return in[a].pinned;
             if(in[a].angularWidthDeg!=in[b].angularWidthDeg) return in[a].angularWidthDeg>in[b].angularWidthDeg;
             if(in[a].focusHistoryID!=in[b].focusHistoryID) return in[a].focusHistoryID<in[b].focusHistoryID;
             return in[a].name<in[b].name;

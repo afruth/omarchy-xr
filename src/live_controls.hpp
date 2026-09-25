@@ -93,6 +93,12 @@ class LiveControls {
     unsigned long long focusSerial=0;
     unsigned long long windowsSeq=0, cursorSeq=0;
     timespec windowsStamp{}, cursorStamp{};
+    // Search prompt (§5.4): .prompt asks the Quickshell prompt to open (seq counts every open/close,
+    // rewritten each heartbeat while open), .search answers it, .fill asks Lua to resize (M4).
+    unsigned long long promptSeq=0, searchSeq=0, fillSeq=0;
+    bool promptOpen=false, takeover=true;
+    std::string promptOutput;
+    timespec searchStamp{};
     // Canvas focus names a window address, canonicalised to Record::name(); monitor focus an OMXR- output.
     bool focusName(const std::string& name) const {
         if (canvasMode) return bool(::windows::parseAddress(name));
@@ -129,6 +135,20 @@ class LiveControls {
         if (!line || line->owner != session || line->seq <= cursorSeq || !stampFresh(line->stamp)) return;
         cursorSeq = line->seq; cursor = *line;
     }
+    // This session's prompt, answering the current .prompt request with a newer edit, fresh; canvas only.
+    // Lines overwritten between two polls are not lost keys: the key log keeps the keys this reader has
+    // not seen (editSeq beyond the last one read), oldest first.
+    void updateSearch() {
+        if (!canvasMode || !newer(path + ".search", searchStamp)) return;
+        auto line = ::windows::parseSearch(readAll(path + ".search"));
+        if (!line || line->owner != session || !promptSeq || line->promptSeq != promptSeq || line->editSeq <= searchSeq || !stampFresh(line->stamp)) return;
+        const auto unseen = line->editSeq - searchSeq;
+        if (line->keys.size() > unseen) line->keys.erase(line->keys.begin(), line->keys.end() - long(unseen));
+        searchSeq = line->editSeq; search = std::move(*line);
+    }
+    void writePrompt() {
+        writeFile(path + ".prompt", ::windows::promptLine(getpid(), promptSeq, promptOpen, promptOutput, bootSeconds()));
+    }
     // The adapter publishes the active window's rectangle on its monitor: v1 owner serial name x y w h stamp,
     // or v1 owner serial - stamp when the active window is not on an XR output.
     void updatePane() {
@@ -160,6 +180,7 @@ public:
     bool canvasMode = false;
     std::optional<::windows::List> windows;    // a new list this update, else nullopt
     std::optional<::windows::Cursor> cursor;   // a new cursor line this update, else nullopt
+    std::optional<::windows::Search> search;   // a new prompt line this update, else nullopt
     // The mode is announced with the next heartbeat.
     void setCanvasMode(bool m) { canvasMode = m; heartbeat = 0; }
     explicit LiveControls(const std::string& pose) : path(pose.empty() ? "" : pose + ".controls"), session(std::to_string(getpid())) {
@@ -176,6 +197,7 @@ public:
             unlink((base + ".hover").c_str()); unlink((base + ".pointer").c_str());
             unlink((base + ".focus").c_str());unlink((base + ".notification").c_str());
             unlink((base + ".mode").c_str()); unlink((base + ".windows").c_str()); unlink((base + ".cursor").c_str());
+            unlink((base + ".prompt").c_str()); unlink((base + ".fill").c_str()); unlink((base + ".search").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
@@ -203,28 +225,46 @@ public:
         writeFile(path+".notification","v1 "+session+" "+hextoken::encodeHex(identity)+" "+std::to_string(now)+"\n");
     }
     static std::string decodeTarget(const std::string& token) { return hextoken::decodeHex(token); }
+    // Opening or closing starts a new prompt sequence; the prompt's edit counter starts over with it.
+    void publishPrompt(bool open, const std::string& output) {
+        if (path.empty() || (open == promptOpen && output == promptOutput)) return;
+        promptOpen = open; promptOutput = output; ++promptSeq; searchSeq = 0;
+        writePrompt();
+    }
+    // Logical px of the canvas output for the staged window (Fill and its restore).
+    void publishFill(const std::string& address, unsigned w, unsigned h) {
+        const auto parsed = ::windows::parseAddress(address);
+        if (path.empty() || !parsed) return;
+        writeFile(path + ".fill", ::windows::fillLine(getpid(), ++fillSeq, *parsed, w, h, bootSeconds()));
+    }
+    // The optional takeover chords (canvas.tsv takeoverKeys), announced with the next heartbeat.
+    void setTakeover(bool on) { if (on != takeover) { takeover = on; heartbeat = 0; } }
     void update() {
-        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); if (path.empty()) return;
+        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
         updatePan();
         updatePane();
         updateFocus();
         updateWindows();
         updateCursor();
+        updateSearch();
         beat();
         updateControls();
     }
-    // Once per second: .active (owner + stamp) and .mode (v1 owner canvas|monitors takeover stamp; the
-    // SUPER+F takeover flag is fixed to 1 until the optional takeovers arrive).
+    // Once per second: .active (owner + stamp), .mode (v1 owner canvas|monitors takeover stamp; the flag
+    // switches the optional takeover chords, SUPER+F is always taken) and an open .prompt, so a late
+    // prompt still opens and a dead renderer's request goes stale.
     void beat() {
         const auto now = bootSeconds();
         if (now == heartbeat) return;
         writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');
-        writeFile(path + ".mode", "v1 " + session + " " + (canvasMode ? "canvas" : "monitors") + " 1 " + std::to_string(now) + "\n");
+        writeFile(path + ".mode", "v1 " + session + " " + (canvasMode ? "canvas" : "monitors") + (takeover ? " 1 " : " 0 ") + std::to_string(now) + "\n");
+        if (promptOpen) writePrompt();
         if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
         heartbeat = now;
     }
     // Modes 0..7 everywhere, 8..17 (canvas verbs, §5.5) in canvas mode only; modes >= 6 need v3 and a
-    // fresh stamp, and a target only for 6, 7 (notifications) and 14, 15 (direction tokens).
+    // fresh stamp, and a target only for 6, 7 (notifications) and 14, 15 (direction tokens). 11 and 12
+    // may carry the token "release" (the Alt-Tab release bind).
     void updateControls() {
         const auto filePath = existing("");
         if (filePath != controlsSeen) { controlsSeen = filePath; controlsStamp = {}; }

@@ -23,6 +23,8 @@ PLUGIN_FILES = (
     "studio/CurvatureAngles.js",
     "studio/AngleField.qml",
     "studio/ModeSelector.qml",
+    "studio/SearchPrompt.qml",
+    "studio/SearchPromptWindow.qml",
     "studio/atomic_file.py",
     "studio/backend.py",
     "studio/clock.py",

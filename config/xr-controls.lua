@@ -24,10 +24,13 @@ local function retireWorkspaceEvents()
     for _,subscription in ipairs(omarchy_xr_controls.workspace_events or {}) do subscription:remove() end
 end
 -- Canvas state that must survive a config reload: journaled origins, the staged address,
--- event subscriptions, the SUPER+F takeover and the mailbox sequence numbers.
+-- event subscriptions, the SUPER+F takeover, the canvas key set and the mailbox sequence numbers.
 local function canvasState()
     omarchy_xr_canvas = omarchy_xr_canvas or {origin={}, staged=nil, events={}, fill=nil, windowsSeq=0, cursorSeq=0}
-    return omarchy_xr_canvas
+    local saved=omarchy_xr_canvas
+    saved.keys,saved.takeovers,saved.takeover=saved.keys or {},saved.takeovers or {},saved.takeover or false
+    saved.fillSeq=saved.fillSeq or 0
+    return saved
 end
 local canvas = canvasState()
 local function retireCanvasEvents()
@@ -48,11 +51,53 @@ local function restoreFullscreen()
     hl.unbind("SUPER + F")
     hl.bind("SUPER + F", hl.dsp.window.fullscreen({mode="fullscreen"}), {description="Full screen"})
 end
+-- Canvas key set (§5.5), an explicit action->mode map. SUPER+CTRL+G and SUPER+ALT+P are free in Omarchy
+-- and always bound; the takeovers (canvas.tsv takeoverKeys) replace Omarchy's defaults from
+-- bindings/tiling.lua and rebind them on exit, like SUPER+F. The ALT release binds end the switcher.
+-- Arrange (13) and help (17) arrive as keys of the search prompt, which holds the keyboard in Overview.
+local CANVAS_KEYS={{chord="SUPER + CTRL + G",mode=CANVAS_MODES.search,desc="search window (canvas)"},
+    {chord="SUPER + ALT + P",mode=CANVAS_MODES.pin,desc="pin window (canvas)"}}
+local ON_TOP={desc="Reveal active window on top",dsp=function() return hl.dsp.window.bring_to_top() end}
+local TAKEOVER_KEYS={
+    {chord="SUPER + TAB",mode=CANVAS_MODES.overview,desc="overview (canvas)",
+        restore={{desc="Next workspace",dsp=function() return hl.dsp.focus({workspace="e+1"}) end}}},
+    {chord="ALT + TAB",mode=CANVAS_MODES.mru_next,desc="next window (canvas)",
+        restore={{desc="Focus on next window",dsp=function() return hl.dsp.window.cycle_next() end},ON_TOP}},
+    {chord="ALT + SHIFT + TAB",mode=CANVAS_MODES.mru_prev,desc="previous window (canvas)",
+        restore={{desc="Focus on previous window",dsp=function() return hl.dsp.window.cycle_next({next=false}) end},ON_TOP}},
+    {chord="ALT + ALT_L",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
+    {chord="ALT + ALT_R",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
+}
+local function directionKeys(key,token,direction,focus,swap)
+    TAKEOVER_KEYS[#TAKEOVER_KEYS+1]={chord="SUPER + "..key,mode=CANVAS_MODES.neighbour,token=token,desc="neighbour "..token.." (canvas)",
+        restore={{desc=focus,dsp=function() return hl.dsp.focus({direction=direction}) end}}}
+    TAKEOVER_KEYS[#TAKEOVER_KEYS+1]={chord="SUPER + SHIFT + "..key,mode=CANVAS_MODES.nudge,token=token,desc="nudge "..token.." (canvas)",
+        restore={{desc=swap,dsp=function() return hl.dsp.window.swap({direction=direction}) end}}}
+end
+directionKeys("LEFT","left","l","Focus on left window","Swap window to the left")
+directionKeys("RIGHT","right","r","Focus on right window","Swap window to the right")
+directionKeys("UP","up","u","Focus on above window","Swap window up")
+directionKeys("DOWN","down","d","Focus on below window","Swap window down")
+-- Our binds go; a taken-over chord gets every Omarchy default back (ALT+TAB has two).
+local function retireKeys(list)
+    for _,key in ipairs(list or {}) do
+        local binding=key.binding
+        pcall(function() binding:remove() end)
+        if key.restore then
+            hl.unbind(key.chord)
+            for _,original in ipairs(key.restore) do hl.bind(key.chord,original.dsp(),{description=original.desc}) end
+        end
+    end
+    return {}
+end
+local function retireTakeovers() canvas.takeovers=retireKeys(canvas.takeovers);canvas.takeover=false end
+local function retireCanvasKeys() canvas.keys=retireKeys(canvas.keys);retireTakeovers() end
 retireHoverTimer()
 retireWorkspaceEvents()
 local function retireCanvas()
     retireCanvasEvents()
     if canvas.fill then restoreFullscreen() end
+    retireCanvasKeys()
 end
 retireCanvas()
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
@@ -511,10 +556,34 @@ local function flushFocus()
     writeFocus(focusPending)
     focusPending=nil
 end
+-- The renderer owns the Fill size and the restore rule; Lua only resizes the staged window, and the
+-- cursor confinement follows the new size.
+local function applyFill(mon,address,width,height)
+    local maxW,maxH=logicalSize(mon)
+    width,height=math.max(1,math.min(width,math.floor(maxW))),math.max(1,math.min(height,math.floor(maxH)))
+    windowDispatch("resize",address,{x=width,y=height})
+    local rect=snapshot[address] or {x=mon.x,y=mon.y}
+    rect.w,rect.h=width,height;snapshot[address]=rect
+    windowsDirty=true
+end
+-- `.fill`: v1 <owner> <seq> <address> <w> <h> <stamp>; each sequence number once per renderer.
+local function readFill(mon)
+    local file=io.open(path..".fill","r")
+    if not file then return end
+    local line=file:read("*l") or "";file:close()
+    local owner,seqText,address,width,height,stamp=line:match("^v1 (%d+) (%d+) (0x%x+) (%d+) (%d+) (%d+)%s*$")
+    if owner~=session then return end
+    if canvas.fillOwner~=owner then canvas.fillOwner,canvas.fillSeq=owner,0 end
+    local fillSeq=tonumber(seqText)
+    if fillSeq<=canvas.fillSeq then return end
+    canvas.fillSeq=fillSeq;address=address:lower()
+    if fresh(tonumber(stamp)) and address==canvas.staged then applyFill(mon,address,tonumber(width),tonumber(height)) end
+end
 local function canvasTick()
     local mon=canvasMonitor()
     if not mon then return end
     local now=bootSeconds()
+    readFill(mon)
     if windowsDirty and now-lastWindowsWrite>=.1 then publishWindows(now,mon) end
     publishCursor(mon,now)
     flushFocus()
@@ -652,14 +721,32 @@ end
 local CANVAS_EVENTS={["window.open"]=onOpen, ["window.close"]=onClose, ["window.destroy"]=onClose,
     ["window.title"]=markWindowsDirty, ["window.class"]=markWindowsDirty, ["window.active"]=onActive,
     ["window.fullscreen"]=onFullscreen, ["window.move_to_workspace"]=onMove, ["window.urgent"]=markWindowsDirty}
+-- Canvas mode and the optional takeover flag from the renderer's heartbeat.
 local function readMode()
     local file=io.open(path..".mode","r")
-    if not file then return false end
+    if not file then return false,false end
     local line=file:read("*l") or "";file:close()
-    local owner,mode,_,stamp=line:match("^v1 (%d+) (%a+) ([01]) (%d+)")
-    return owner==session and mode=="canvas" and fresh(tonumber(stamp))
+    local owner,mode,takeover,stamp=line:match("^v1 (%d+) (%a+) ([01]) (%d+)")
+    return owner==session and mode=="canvas" and fresh(tonumber(stamp)),takeover=="1"
 end
--- adoptPolicy is the last field of the `# canvas v1 ...` header Studio writes; `exclude` rows follow.
+local function bindCanvasKey(entry)
+    if entry.restore then hl.unbind(entry.chord) end
+    local mode,token=entry.mode,entry.token and hexToken(entry.token) or nil
+    local binding=hl.bind(entry.chord,function() publish(0,mode,token) end,{description="XR: "..entry.desc,release=entry.release})
+    return {chord=entry.chord,restore=entry.restore,binding=binding}
+end
+local function installTakeovers(takeover)
+    retireTakeovers()
+    canvas.takeover=takeover
+    if not takeover then return end
+    for _,entry in ipairs(TAKEOVER_KEYS) do canvas.takeovers[#canvas.takeovers+1]=bindCanvasKey(entry) end
+end
+local function installCanvasKeys(takeover)
+    canvas.keys=retireKeys(canvas.keys)
+    for _,entry in ipairs(CANVAS_KEYS) do canvas.keys[#canvas.keys+1]=bindCanvasKey(entry) end
+    installTakeovers(takeover)
+end
+-- adoptPolicy is field 8 of the `# canvas v1 ...` header Studio writes (field 9 is takeoverKeys); `exclude` rows follow.
 local function readCanvasSettings()
     canvasPolicy,canvasExcludes="all",{}
     local file=io.open(state.."/omarchy-xr/canvas.tsv","r")
@@ -669,11 +756,12 @@ local function readCanvasSettings()
     canvasPolicy=policy=="empty" and "empty" or "all"
     for token in text:gmatch("\nexclude%s+(%S+)") do canvasExcludes[token]=true end
 end
-local function enterCanvas()
+local function enterCanvas(takeover)
     canvasMode=true
     retireFill()
     hl.unbind("SUPER + F")
     canvas.fill=hl.bind("SUPER + F",function() publish(0,CANVAS_MODES.fill) end,{description="XR: fill window (canvas)"})
+    installCanvasKeys(takeover)
     retireCanvasEvents()
     for name,callback in pairs(CANVAS_EVENTS) do canvas.events[#canvas.events+1]=hl.on(name,callback) end
     windowsDirty=true;lastWindowsWrite=-math.huge;readCanvasSettings()
@@ -682,15 +770,21 @@ end
 local function leaveCanvas()
     canvasMode=false
     restoreFullscreen()
+    retireCanvasKeys()
     retireCanvasEvents()
     for address in pairs(canvas.origin) do undecorate(address) end
     canvas.staged=nil;canvas.origin={};snapshot={}
     overflowX,overflowY,cursorLine=0,0,nil
     focusAddress=nil;focusPending=nil
 end
+local function switchCanvas()
+    local wanted,takeover=false,false
+    if active then wanted,takeover=readMode() end
+    if wanted and not canvasMode then enterCanvas(takeover) elseif canvasMode and not wanted then leaveCanvas() end
+    if canvasMode and takeover~=canvas.takeover then installTakeovers(takeover) end
+end
 updateCanvas=function()
-    local wanted=active and readMode()
-    if wanted and not canvasMode then enterCanvas() elseif canvasMode and not wanted then leaveCanvas() end
+    switchCanvas()
     if not canvasMode then return end
     local now=bootSeconds()
     local mon=now-lastWindowsWrite>=1 and canvasMonitor()
