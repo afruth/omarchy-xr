@@ -31,6 +31,9 @@ REFRESH = int(os.environ.get("SPIKE_REFRESH", "60"))
 CLASS = "omarchy-xr-spike-client"
 PULL = set()  # addresses (without 0x) captured with ignore_damage=1
 STATE = pathlib.Path(os.environ.get("SPIKE_STATE", "/tmp/omarchy-xr-spike"))
+# Reused by tests/live_canvas.py (the M2 harness); keep these names and their behaviour stable.
+__all__ = ["CLASS", "OUTPUT", "OUT_X", "OUT_W", "OUT_H", "PROFILES", "STATE", "activate_canvas", "clients", "cpu_ticks",
+           "hyprctl", "hyprland_pid", "lua", "monitors", "place", "setup", "spawn", "teardown"]
 
 
 def hyprctl(*args):
@@ -99,8 +102,25 @@ def place(window, tier, index=0):
         tier = "pile"
     x = OUT_X if tier == "stage" else OUT_X + OUT_W - SLIVER
     y = 0 if tier == "stage" else min(OUT_H - 64, index * 24)
+    if tier == "stage":
+        info = next((c for c in clients() if c["address"] == addr), None)
+        if staged(info, (w, h), (x, y)):
+            return
+        ensure_on_canvas(info)
     lua(f'hl.dispatch(hl.dsp.window.resize({{window="address:{addr}", x={w}, y={h}}})) '
         f'hl.dispatch(hl.dsp.window.move({{window="address:{addr}", x={x}, y={y}}}))')
+
+
+def staged(info, size, at):
+    """True when the client already sits on the canvas workspace at the stage rect (place() is idempotent)."""
+    return bool(info) and info["workspace"]["name"] == "spikecanvas" and tuple(info["size"]) == size and tuple(info["at"]) == at
+
+
+def ensure_on_canvas(info):
+    """Move the client to the canvas workspace without following it."""
+    if info and info["workspace"]["name"] != "spikecanvas":
+        addr = info["address"]
+        lua(f'hl.dispatch(hl.dsp.window.move({{window="address:{addr}", workspace="name:spikecanvas", follow=false}}))')
 
 
 def cpu_ticks(pid):

@@ -114,6 +114,93 @@ void liveSettings(const std::string& temp, const std::string& pose) {
     try { v.readLiveSettings(fps,ws,sp); } catch (const std::runtime_error&) { threw=true; }
     assert(threw);
 }
+windows::Record canvasRecord(std::uint64_t address, unsigned w, unsigned h, int focus, windows::Place place=windows::Place::Park) {
+    windows::Record r; r.address=address; r.cls="foot"; r.title="w"+std::to_string(address); r.w=w; r.h=h; r.focusHistoryID=focus; r.place=place; r.pid=int(address);
+    return r;
+}
+// Overview labels: one raster per address and title, a bounded atlas, constant angular height at any zoom.
+void canvasLabels(View& v) {
+    canvas::Labels labels;
+    const GLuint first=labels.texture("0xa1\tone","foot","one",48);
+    assert(first && labels.texture("0xa1\tone","foot","one",48)==first && labels.atlas.size()==1);
+    const GLuint retitled=labels.texture("0xa1\ttwo","foot","two",48);
+    assert(retitled && retitled!=first && labels.atlas.size()==2);
+    for (int i=0;i<600;++i) labels.texture("0x"+std::to_string(i)+"\tt","c","t",16);
+    labels.trim(512);assert(labels.atlas.size()==512 && !labels.atlas.contains("0xa1\tone"));
+    labels.release();assert(labels.atlas.empty());
+    auto& s=*v.canvas;s.state=canvas::Scene::State::Overview;
+    std::vector<float> heights;
+    for (const float zoom:{.2f,1.f}) {
+        s.camera.zoom=s.camera.targetZoom=zoom;s.refresh(3);s.cull(0,180);
+        for (auto& w:s.windows) w.visible=true;
+        const auto quads=s.labelQuads();
+        assert(quads.size()==s.windows.size());
+        for (const auto& q:quads) {
+            const auto* l=v.findLayout(q.layout.output);
+            assert(q.texture && std::abs(q.layout.y+q.layout.height+8-l->y)<1e-2f && q.layout.width<=l->width+1e-3f && q.u>0 && q.u<=1);
+            heights.push_back(s.ring.heading(q.layout.height));
+        }
+    }
+    for (const float h:heights) assert(std::abs(h-s.settings.labelDeg/.6f)<1e-4f);
+    s.state=canvas::Scene::State::Work;s.camera.zoom=s.camera.targetZoom=.2f;s.refresh(3);
+    assert(s.labelQuads().empty());   // Work: windows under 6° get no label
+    s.releaseGpu();assert(s.labels.atlas.empty());
+}
+// Lease loss (ensureLease): textures, slots, labels and the hub go with the context; regenerate gives every
+// window a fresh texture and reopens sources on the next tick, a closed window keeps its status.
+void canvasLease(View& v) {
+    auto& s=*v.canvas;
+    for (auto& w:s.windows) if (!w.texture) w.texture=gltex::create();
+    s.windows[2].closed=true;s.windows[2].captureStatus="closed";
+    s.releaseGpu();s.releaseGpu();
+    for (const auto& w:s.windows) assert(!w.texture && !w.frame.texture && !w.source && !w.cpuWidth);
+    assert(!s.hub && s.labels.atlas.empty());
+    s.hubRetryAt=9;s.hubRetryMs=4000;
+    s.regenerate(5);
+    for (const auto& w:s.windows) assert(w.texture && glIsTexture(w.texture) && w.retryAt==5 && w.retryMs==500);
+    assert(s.windows[0].captureStatus=="reconnecting after lease" && s.windows[2].captureStatus=="closed");
+    assert(s.hubRetryAt==0 && s.hubRetryMs==500);
+    s.recoverHub(5);s.openSources(5);s.tick(5,0);
+    assert(s.projected.size()==s.windows.size() && v.monitorMathCalls==0);
+    std::vector<SurfaceView> seen;
+    v.forEachSurface([&](const SurfaceView& view){ seen.push_back(view); });
+    assert(seen.size()==s.windows.size());
+    for (size_t i=0;i<seen.size();++i) assert(seen[i].status==&s.windows[i].captureStatus && seen[i].texture==s.windows[i].texture);
+    s.releaseGpu();
+}
+// Canvas mode through the same seam: projected window geometry on the ring cylinder, no monitor math.
+void canvasSeam(SDL_Window* window, const std::string& pose) {
+    std::vector<Panel> none;const std::string empty;
+    View v(none,false,spatial::Workspace{40},30,empty,pose,false,true,64,28,empty,60,false);
+    v.window=window;v.mode=View::SceneMode::Canvas;
+    v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{},canvas::Settings{},"",true);
+    windows::List list;
+    list.records={canvasRecord(0xa1,1920,1080,1),canvasRecord(0xb2,1280,720,0,windows::Place::Stage),canvasRecord(0xc3,800,600,2)};
+    v.canvas->setFov(v.canvasFov());
+    assert(v.canvas->adopt(list,1));v.canvas->tick(1,0);
+    const float R=v.canvas->ring.radius;
+    assert(&v.sceneGeometry()==&v.canvas->geometry() && v.sceneGeometry().size()==3);
+    const auto c=v.sceneCylinder();
+    assert(c.distance==R && c.cx==0 && c.cy==0 && c.workspace.degrees==360 && c.workspace.follow);
+    for (const auto& l:v.sceneGeometry()) { const auto p=c.pose(l); assert(std::abs(std::hypot(p.center.x,p.center.z)-R)<1e-3f); }
+    std::vector<SurfaceView> seen;
+    v.forEachSurface([&](const SurfaceView& s){ seen.push_back(s); });
+    assert(seen.size()==3);
+    for (size_t i=0;i<seen.size();++i) assert(seen[i].layout==&v.sceneGeometry()[i] && seen[i].status==&v.canvas->windows[i].captureStatus);
+    assert(v.findLayout("0xb2")==&v.sceneGeometry()[1] && v.canvas->staged()==&v.canvas->windows[1] && !v.findLayout("0xdead"));
+    v.controls.emplace(pose);v.environment=std::make_unique<SkyEnvironment>("");
+    v.writeStats(1,0,0,false,0,0,0,0);
+    AsyncFile::instance().flush();
+    std::ifstream file(pose+".stats");const std::string stats((std::istreambuf_iterator<char>(file)),{});
+    assert(stats.find("\"mode\":\"canvas\"")!=std::string::npos && stats.find("\"canvasWindows\":3")!=std::string::npos);
+    assert(stats.find("\"output\":\"0xb2\"")!=std::string::npos && stats.find("\"tiers\":{")!=std::string::npos);
+    assert(v.monitorMathCalls==0 && v.canvas->occluders().size()<=3);
+    for (unsigned i=0;i<40;++i) list.records.push_back(canvasRecord(0x100+i,640,480,int(i)+3));
+    v.canvas->adopt(list,2);v.canvas->tick(2,0);v.canvas->cull(0,180);
+    assert(v.canvas->candidates.size()==43 && v.canvas->occluders().size()==24 && v.monitorMathCalls==0);
+    canvasLabels(v);
+    canvasLease(v);
+}
 int main() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     auto* window=SDL_CreateWindow("Scene seam",0,0,1280,720,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);assert(window);
@@ -131,7 +218,8 @@ int main() {
     navigateEquivalence(window,std::string(temp)+"/pose.sock");
     zeroPanels(window,std::string(temp)+"/pose.sock");
     liveSettings(temp,std::string(temp)+"/pose.sock");
+    canvasSeam(window,std::string(temp)+"/pose.sock");
     AsyncFile::instance().flush();std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::cout<<"Scene seam: geometry, cylinder poses, layout lookup, surface views, stats mode, shared device, navigate routing, zero panels and live settings passed\n";
+    std::cout<<"Scene seam: geometry, cylinder poses, layout lookup, surface views, stats mode, shared device, navigate routing, zero panels, live settings, the canvas seam, canvas labels and canvas lease regeneration passed\n";
 }

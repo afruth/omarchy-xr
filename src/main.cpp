@@ -22,6 +22,7 @@
 #include "dwell.hpp"
 #include "theme.hpp"
 #include "notification_hud.hpp"
+#include "canvas_scene.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -207,18 +208,29 @@ struct View {
     unsigned pointerSerial=0;
     float pointerX=0, pointerY=0;
     std::string dwellOutput;
+    // Window canvas mode (--canvas): the scene, its window list file and the hot-reload state.
+    std::unique_ptr<canvas::Scene> canvas;
+    std::string windowsPath;
+    std::filesystem::file_time_type windowsVersion{}, canvasVersion{};
+    Uint64 nextWindowsCheck=0;
+    double nextCanvasCheck=0;
+    unsigned long long windowsSeq=0;
+    bool windowsRejected=false, canvasRejected=false;
+    bool mousePanning=false;
+    // Monitor-only math (safe distance, overview depth, bounds); canvas mode must never run it.
+    mutable unsigned monitorMathCalls=0;
     View(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace, float spacing, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& layoutPath, int fps, bool spectatorEnabled)
         : panels(panels), smoke(smoke), workspace(workspace), spacing(spacing), display(display), posePath(posePath), direct(direct), stereo(stereo), ipd(ipd), fov(fov), layoutPath(layoutPath), fps(fps), spectatorEnabled(spectatorEnabled), tracking(posePath) {}
     void drawable(int& w, int& h) const { if (output) { w=output->width(); h=output->height(); } else SDL_GL_GetDrawableSize(window, &w, &h); }
     float span() const { return (right-left)/900.f; }
-    float safe(float d) const { return spatial::safeDistance(geometry, cx, cy, span(), d, workspace, spacing); }
+    float safe(float d) const { ++monitorMathCalls; return spatial::safeDistance(geometry, cx, cy, span(), d, workspace, spacing); }
     tracking::Quaternion baseView() const { return targeting::viewRotation(tracking.camera.view, pitch, yaw); }
     tracking::Quaternion currentView() const { return tracking::multiply(baseView(), navigationRotation); }
     float aspect() const { int w,h; drawable(w,h); return float(std::max(w/(stereo?2:1),1))/std::max(h,1); }
-    float overviewDepth() const { return navigation::overviewDepth(geometry, cx, cy, span(), distance, workspace, fov, aspect()); }
-    float maxZoomDepth() const { return overviewDepth()*2.f; }
-    Cylinder sceneCylinder() const { return {cx, cy, span(), distance, workspace}; }
-    const std::vector<PanelLayout>& sceneGeometry() const { return geometry; }
+    float overviewDepth() const { ++monitorMathCalls; return navigation::overviewDepth(geometry, cx, cy, span(), distance, workspace, fov, aspect()); }
+    float maxZoomDepth() const { ++monitorMathCalls; return overviewDepth()*2.f; }
+    Cylinder sceneCylinder() const { return canvas ? canvas->cylinder() : Cylinder{cx, cy, span(), distance, workspace}; }
+    const std::vector<PanelLayout>& sceneGeometry() const { return canvas ? canvas->geometry() : geometry; }
     const PanelLayout* findLayout(const std::string& name) const {
         const auto& g=sceneGeometry();
         const auto found=std::find_if(g.begin(), g.end(), [&](const auto& p){ return p.output==name; });
@@ -227,15 +239,10 @@ struct View {
     spatial::Pose monitorPose(const PanelLayout& p) const { return sceneCylinder().pose(p); }
     // Every drawable surface in the current scene mode, in draw order.
     template<class F> void forEachSurface(F&& f) const {
+        if (canvas) { canvas->forEachSurface(f); return; }
         for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}});
     }
-    void bindTexture(GLuint texture) const {
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
+    void bindTexture(GLuint texture) const { gltex::bind(texture); }
     bool openWindow() {
         if (SDL_Init(direct ? SDL_INIT_EVENTS : SDL_INIT_VIDEO) != 0) { std::cerr << SDL_GetError() << '\n'; return false; }
         if (direct) return true;
@@ -280,15 +287,21 @@ struct View {
         const bool fresh=posePath.empty() || tracking.camera.fresh(monotonicSeconds());
         const auto view=currentView();
         const auto c=sceneCylinder();
-        gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace) : std::nullopt, fresh);
+        gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, canvas ? &canvas->candidates : nullptr) : std::nullopt, fresh);
         selection.validate(sceneGeometry());
         // A glance never selects: the look point has to rest on one area with the head settled.
-        const double now=monotonicSeconds();
-        // Scrolling, zooming, fitting and the camera's own easing all pause selection: the look
-        // point sweeps the scene then, and nothing rests.
+        dwellOn(gaze.current, monotonicSeconds());
+    }
+    // Scrolling, zooming, fitting and the camera's own easing all pause selection: the look
+    // point sweeps the scene then, and nothing rests.
+    void dwellOn(const std::optional<targeting::Hit>& hit, double now) {
         const bool interacting=panGestureActive || now<interactionUntil || cameraMoving();
-        const auto settled=dwell.update(interacting ? std::nullopt : gaze.current, tracking.camera.headSpeed(), now);
-        if (settled && !panGestureActive && now>=recenterUntil) {
+        const auto settled=dwell.update(interacting ? std::nullopt : hit, tracking.camera.headSpeed(), now);
+        if (settled && canvas && !panGestureActive && now>=recenterUntil) {
+            // Canvas: a dwell only selects (halo) and records the landing candidate; it never moves anything.
+            selection.output=settled->output; canvas->noteDwell(settled->output, now);
+            std::cout << "Gaze: settled on " << settled->output << std::endl;
+        } else if (settled && !panGestureActive && now>=recenterUntil) {
             const auto previous=selection.output;
             selection.observe(gaze.current);
             if (selection.output!=previous) selectionAnchor=baseView();
@@ -300,7 +313,7 @@ struct View {
         const auto& a=navigationRotation; const auto& b=targetRotation;
         const double dot=std::abs(a.w*b.w+a.x*b.x+a.y*b.y+a.z*b.z);
         return std::abs(targetPanX-panX)>.005f || std::abs(targetPanY-panY)>.005f || std::abs(targetPanZ-panZ)>.005f
-            || std::abs(std::log(distance/targetDistance))>1e-3f || dot<.99995;
+            || std::abs(std::log(distance/targetDistance))>1e-3f || dot<.99995 || (canvas && canvas->camera.moving());
     }
     bool focusSelected(bool fitHeight, float zoom) {
         recenterUntil=0; panCamera=false;
@@ -457,6 +470,7 @@ struct View {
     struct Move { Verb verb; float x=0, y=0; bool begin=false; std::string output={}; };
     // Every external navigation entry point goes through here; canvas mode branches per verb in M2.
     void navigate(const Move& m) {
+        if (canvas) { navigateCanvas(m); return; }
         switch (m.verb) {
         case Verb::Fit: fit(); tracking.camera.recenter(monotonicSeconds()); break;
         case Verb::FitTarget: fitTarget(); break;
@@ -467,6 +481,64 @@ struct View {
         case Verb::FlickOut: flickOut(); break;
         case Verb::Pan: panSelected(m.x, m.y, m.begin); break;
         }
+    }
+    // Canvas mode (§4.2 input table): every verb goes to the scene; none falls through to monitor math.
+    void navigateCanvas(const Move& m) {
+        const double now=monotonicSeconds();
+        const auto anchor=baseView();
+        switch (m.verb) {
+        case Verb::Fit: explicitMove(now); applyAim(canvas->toggleOverview(anchor, now)); break;
+        case Verb::FitTarget: canvasFitTarget(now); break;
+        case Verb::FitOutput: if (windows::parseAddress(m.output)) canvasFollow(m.output, now); break;
+        case Verb::Recenter: canvasRecenter(); break;
+        case Verb::ZoomBy: interactionUntil=now+.4; applyAim(canvas->zoomBy(m.x, gazePoint(), anchor, now)); break;
+        case Verb::FlickIn: explicitMove(now); applyAim(canvas->flickIn(anchor, now)); break;
+        case Verb::FlickOut: explicitMove(now); applyAim(canvas->flickOut(anchor)); break;
+        case Verb::Pan: recenterUntil=0; applyAim(canvas->pan(m.x, m.y, m.begin, anchor)); break;
+        }
+        level=canvas->state==canvas::Scene::State::Overview ? Level::Overview : Level::Monitor;
+        levelOutput=canvas->state==canvas::Scene::State::Overview ? std::string() : canvas->landed;
+    }
+    static float headingDeg(const tracking::Quaternion& view) {
+        const auto f=targeting::rotate(tracking::conjugate(view), {0, 0, -1});
+        return std::atan2(f.x, -f.z)*180/pi;
+    }
+    canvas::Fov canvasFov() const { return {fov, aspect()}; }
+    // The eye eases to the scene's aim like every monitor-mode aim; no aim leaves the view where it is.
+    void applyAim(const canvas::Scene::Aim& aim) {
+        if (!aim) return;
+        targetRotation=aim->rotation; targetPanX=aim->pan.x; targetPanY=aim->pan.y; targetPanZ=aim->pan.z;
+        targetDistance=distance; panCamera=false; zoomGaze.reset(); focusFromGaze=false;
+    }
+    void explicitMove(double now) { interactionUntil=now+.4; recenterUntil=0; }
+    // The look point in projected canvas px, for the zoom anchor.
+    std::optional<std::pair<float,float>> gazePoint() const {
+        const auto* l=gaze.current ? findLayout(gaze.current->output) : nullptr;
+        if (!l) return std::nullopt;
+        return std::pair{l->x+gaze.current->pixelX, l->y+gaze.current->pixelY};
+    }
+    // An explicit command lands on what is looked at now, else on the selection; it does not wait for a dwell.
+    void canvasFitTarget(double now) {
+        const std::string name=gaze.current ? gaze.current->output : selection.output;
+        if (name.empty()) { std::cout << "Canvas: nothing gazed; fit ignored" << std::endl; return; }
+        explicitMove(now); selection.output=name;
+        applyAim(canvas->land(name, baseView()));
+        std::cout << "Canvas: land on " << name << std::endl;
+    }
+    // Hyprland focus follows only when the window is mostly out of view; an explicit verb within 0.4 s wins.
+    void canvasFollow(const std::string& name, double now) {
+        if (now<interactionUntil) { std::cout << "Canvas: focus " << name << " not followed during an explicit move" << std::endl; return; }
+        const auto aim=canvas->follow(name, baseView());
+        if (aim) std::cout << "Canvas: follow focus to " << name << std::endl;
+        applyAim(aim);
+    }
+    void canvasRecenter() {
+        const auto previousView=currentView();
+        recenterUntil=monotonicSeconds()+.5;
+        tracking.camera.recenter(monotonicSeconds()); yaw=pitch=0;
+        navigationRotation=navigation::preserveView(previousView, baseView());
+        applyAim(canvas->recenter());
+        std::cout << "Camera: canvas recenter" << std::endl;
     }
     bool fitPane() {
         if (!controls->paneValid || controls->paneOutput!=selection.output) { std::cout << "Camera: no active window known on " << selection.output << "; pane fit ignored" << std::endl; return false; }
@@ -504,6 +576,7 @@ struct View {
                     if (p.texture) glDeleteTextures(1, &p.texture);
                     p.texture=0; p.frame.texture=0; p.cpuWidth=p.cpuHeight=0; p.capture.reset();
                 }
+                if (canvas) canvas->releaseGpu();
                 spectator.reset();
                 environment->release();
                 if(notificationHud) notificationHud->release();
@@ -515,6 +588,7 @@ struct View {
                     p.retryAt=monotonicSeconds(); p.retryMs=500; p.captureStatus="reconnecting after lease";
                     glGenTextures(1, &p.texture); bindTexture(p.texture);
                 }
+                if (canvas) canvas->regenerate(monotonicSeconds());
                 gpuTimers.probe();
                 seenMisses=output->missedVblanks();
                 missedBaseline=seenMisses;
@@ -526,9 +600,13 @@ struct View {
         }
         result=3; return false;
     }
-    void serviceCaptures() { for (auto& p:panels) if (p.capture && !p.failed) p.capture->service(); }
+    void serviceCaptures() {
+        for (auto& p:panels) if (p.capture && !p.failed) p.capture->service();
+        if (canvas) canvas->pump();
+    }
     void reconnectCaptures() {
         const double now=monotonicSeconds();
+        if (canvas) { canvas->recoverHub(now); canvas->openSources(now); return; }
         for (auto& p:panels) {
             if (p.capture || p.retryAt<=0 || now<p.retryAt) continue;
             auto next=std::make_unique<DesktopCapture>();
@@ -538,6 +616,7 @@ struct View {
         }
     }
     void updateCaptures() {
+        if (canvas) { updateWindowCaptures(); return; }
         for (auto& p:panels) {
             if (!p.capture || p.failed) continue;
             if (p.capture->update(p.frame)) upload(p);
@@ -548,13 +627,17 @@ struct View {
         if (p.frame.width>unsigned(maxTexture) || p.frame.height>unsigned(maxTexture)) {
             std::cerr << p.layout.output << ": exceeds GPU texture size\n"; p.failed=true; result=1; return;
         }
+        copyFrame(p);
+    }
+    // Shared by monitor panels and canvas windows.
+    template<class S> void copyFrame(S& p) {
         p.sourceWidth=p.frame.sourceWidth; p.sourceHeight=p.frame.sourceHeight;
         glBindTexture(GL_TEXTURE_2D, p.texture);
         if (!p.frame.texture) uploadCpu(p);
         p.width=p.frame.width; p.height=p.frame.height;
         ++p.frames;
     }
-    void uploadCpu(Panel& p) {
+    template<class S> void uploadCpu(S& p) {
         if (p.cpuWidth!=p.frame.width || p.cpuHeight!=p.frame.height) {
             p.width=p.frame.width; p.height=p.frame.height; p.cpuWidth=p.width; p.cpuHeight=p.height;
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, p.width, p.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, p.frame.rgba.data());
@@ -566,6 +649,32 @@ struct View {
         p.capture.reset();
         p.retryAt=monotonicSeconds()+p.retryMs/1000.0;
         p.retryMs=DesktopCapture::nextRetryMs(p.retryMs);
+    }
+    // Hub dispatch once per tick, then every window; a closed window stays closed, no backoff.
+    void updateWindowCaptures() {
+        canvas->pump();
+        for (auto& w:canvas->windows) {
+            if (!w.source) continue;
+            if (w.source->update(w.frame)) uploadWindow(w);
+            if (!w.source) continue;
+            if (!w.source->alive()) { std::cout << w.name << ": window closed" << std::endl; w.captureStatus="closed"; w.closed=true; canvas::Scene::dropSource(w); }
+            else if (!w.source->error().empty()) dropWindow(w);
+        }
+        // Windowed, the swap blocks a whole frame without dispatch: let new requests reach their copy now.
+        if (!output) canvas->settle(.002);
+    }
+    void uploadWindow(canvas::CanvasWindow& w) {
+        if (w.frame.width>unsigned(maxTexture) || w.frame.height>unsigned(maxTexture)) {
+            std::cerr << w.name << ": exceeds GPU texture size\n"; w.captureStatus="exceeds GPU texture size"; w.closed=true; canvas::Scene::dropSource(w); return;
+        }
+        copyFrame(w);
+        ++w.reportFrames; w.lastFrame=monotonicSeconds();
+        canvas->sizeFromBuffer(w);
+    }
+    void dropWindow(canvas::CanvasWindow& w) {
+        std::cerr << w.name << ": " << w.source->error() << " (retrying)\n";
+        w.captureStatus=w.source->error(); canvas::Scene::dropSource(w);
+        w.retryAt=monotonicSeconds()+w.retryMs/1000.0; w.retryMs=FrameSource::nextRetryMs(w.retryMs);
     }
     void describePrediction(const char* source) const {
         const auto& p=tracking.camera.prediction;
@@ -638,6 +747,7 @@ struct View {
         return false;
     }
     void reloadLayout() {
+        if (canvas) { reloadCanvas(); return; }
         if (layoutPath.empty() || SDL_GetTicks64()<nextLayoutCheck) return;
         nextLayoutCheck=SDL_GetTicks64()+100;
         try {
@@ -647,6 +757,50 @@ struct View {
         } catch (const std::exception& e) {
             std::cerr << "Live layout update deferred: " << e.what() << std::endl;
             nextLayoutCheck=SDL_GetTicks64()+1000;
+        }
+    }
+    // Canvas mode polls the window list every 100 ms and canvas.tsv every 250 ms, both by mtime.
+    void reloadCanvas() {
+        if (!windowsPath.empty() && SDL_GetTicks64()>=nextWindowsCheck) { nextWindowsCheck=SDL_GetTicks64()+100; pollWindows(); }
+        const double now=monotonicSeconds();
+        if (!layoutPath.empty() && now>=nextCanvasCheck) { nextCanvasCheck=now+.25; pollCanvasSettings(); }
+    }
+    // The .windows mailbox format; a rejected or older list is logged once and the last one stays.
+    bool pollWindows() {
+        std::error_code missing;
+        const auto version=std::filesystem::last_write_time(windowsPath, missing);
+        if (missing || version==windowsVersion) return false;
+        windowsVersion=version;
+        std::ifstream file(windowsPath); const std::string text((std::istreambuf_iterator<char>(file)), {});
+        const auto list=windows::parse(text);
+        if (!list || list->seq<windowsSeq) {
+            if (!windowsRejected) std::cerr << "Ignoring invalid window list " << windowsPath << "; keeping the last one (format: docs/infinite-canvas-plan.md 3.1)" << std::endl;
+            windowsRejected=true; return false;
+        }
+        windowsRejected=false; windowsSeq=list->seq;
+        const auto focused=canvas->focusedName;
+        const bool stagedChanged=canvas->adopt(*list, monotonicSeconds());
+        std::cout << "Canvas: " << canvas->live() << " windows, staged " << (canvas->stagedName.empty() ? "none" : canvas->stagedName) << std::endl;
+        // M2's stand-in for the .focus mailbox: a new focus_history_id 0 window.
+        if (!focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
+        return stagedChanged;
+    }
+    // A missing canvas.tsv keeps the current settings; an invalid one is logged once.
+    void pollCanvasSettings() {
+        std::error_code missing;
+        const auto version=std::filesystem::last_write_time(layoutPath, missing);
+        if (missing || version==canvasVersion) return;
+        canvasVersion=version;
+        try {
+            std::ifstream file(layoutPath);
+            if (canvas->applySettings(canvas::parseSettings(file), monotonicSeconds())) {
+                distance=targetDistance=canvas->ring.radius; applyAim(canvas->reaim(baseView()));
+                std::cout << "Canvas: ring radius " << canvas->ring.radius << ", gap " << canvas->settings.gapPx << " px" << std::endl;
+            }
+            canvasRejected=false;
+        } catch (const std::exception& e) {
+            if (!canvasRejected) std::cerr << "Ignoring invalid canvas.tsv: " << e.what() << std::endl;
+            canvasRejected=true;
         }
     }
     void applyLiveLayout(std::filesystem::file_time_type version) {
@@ -766,7 +920,15 @@ struct View {
     }
     void mouseMove(const SDL_MouseMotionEvent& motion) {
         if (motion.state&SDL_BUTTON_RMASK) { yaw+=motion.xrel*.15f; pitch=std::clamp(pitch+motion.yrel*.15f, -80.f, 80.f); }
+        if (canvas) { canvasMousePan(motion); return; }
         if (motion.state&SDL_BUTTON_MMASK) { panX+=motion.xrel*distance*.0015f; panY-=motion.yrel*distance*.0015f; targetPanX=panX; targetPanY=panY; }
+    }
+    // Middle-drag pans the canvas focus; the first motion of a drag begins the gesture.
+    void canvasMousePan(const SDL_MouseMotionEvent& motion) {
+        if (!(motion.state&SDL_BUTTON_MMASK)) { mousePanning=false; return; }
+        interactionUntil=monotonicSeconds()+.4;
+        navigate({Verb::Pan, float(motion.xrel), float(motion.yrel), !mousePanning});
+        mousePanning=true;
     }
     float easeCamera() {
         const double cameraTime=monotonicSeconds();
@@ -799,6 +961,7 @@ struct View {
         if (window) SDL_SetWindowTitle(window, state ? "Omarchy XR | Head tracking live | R: recenter | F: fit | Esc: exit" : "Omarchy XR | Tracking unavailable | Mouse look | R: recenter | Esc: exit");
     }
     void projectPanels(int viewportWidth, int viewportHeight, double cameraTime) {
+        if (canvas) { projectWindows(viewportWidth, viewportHeight, cameraTime); return; }
         const auto view=currentView();
         for (auto& p:panels) {
             const auto& l=p.layout;
@@ -808,6 +971,26 @@ struct View {
             const float scale=p.quality.update(plan.scale, cameraTime);
             if (p.capture) p.capture->setDemand(p.visible, std::max(1u, unsigned(std::ceil(l.width*scale))), std::max(1u, unsigned(std::ceil(l.height*scale))));
         }
+    }
+    // Only the culled candidates are projected; the governor then sets every window's rate and demand.
+    void projectWindows(int viewportWidth, int viewportHeight, double cameraTime) {
+        const auto view=currentView(); const auto c=sceneCylinder();
+        for (auto& w:canvas->windows) w.visible=false;
+        for (auto i:canvas->candidates) {
+            auto& w=canvas->windows[i]; const auto& l=canvas->projected[i];
+            const auto plan=adaptive::project(l, c.pose(l), view, {panX, panY, panZ}, std::max(1, viewportWidth/(stereo?2:1)), std::max(1, viewportHeight), fov, stereo?ipd/2000:0);
+            w.visible=!w.gone && (smoke || plan.visible);
+            const float scale=w.quality.update(plan.scale, cameraTime);
+            w.demandW=std::max(1u, unsigned(std::ceil(l.width*scale))); w.demandH=std::max(1u, unsigned(std::ceil(l.height*scale)));
+        }
+        canvas->schedule(canvas->state==canvas::Scene::State::Overview, monotonicSeconds());
+    }
+    // One canvas step per tick: FOV-derived metrics, camera easing, projection and the cull.
+    void stepCanvas(float cameraDt) {
+        canvas->setFov(canvasFov());
+        canvas->gazed=gaze.current ? gaze.current->output : std::string(); canvas->selected=selection.output;
+        canvas->tick(monotonicSeconds(), cameraDt);
+        canvas->cull(headingDeg(currentView()), canvasFov().horizontal()/2);
     }
     void renderScene(int width, int height, bool stereoView, bool flipped, int drawableW, int drawableH) {
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -835,7 +1018,11 @@ struct View {
         else ++skyCulled;
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
-        drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
+        if (canvas) {
+            canvas->cull(headingDeg(view), canvasFov().horizontal()/2);
+            drawSurfaces([&](const auto& visit){ canvas->forEachCandidate(visit); });
+            drawCanvasLabels();
+        } else drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
         if(stereoView && notificationHud) notificationHud->draw(lastCameraTime);
     }
     // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
@@ -845,11 +1032,33 @@ struct View {
         candidates([&](const SurfaceView& s){ if (s.visible) drawHalo(halo, accent.rgb, s, c); });
         candidates([&](const SurfaceView& s){ if (s.visible) drawPanel(s, c); });
     }
+    // Overview labels over everything on the ring, before the HUD: depth test off, premultiplied blend.
+    void drawCanvasLabels() {
+        const auto quads=canvas->labelQuads();
+        if (quads.empty()) return;
+        const auto c=sceneCylinder();
+        glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_TEXTURE_BIT|GL_CURRENT_BIT|GL_TRANSFORM_BIT);
+        glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE); glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_TEXTURE_2D);
+        glMatrixMode(GL_TEXTURE);
+        for (const auto& q:quads) {
+            // A label wider than its window shows its left part: scale u instead of squashing the text.
+            glLoadIdentity(); glScalef(q.u, 1, 1);
+            glBindTexture(GL_TEXTURE_2D, q.texture); glColor4f(q.alpha, q.alpha, q.alpha, q.alpha);
+            const float w=q.layout.width/900, h=q.layout.height/900;
+            surface(c.pose(q.layout), -w/2, -h/2, w, h, .01f);
+        }
+        glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
+        glPopAttrib();
+    }
     // One opaque panel filling this eye makes the full-screen sky draw pointless.
     bool skyHidden(float eyePosition, float tanV, float tanH) const {
         if (!environment->visible()) return false;
         const auto view=currentView();
         const auto c=sceneCylinder();
+        if (canvas) {
+            const auto* staged=canvas->staged(); const auto* l=staged ? findLayout(staged->name) : nullptr;
+            return l && staged->visible && occlusion::panelCoversEye(*l, c.pose(*l), view, {panX, panY, panZ}, eyePosition, tanH, tanV);
+        }
         for (const auto& p:panels) {
             if (!p.visible) continue;
             const auto& l=p.layout;
@@ -879,6 +1088,7 @@ struct View {
     // The selection rim comes in within about 120 ms; the camera easing would take half a second.
     void easeHalos(float cameraDt) {
         for (auto& p:panels) { const float target=selection.output==p.layout.output ? 1.f:0.f; p.halo+=(target-p.halo)*std::min(1.f, cameraDt/.12f); }
+        if (canvas) for (auto& w:canvas->windows) { const float target=selection.output==w.name ? 1.f:0.f; w.halo+=(target-w.halo)*std::min(1.f, cameraDt/.12f); }
     }
     bool draw(float cameraDt, int w, int h) {
         easeHalos(cameraDt);
@@ -928,7 +1138,7 @@ struct View {
         const double now=monotonicSeconds(); lastFrameMs=(now-frameStarted)*1000; frameTimes.push_back(lastFrameMs);
         if (output) { const unsigned missedNow=output->missedVblanks(); if (missedNow>seenMisses) { missPenalty.miss(now, missedNow-seenMisses); seenMisses=missedNow; } }
         if (now-reportTime>=5) report(now);
-        if (smoke && drawn>=10 && std::all_of(panels.begin(), panels.end(), [](const Panel& p){ return !p.capture || p.frames>=10; })) running=false;
+        if (smoke && drawn>=10 && (canvas ? canvas->smokeDone() : std::all_of(panels.begin(), panels.end(), [](const Panel& p){ return !p.capture || p.frames>=10; }))) running=false;
     }
     void report(double now) {
         std::sort(workTimes.begin(), workTimes.end()); std::sort(frameTimes.begin(), frameTimes.end());
@@ -941,6 +1151,7 @@ struct View {
         const unsigned missed=output?output->missedVblanks():0;
         printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
         writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
+        if (canvas) for (auto& w:canvas->windows) w.reportFrames=0;
         missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; skyCulled=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
     }
     void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
@@ -950,7 +1161,46 @@ struct View {
         std::cout << ", sky skipped " << skyCulled << " eye draws";
         if (output) std::cout << ", missed vblanks " << missed-missedBaseline << " (" << missed << " session)";
         std::cout << std::endl;
+        if (canvas) printWindowCaptures(now);
         for (const auto& p:panels) if (p.capture) std::cout << "Capture: " << p.layout.output << " " << (p.visible?"visible":"paused") << " " << p.capture->transport() << " " << p.width << "x" << p.height << " source " << p.sourceWidth << "x" << p.sourceHeight << " requests " << p.capture->requests() << " frames " << p.frames << std::endl;
+    }
+    void printWindowCaptures(double now) const {
+        for (const auto& w:canvas->windows) {
+            if (w.gone) continue;
+            std::cout << "Capture: " << w.name << " " << canvas::tierName(w.decision.tier) << " " << w.decision.rateHz << " Hz " << w.reportFrames/(now-reportTime) << " fps "
+                      << (w.source ? w.source->transport() : "none") << " " << w.width << "x" << w.height << " source " << w.sourceWidth << "x" << w.sourceHeight
+                      << " requests " << (w.source ? w.source->requests() : 0) << " frames " << w.frames;
+            if (!w.captureStatus.empty()) std::cout << " (" << w.captureStatus << ")";
+            std::cout << std::endl;
+        }
+    }
+    // Canvas stats never touch monitor math: depth is the eye dolly inside the ring of radius R.
+    float statsZoomDepth() const { return canvas ? canvas->ring.radius-std::hypot(panX, panY, panZ) : (focusOutput.empty()?distance-panZ:focusDepth); }
+    float statsMaxZoomDepth() const { return canvas ? canvas->ring.radius : maxZoomDepth(); }
+    const char* zoomLevelName() const {
+        if (canvas) return canvas->state==canvas::Scene::State::Overview ? "overview" : "window";
+        return level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane";
+    }
+    void writeCanvasStats(std::ostringstream& stats) const {
+        using canvas::Scene; using governor::Tier;
+        stats << ",\"canvasWindows\":" << canvas->live() << ",\"canvasState\":" << std::quoted(canvas->state==Scene::State::Overview ? "overview" : "work")
+            << ",\"tiers\":{\"focused\":" << canvas->tierCount(Tier::Focused) << ",\"near\":" << canvas->tierCount(Tier::Near) << ",\"far\":" << canvas->tierCount(Tier::Far)
+            << ",\"overview\":" << canvas->tierCount(Tier::Overview) << ",\"idle\":" << canvas->tierCount(Tier::Idle) << "}";
+    }
+    void writeWindowStats(std::ostringstream& stats, double now) const {
+        bool first=true;
+        for (const auto& w:canvas->windows) {
+            if (w.gone) continue;
+            if (!first) stats << ",";
+            first=false;
+            const double ready=w.source ? w.source->requestToReadyMs() : -1;
+            stats << "{\"output\":" << std::quoted(w.name) << ",\"tier\":" << std::quoted(canvas::tierName(w.decision.tier)) << ",\"rateHz\":" << w.decision.rateHz
+                << ",\"fps\":" << w.reportFrames/std::max(now-reportTime, 1e-3) << ",\"visible\":" << (w.visible?"true":"false") << ",\"transport\":" << std::quoted(w.source ? w.source->transport() : "none")
+                << ",\"width\":" << w.width << ",\"height\":" << w.height << ",\"nativeWidth\":" << w.sourceWidth << ",\"nativeHeight\":" << w.sourceHeight << ",\"frames\":" << w.frames;
+            if (ready>=0) stats << ",\"requestToReadyMs\":" << ready;
+            if (!w.captureStatus.empty()) stats << ",\"status\":" << std::quoted(w.captureStatus);
+            stats << "}";
+        }
     }
     void writeStats(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         if (posePath.empty()) return;
@@ -959,12 +1209,12 @@ struct View {
             << ",\"mode\":" << std::quoted(mode==SceneMode::Monitors?"monitors":"canvas")
             << ",\"environmentLoading\":" << (environment->loadingImage()?"true":"false") << ",\"environmentError\":" << std::quoted(environment->error)
             << ",\"geometryDistance\":" << distance
-            << ",\"zoomDepth\":" << (focusOutput.empty()?distance-panZ:focusDepth) << ",\"maxZoomDepth\":" << maxZoomDepth() << ",\"panX\":" << focusX << ",\"panY\":" << focusY
+            << ",\"zoomDepth\":" << statsZoomDepth() << ",\"maxZoomDepth\":" << statsMaxZoomDepth() << ",\"panX\":" << focusX << ",\"panY\":" << focusY
             << ",\"spectator\":" << (spectator?"true":"false") << ",\"spectatorFrames\":" << (spectator?spectator->frames:0) << ",\"spectatorError\":" << std::quoted(spectatorError)
             << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
             << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
             << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
-            << ",\"zoomLevel\":" << std::quoted(level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane")
+            << ",\"zoomLevel\":" << std::quoted(zoomLevelName())
             << ",\"notificationVisible\":" << (notificationHud && notificationHud->visible()?"true":"false")
             << ",\"notificationHighlighted\":" << (notificationHud && !notificationHud->highlight().empty()?"true":"false")
             << ",\"notificationCount\":" << (notificationHud?notificationHud->count():0)
@@ -974,8 +1224,9 @@ struct View {
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
         if (output) stats << ",\"refreshHz\":" << output->refreshHz() << ",\"missedVblanks\":" << missed << ",\"missedVblanksWindow\":" << missed-missedBaseline;
+        if (canvas) writeCanvasStats(stats);
         stats << ",\"captures\":[";
-        writeCaptureStats(stats);
+        if (canvas) writeWindowStats(stats, now); else writeCaptureStats(stats);
         stats << "]}";
         AsyncFile::instance().write(posePath+".stats", stats.str());
     }
@@ -993,6 +1244,7 @@ struct View {
         }
     }
     void sceneBounds() {
+        ++monitorMathCalls;
         left=top=right=bottom=0;
         if (!panels.empty()) { left=panels[0].layout.x; top=panels[0].layout.y; right=left; bottom=top; }
         for (auto& p:panels) {
@@ -1005,13 +1257,13 @@ struct View {
         workspace.gap=spacing/900;
     }
     void primeCamera() {
-        distance=safe(distance); targetDistance=distance;
-        fit(); panZ=targetPanZ;
+        if (canvas) distance=targetDistance=canvas->ring.radius;
+        else { distance=safe(distance); targetDistance=distance; fit(); panZ=targetPanZ; }
         controls.emplace(posePath);
         lastCameraTime=monotonicSeconds();
         glEnable(GL_DEPTH_TEST);
         started=SDL_GetTicks64();
-        if (!layoutPath.empty()) layoutVersion=std::filesystem::last_write_time(layoutPath);
+        if (!layoutPath.empty() && !canvas) layoutVersion=std::filesystem::last_write_time(layoutPath);
         reportTime=monotonicSeconds();
         gpuTimers.probe();
         missedBaseline=output?output->missedVblanks():0; seenMisses=missedBaseline;
@@ -1042,6 +1294,7 @@ struct View {
         steer();
         pollInput();
         const float cameraDt=easeCamera();
+        if (canvas) stepCanvas(cameraDt);
         sampleTarget();
         placeNotification(workStarted);
         controls->publishNotification(notificationHud?notificationHud->highlight():std::string{});
@@ -1050,7 +1303,7 @@ struct View {
         int w, h; drawable(w, h);
         if (w<=0 || h<=0) { SDL_Delay(16); return true; }
         // Share exactly the halo target; the compositor consumes monitor transitions only.
-        controls->publishHover(direct && !selection.output.empty(), selection.output, 0, 0, pointerSerial, pointerX, pointerY);
+        controls->publishHover(direct && !canvas && !selection.output.empty(), selection.output, 0, 0, pointerSerial, pointerX, pointerY);
         projectPanels(viewportWidth, viewportHeight, lastCameraTime);
         collectGpu();
         const bool timeCapture=gpuTimers.begin(GpuTimers::Capture);
@@ -1069,10 +1322,17 @@ struct View {
         notifications::space::Scene scene;
         scene.view=currentView();scene.eye={-panX,-panY,-panZ};
         scene.tanV=std::tan(fov*pi/360);scene.tanH=scene.tanV*aspect();scene.ipd=ipd/1000;
-        scene.depth=std::max(.85f,distance-panZ);
-        const std::string& focused=focusOutput.empty()?selection.output:focusOutput;
-        if(const auto* panel=findLayout(focused))scene.depth=notifications::space::length(targeting::sub(monitorPose(*panel).center,scene.eye));
-        scene.tessellate(sceneGeometry(),sceneCylinder());
+        if(canvas){
+            // Cards berth in front of the staged window, or at 0.85 R, among the nearest windows only.
+            const auto* staged=canvas->staged();const auto* panel=staged?findLayout(staged->name):nullptr;
+            scene.depth=panel?notifications::space::length(targeting::sub(monitorPose(*panel).center,scene.eye)):.85f*canvas->ring.radius;
+            scene.tessellate(canvas->occluders(),sceneCylinder());
+        }else{
+            scene.depth=std::max(.85f,distance-panZ);
+            const std::string& focused=focusOutput.empty()?selection.output:focusOutput;
+            if(const auto* panel=findLayout(focused))scene.depth=notifications::space::length(targeting::sub(monitorPose(*panel).center,scene.eye));
+            scene.tessellate(sceneGeometry(),sceneCylinder());
+        }
         notificationHud->place(std::move(scene),now);
     }
     void collectGpu() {
@@ -1097,6 +1357,7 @@ struct View {
             glDeleteTextures(1, &p.texture);
             p.capture.reset();
         }
+        if (canvas) finishCanvas();
         if (smoke && drawn<10) result=1;
         std::cout << "Head pose samples: " << tracking.camera.samples << std::endl;
         spectator.reset();
@@ -1108,6 +1369,26 @@ struct View {
         output.reset(); SDL_Quit();
         return result;
     }
+    void finishCanvas() {
+        for (const auto& w:canvas->windows)
+            std::cout << w.name << ": " << w.frames << " frames (" << w.width << 'x' << w.height << ") " << canvas::tierName(w.decision.tier) << (w.captureStatus.empty() ? "" : ", "+w.captureStatus) << "\n";
+        if (smoke && !canvas->smokeDone()) result=1;
+        if (!canvas->memoryPath.empty() && canvas->memory.dirty) canvas->memory.save(canvas->memoryPath);
+        canvas->releaseGpu();
+    }
+    // Settings and the initial window list, then land on the staged window (else the remembered camera,
+    // else the overview) without easing.
+    void startCanvas() {
+        canvas->setFov(canvasFov());
+        pollCanvasSettings();
+        if (!windowsPath.empty()) pollWindows();
+        canvas->tick(monotonicSeconds(), 0);
+        const auto* staged=canvas->staged();
+        const auto landing=staged ? canvas->land(staged->name, baseView()) : canvas::Scene::Aim{};
+        applyAim(landing ? landing : canvas->restoreCamera(baseView()));
+        canvas->snap(); canvas->refresh(monotonicSeconds()); canvas->rememberCamera=true;
+        navigationRotation=targetRotation; panX=targetPanX; panY=targetPanY; panZ=targetPanZ;
+    }
     int run() {
         if (direct) output=std::make_unique<DirectOutput>(display, stereo);
         if (!openWindow()) return 1;
@@ -1116,8 +1397,9 @@ struct View {
         std::signal(SIGTERM, stopSignal); std::signal(SIGINT, stopSignal);
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
         std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\nPanels: " << panels.size() << std::endl;
-        sceneBounds();
+        if (!canvas) sceneBounds();
         primeCamera();
+        if (canvas) startCanvas();
         while (running && !interrupted) if (!tick()) break;
         return finish();
     }
@@ -1125,22 +1407,43 @@ struct View {
 int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace, float spacing, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& layoutPath, int fps, bool spectatorEnabled) {
     return View(panels, smoke, workspace, spacing, display, posePath, direct, stereo, ipd, fov, layoutPath, fps, spectatorEnabled).run();
 }
+// Window canvas mode: no monitor panels; the capture connection must work before any window opens.
+int canvasPreview(bool smoke, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& canvasPath, const std::string& windowsPath, int fps, bool spectatorEnabled) {
+    const auto memory=(std::filesystem::path(canvasPath).parent_path()/"canvas-memory.tsv").string();
+    auto scene=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, memory);
+    std::string error;
+    if (!scene->connect(error)) throw std::runtime_error("Window canvas unavailable: "+error);
+    std::vector<Panel> none;
+    View view(none, smoke, spatial::Workspace{}, 24, display, posePath, direct, stereo, ipd, fov, canvasPath, fps, spectatorEnabled);
+    view.mode=View::SceneMode::Canvas; view.canvas=std::move(scene); view.windowsPath=windowsPath;
+    return view.run();
+}
+void checkCanvasOptions(const std::string& canvasPath, const std::string& windowsPath, bool monitorOptions, bool otherScene) {
+    if (!windowsPath.empty() && canvasPath.empty()) throw std::runtime_error("--canvas-windows-file requires --canvas");
+    if (canvasPath.empty()) return;
+    if (otherScene) throw std::runtime_error("Choose one of --canvas, --layout, --capture, or --list-outputs");
+    if (monitorOptions) std::cerr << "Canvas mode ignores --workspace-*, --spacing and --surface-curvature" << std::endl;
+}
 
 }
 int main(int argc,char** argv) {
     try {
         bool smoke=false,list=false,direct=false,stereo=false,listLeases=false,spectator=false;float ipd=64,fov=28; int fps=60; spatial::Workspace workspace;float surfaceCurve=0; int spacing=24;
-        std::vector<PanelLayout> layouts; std::string path, display, posePath;
+        std::vector<PanelLayout> layouts; std::string path, display, posePath, canvasPath, windowsPath; bool monitorOptions=false;
         for (int i=1;i<argc;++i) {
             const std::string arg=argv[i];
+            if (arg.starts_with("--workspace-") || arg=="--spacing" || arg=="--surface-curvature") monitorOptions=true;
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
-            if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit; R: recenter; Esc: exit\n"; return 0; }
+            if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit; R: recenter; Esc: exit\n"
+                "Window canvas (developer): --canvas names canvas.tsv (settings; may not exist yet), --canvas-windows-file a window list\nin the .windows mailbox format. Formats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.3.1\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;
             else if (arg=="--capture") { auto name=value(); layouts.push_back({name,float(layouts.size())*2000,0,1920,1080}); }
             else if (arg=="--layout") path=value();
+            else if (arg=="--canvas") canvasPath=value();
+            else if (arg=="--canvas-windows-file") windowsPath=value();
             else if (arg=="--display") display=value();
             else if (arg=="--direct") {display=value();direct=true;}
             else if (arg=="--spectator") spectator=true;
@@ -1166,8 +1469,10 @@ int main(int argc,char** argv) {
             else if (arg=="--fps") { auto text=value(); size_t end=0; fps=std::stoi(text,&end); if (end!=text.size() || fps<1 || fps>120) throw std::runtime_error("FPS must be 1..120"); }
             else throw std::runtime_error("Unknown option: "+arg);
         }
-        if ((!path.empty() && !layouts.empty()) || (list && (!path.empty() || !layouts.empty() || smoke))) throw std::runtime_error("Choose one of --layout, --capture, or --list-outputs");
+        checkCanvasOptions(canvasPath, windowsPath, monitorOptions, !path.empty() || !layouts.empty() || list);
+        if (canvasPath.empty() && ((!path.empty() && !layouts.empty()) || (list && (!path.empty() || !layouts.empty() || smoke)))) throw std::runtime_error("Choose one of --layout, --capture, or --list-outputs");
         if(listLeases){for(auto& name:DirectOutput::connectors())std::cout<<name<<"\n";return 0;}
+        if (!canvasPath.empty()) return canvasPreview(smoke,display,posePath,direct,stereo,ipd,fov,canvasPath,windowsPath,fps,spectator);
         if (list) { DesktopCapture c; if (!c.connect()) throw std::runtime_error(c.error()); for (auto& o:c.outputs()) std::cout << o << '\n'; return 0; }
         if (!path.empty()) layouts=readLayout(path);
         bool live=!layouts.empty();

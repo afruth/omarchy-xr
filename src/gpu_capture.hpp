@@ -78,13 +78,17 @@ struct GpuCapture {
         // An injected device still needs the EGL display for makeSlot.
         if(display==EGL_NO_DISPLAY){display=eglGetCurrentDisplay();if(display==EGL_NO_DISPLAY)return false;}
         if(device)return true;
+        device=openRenderDevice(display,deviceFd);return device;
+    }
+    // GBM on the EGL display's render node, so imports land on the GPU that renders them.
+    static gbm_device* openRenderDevice(EGLDisplay display,int& fd){
         auto query=(PFNEGLQUERYDISPLAYATTRIBEXTPROC)eglGetProcAddress("eglQueryDisplayAttribEXT");
         auto name=(PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
-        EGLAttrib id=0;if(!query || !name || !query(display,EGL_DEVICE_EXT,&id))return false;
+        EGLAttrib id=0;if(!query || !name || !query(display,EGL_DEVICE_EXT,&id))return nullptr;
         const char* node=name((EGLDeviceEXT)id,EGL_DRM_RENDER_NODE_FILE_EXT);
-        if(!node)return false;
-        deviceFd=open(node,O_RDWR|O_CLOEXEC);if(deviceFd<0)return false;
-        device=gbm_create_device(deviceFd);return device;
+        if(!node)return nullptr;
+        fd=open(node,O_RDWR|O_CLOEXEC);if(fd<0)return nullptr;
+        return gbm_create_device(fd);
     }
     bool makeSlot(Slot& slot,zwp_linux_dmabuf_v1* manager,unsigned w,unsigned h,unsigned fmt){
         auto create=(PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
