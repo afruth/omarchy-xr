@@ -25,13 +25,18 @@ struct GpuCapture {
     };
     int deviceFd=-1;
     gbm_device* device=nullptr;
+    // A shared device (window captures on one GPU) belongs to the caller.
+    bool ownsDevice=true;
     EGLDisplay display=EGL_NO_DISPLAY;
     Slot slots[2]{};
     int shownSlot=-1,captureSlot=-1;
     bool invertY=false;
     GLuint texture=0,scratch[2]{},scratchFbo[2]{},writeFbo=0;
     unsigned scaledWidth=0,scaledHeight=0,scratchWidth[2]{},scratchHeight[2]{};
-    ~GpuCapture(){clear();if(device)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
+    explicit GpuCapture(gbm_device* shared=nullptr):device(shared),ownsDevice(!shared){}
+    GpuCapture(const GpuCapture&)=delete;
+    GpuCapture& operator=(const GpuCapture&)=delete;
+    ~GpuCapture(){clear();if(device && ownsDevice)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
     void destroySlot(Slot& slot){
         if(slot.buffer)wl_buffer_destroy(slot.buffer);
         slot.buffer=nullptr;
@@ -70,8 +75,9 @@ struct GpuCapture {
         for(auto& slot:slots) if(slot.buffer==released) slot.busy=false;
     }
     bool init(){
+        // An injected device still needs the EGL display for makeSlot.
+        if(display==EGL_NO_DISPLAY){display=eglGetCurrentDisplay();if(display==EGL_NO_DISPLAY)return false;}
         if(device)return true;
-        display=eglGetCurrentDisplay();if(display==EGL_NO_DISPLAY)return false;
         auto query=(PFNEGLQUERYDISPLAYATTRIBEXTPROC)eglGetProcAddress("eglQueryDisplayAttribEXT");
         auto name=(PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
         EGLAttrib id=0;if(!query || !name || !query(display,EGL_DEVICE_EXT,&id))return false;

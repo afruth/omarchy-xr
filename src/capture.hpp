@@ -1,39 +1,33 @@
 #pragma once
-#include <cstdint>
+#include "frame_source.hpp"
 #include <memory>
 #include <string>
 #include <vector>
 
-struct CapturedFrame {
-    unsigned width = 0, height = 0;
-    unsigned sourceWidth=0,sourceHeight=0,texture=0;
-    std::vector<std::uint8_t> rgba;
-};
-
-// Owns a separate Wayland connection; all methods run on the render thread.
-class DesktopCapture {
+// Captures one output. Owns a separate Wayland connection; all methods run on the render thread.
+class DesktopCapture final : public FrameSource {
 public:
     DesktopCapture();
-    ~DesktopCapture();
+    ~DesktopCapture() override;
     DesktopCapture(const DesktopCapture&) = delete;
     DesktopCapture& operator=(const DesktopCapture&) = delete;
     bool connect();
-    void setFrameRate(unsigned fps);
-    void setDemand(bool visible,unsigned width,unsigned height);
-    const char* transport() const;
-    unsigned requests() const;
+    void setFrameRate(unsigned fps,unsigned inFlight=1,double phase=0) override;
+    void setDemand(bool visible,unsigned width,unsigned height) override;
+    const char* transport() const override;
+    unsigned requests() const override;
     std::vector<std::string> outputs() const;
     bool select(const std::string& name);
     // Nonblocking. Returns true only when a new frame is available.
-    bool update(CapturedFrame& frame);
+    bool update(CapturedFrame& frame) override;
     // Drain/flush protocol while presentation waits; GL context must remain current.
-    void service();
+    void service() override;
     void setIncludeCursor(bool enabled);
-    // Backoff for a transient capture failure: 0.5 s, then doubling, capped at 5 s.
-    static constexpr int nextRetryMs(int current) { return current < 500 ? 500 : (current * 2 > 5000 ? 5000 : current * 2); }
     // Milliseconds from the compositor ready event to the finished import. Negative when no frame has been imported.
-    double importLatencyMs() const;
-    const std::string& error() const;
+    double importLatencyMs() const override;
+    // Milliseconds from the capture request to the compositor ready event. Negative before the first frame.
+    double requestToReadyMs() const override;
+    const std::string& error() const override;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

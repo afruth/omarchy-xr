@@ -203,7 +203,9 @@ make                 # optimized build with debug symbols and warnings
 make run             # synthetic preview without creating monitors
 make check           # pixel conversion, lifecycle and CLI tests
 make check-workspace-focus # workspace-to-camera integration; hidden offscreen window
+make check-scene-seam # renderer scene seam (geometry, surfaces, stats mode); hidden offscreen window
 make smoke           # ten rendered frames; requires a graphical session
+make check-preview   # pixel-exact renderer regression against tests/baselines; same GPU driver
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first
 python3 tests/live_dedicated.py # opt-in stereo/DRM handoff/restoration test
@@ -278,6 +280,11 @@ make build/notification-preview
 SDL_VIDEODRIVER=offscreen build/notification-preview /tmp/xr-notifications --video
 # Seven screenshots, a motion trace, and a 30 fps PNG sequence in frames/.
 ```
+
+`make check-preview` diffs the seven stills against
+`tests/baselines/notification-preview/`, and `make check-preview PREVIEW_UPDATE=1`
+regenerates them after an intentional visual change (the harness pins the sky
+clock and the stock accent so the pixels are reproducible).
 
 - Right-drag: look around; middle-drag: pan across the panel plane.
 - Mouse wheel: zoom; **F**: fit every panel; **R**: recenter; **Esc**: exit.

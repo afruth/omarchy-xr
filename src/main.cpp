@@ -2,6 +2,8 @@
 #include "environment.hpp"
 #include "graphics_limits.hpp"
 #include "capture.hpp"
+#include "frame_source.hpp"
+#include "surface.hpp"
 #include "layout.hpp"
 #include "curvature.hpp"
 #include "spacing.hpp"
@@ -42,7 +44,7 @@ void stopSignal(int) {interrupted=1;}
 constexpr float pi = 3.14159265358979323846f;
 struct Panel {
     PanelLayout layout;
-    std::unique_ptr<DesktopCapture> capture;
+    std::unique_ptr<FrameSource> capture;
     CapturedFrame frame;
     GLuint texture = 0;
     unsigned width = 0, height = 0, frames = 0;
@@ -72,19 +74,19 @@ void surface(const spatial::Pose& pose, float x, float y, float w, float h, floa
         glEnd();
     }
 }
-void drawPanel(const Panel& panel, size_t index, float cx, float cy, float span, float distance, spatial::Workspace workspace) {
+// Keeps its own *unit arithmetic (Cylinder::pose divides by 900); the two differ in the last ulp.
+void drawPanel(const SurfaceView& s, const Cylinder& c) {
     constexpr float unit=1.f/900.f;
-    const auto& p=panel.layout;
+    const auto& p=*s.layout;
     const float w=p.width*unit,h=p.height*unit;
-    const auto pose=spatial::pose((p.x+p.width/2-cx)*unit,-(p.y+p.height/2-cy)*unit,w,span,distance,workspace,p.curvature);
-    (void)index;
+    const auto pose=spatial::pose((p.x+p.width/2-c.cx)*unit,-(p.y+p.height/2-c.cy)*unit,w,c.span,c.distance,c.workspace,p.curvature);
     glColor3f(.025f,.028f,.035f);
     surface(pose,-w/2,-h/2,w,h,0);
-    if (panel.width && !panel.failed) {
-        const auto content=interaction::content(w,h,panel.sourceWidth,panel.sourceHeight);
+    if (s.width) {
+        const auto content=interaction::content(w,h,s.sourceWidth,s.sourceHeight);
         const float tw=content.width,th=content.height;
-        glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,panel.frame.texture?panel.frame.texture:panel.texture);
-        const float dim=panel.captureStatus.empty()?1.f:.45f;
+        glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s.texture);
+        const float dim=s.status->empty()?1.f:.45f;
         glColor3f(p.brightness/100*dim,p.brightness/100*dim,p.brightness/100*dim);
         surface(pose,-tw/2,-th/2,tw,th,.01f);
         glDisable(GL_TEXTURE_2D);
@@ -123,10 +125,10 @@ void drawHaloBands(HaloShader& halo,const spatial::Pose& pose,float x0,float y0,
     halo.patch(x0-margin,y0,margin,h);surface(pose,x0-margin,y0,margin,h,offset);
     halo.patch(x0+w,y0,margin,h);surface(pose,x0+w,y0,margin,h,offset);
 }
-void drawHalo(HaloShader& halo,const theme::Rgb& accent,const Panel& panel,float cx,float cy,float span,float distance,spatial::Workspace workspace) {
-    const auto& p=panel.layout;const float w=p.width/900,h=p.height/900;
-    const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,w,span,distance,workspace,p.curvature);
-    const float extent=std::min(w,h)*(.012f+.018f*panel.halo);
+void drawHalo(HaloShader& halo,const theme::Rgb& accent,const SurfaceView& s,const Cylinder& c) {
+    const auto& p=*s.layout;const float w=p.width/900,h=p.height/900;
+    const auto pose=c.pose(p);
+    const float extent=std::min(w,h)*(.012f+.018f*s.halo);
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
     // A neutral, feathered drop shadow adds depth without outlining the image.
     const float shadow=std::min(w,h)*.045f,drop=shadow*.3f;
@@ -134,11 +136,11 @@ void drawHalo(HaloShader& halo,const theme::Rgb& accent,const Panel& panel,float
         halo.use(0,0,0,.18f,w/2,h/2,shadow,0,-drop);drawHaloBands(halo,pose,-w/2,-h/2-drop,w,h,shadow,-.035f);
         // Unselected: a faint feathered glow. Selected: the theme accent, a solid ten-pixel rim
         // that fades out over the halo extent, so the chosen monitor reads at a glance.
-        const float rim=10.f/900*panel.halo;
-        halo.use(accent[0],accent[1],accent[2],.03f+.85f*panel.halo,w/2,h/2,extent,0,0,rim);
+        const float rim=10.f/900*s.halo;
+        halo.use(accent[0],accent[1],accent[2],.03f+.85f*s.halo,w/2,h/2,extent,0,0,rim);
         drawHaloBands(halo,pose,-w/2,-h/2,w,h,extent+rim,-.025f);
         halo.stop();
-    } else drawHaloRings(pose,w,h,extent,shadow,panel.halo);
+    } else drawHaloRings(pose,w,h,extent,shadow,s.halo);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
 }
 struct View {
@@ -196,6 +198,9 @@ struct View {
     // Zoom level reached by the last fit: flick in steps overview -> monitor -> pane, flick out steps back.
     enum class Level { Overview, Monitor, Pane };
     Level level=Level::Overview;
+    // What the scene shows: the monitor panels today; free-floating windows on the canvas later.
+    enum class SceneMode { Monitors, Canvas };
+    SceneMode mode=SceneMode::Monitors;
     std::string levelOutput;
     double interactionUntil=0;
     theme::Accent accent;
@@ -212,7 +217,18 @@ struct View {
     float aspect() const { int w,h; drawable(w,h); return float(std::max(w/(stereo?2:1),1))/std::max(h,1); }
     float overviewDepth() const { return navigation::overviewDepth(geometry, cx, cy, span(), distance, workspace, fov, aspect()); }
     float maxZoomDepth() const { return overviewDepth()*2.f; }
-    spatial::Pose monitorPose(const PanelLayout& p) const { return spatial::pose((p.x+p.width/2-cx)/900, -(p.y+p.height/2-cy)/900, p.width/900, span(), distance, workspace, p.curvature); }
+    Cylinder sceneCylinder() const { return {cx, cy, span(), distance, workspace}; }
+    const std::vector<PanelLayout>& sceneGeometry() const { return geometry; }
+    const PanelLayout* findLayout(const std::string& name) const {
+        const auto& g=sceneGeometry();
+        const auto found=std::find_if(g.begin(), g.end(), [&](const auto& p){ return p.output==name; });
+        return found==g.end() ? nullptr : &*found;
+    }
+    spatial::Pose monitorPose(const PanelLayout& p) const { return sceneCylinder().pose(p); }
+    // Every drawable surface in the current scene mode, in draw order.
+    template<class F> void forEachSurface(F&& f) const {
+        for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}});
+    }
     void bindTexture(GLuint texture) const {
         glBindTexture(GL_TEXTURE_2D, texture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -263,8 +279,9 @@ struct View {
     void sampleTarget() {
         const bool fresh=posePath.empty() || tracking.camera.fresh(monotonicSeconds());
         const auto view=currentView();
-        gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), geometry, cx, cy, span(), distance, workspace) : std::nullopt, fresh);
-        selection.validate(geometry);
+        const auto c=sceneCylinder();
+        gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace) : std::nullopt, fresh);
+        selection.validate(sceneGeometry());
         // A glance never selects: the look point has to rest on one area with the head settled.
         const double now=monotonicSeconds();
         // Scrolling, zooming, fitting and the camera's own easing all pause selection: the look
@@ -291,8 +308,8 @@ struct View {
         const bool captured=!zoomGaze;
         const bool recapture=zoomGaze && gaze.current && gaze.current->output!=zoomGaze->output;
         if (!fitHeight && zoom!=0 && navigation::lockZoomGaze(zoomGaze, gaze.current)) lockGaze(captured, recapture);
-        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==selection.output; });
-        if (found==geometry.end()) return false;
+        const auto* found=findLayout(selection.output);
+        if (!found) return false;
         aimAt(*found, fitHeight, zoom, captured, recapture);
         return true;
     }
@@ -335,8 +352,8 @@ struct View {
         const auto previousView=currentView();
         recenterUntil=monotonicSeconds()+.5;
         const bool wasPanning=panCamera; panCamera=false;
-        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==selection.output; });
-        if (found==geometry.end()) { headingOnly(previousView); return; }
+        const auto* found=findLayout(selection.output);
+        if (!found) { headingOnly(previousView); return; }
         recenterOn(*found, wasPanning, previousView);
     }
     // No selection yet: animate heading only, preserving zoom and pan.
@@ -360,8 +377,8 @@ struct View {
         std::cout << "Camera: smooth recenter " << selection.output << " depth " << focusDepth << std::endl;
     }
     spatial::Pose zoomedPose(spatial::Pose pose, bool wasPanning) const {
-        const auto zoomPanel=std::find_if(geometry.begin(), geometry.end(), [&](const auto& item){ return item.output==focusOutput; });
-        if (zoomPanel==geometry.end()) return pose;
+        const auto* zoomPanel=findLayout(focusOutput);
+        if (!zoomPanel) return pose;
         pose=monitorPose(*zoomPanel);
         const float x=wasPanning?smoothFocusX:focusX, y=wasPanning?smoothFocusY:focusY;
         pose.center=spatial::vertex(pose, x, y); pose.yaw-=x*pose.surfaceBend;
@@ -371,8 +388,8 @@ struct View {
     void panSelected(float dx, float dy, bool begin) {
         recenterUntil=0;
         if (begin) panOutput=selection.output;
-        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==panOutput; });
-        if (found==geometry.end()) return;
+        const auto* found=findLayout(panOutput);
+        if (!found) return;
         const auto pose=monitorPose(*found);
         // Freeze the zoom visible at gesture start, including animations.
         if (begin && !beginPan(*found, pose)) return;
@@ -415,7 +432,7 @@ struct View {
         fitSelection();
     }
     void fitOutput(const std::string& name) {
-        if (std::none_of(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==name; })) return;
+        if (!findLayout(name)) return;
         selection.output=name; selectionAnchor=baseView();
         fitSelection();
     }
@@ -436,10 +453,25 @@ struct View {
         if (level==Level::Pane) { fitTarget(); return; }
         fit(); tracking.camera.recenter(monotonicSeconds());
     }
+    enum class Verb { Fit, FitTarget, FitOutput, Recenter, ZoomBy, FlickIn, FlickOut, Pan };
+    struct Move { Verb verb; float x=0, y=0; bool begin=false; std::string output={}; };
+    // Every external navigation entry point goes through here; canvas mode branches per verb in M2.
+    void navigate(const Move& m) {
+        switch (m.verb) {
+        case Verb::Fit: fit(); tracking.camera.recenter(monotonicSeconds()); break;
+        case Verb::FitTarget: fitTarget(); break;
+        case Verb::FitOutput: fitOutput(m.output); break;
+        case Verb::Recenter: recenterSelected(); break;
+        case Verb::ZoomBy: zoomBy(m.x); break;
+        case Verb::FlickIn: flickIn(); break;
+        case Verb::FlickOut: flickOut(); break;
+        case Verb::Pan: panSelected(m.x, m.y, m.begin); break;
+        }
+    }
     bool fitPane() {
         if (!controls->paneValid || controls->paneOutput!=selection.output) { std::cout << "Camera: no active window known on " << selection.output << "; pane fit ignored" << std::endl; return false; }
-        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==selection.output; });
-        if (found==geometry.end()) return false;
+        const auto* found=findLayout(selection.output);
+        if (!found) return false;
         const auto& p=*found;
         recenterUntil=0; panCamera=false; zoomGaze.reset(); focusFromGaze=false; targetDistance=distance;
         interactionUntil=monotonicSeconds()+.4;
@@ -626,7 +658,7 @@ struct View {
     void readLiveSettings(int& nextFps, spatial::Workspace& nextWorkspace, float& nextSpacing) const {
         std::ifstream settings(layoutPath); std::string first; std::getline(settings, first);
         if (!first.starts_with("# settings ")) return;
-        std::istringstream values(first.substr(11)); std::string extra;
+        std::istringstream values(first.substr(11));
         if (!(values>>nextFps>>nextWorkspace.amount>>nextSpacing) || nextFps<1 || nextFps>120 || !std::isfinite(nextWorkspace.amount) || nextWorkspace.amount<0 || nextWorkspace.amount>100 || !std::isfinite(nextSpacing) || nextSpacing<1 || nextSpacing>8192)
             throw std::runtime_error("Invalid live presentation settings");
         nextWorkspace.degrees=-1; values>>std::ws;
@@ -634,8 +666,10 @@ struct View {
             throw std::runtime_error("Workspace wrap must be 0..360 degrees");
         nextWorkspace.follow=false; values>>std::ws;
         if (values.eof()) return;
+        // Later renderer versions append fields (scene mode, canvas settings) after the wrap flag;
+        // this version ignores anything after follow.
         int follow;
-        if (!(values>>follow) || (follow!=0 && follow!=1) || values>>extra) throw std::runtime_error("Invalid workspace wrapping setting");
+        if (!(values>>follow) || (follow!=0 && follow!=1)) throw std::runtime_error("Invalid workspace wrapping setting");
         nextWorkspace.follow=follow;
     }
     void adoptLayout(std::vector<PanelLayout> layouts, int nextFps, spatial::Workspace nextWorkspace, float nextSpacing, std::filesystem::file_time_type version) {
@@ -658,6 +692,7 @@ struct View {
         std::cout << "Live layout applied: " << panels.size() << " panels, " << fps << " fps" << std::endl;
     }
     static void boundsOf(const std::vector<PanelLayout>& layouts, float& l, float& t, float& r, float& b) {
+        if (layouts.empty()) { l=t=r=b=0; return; }
         l=layouts[0].x; t=layouts[0].y; r=l; b=t;
         for (const auto& p:layouts) { l=std::min(l, p.x); t=std::min(t, p.y); r=std::max(r, p.x+p.width); b=std::max(b, p.y+p.height); }
     }
@@ -678,9 +713,11 @@ struct View {
         for (const auto& layout:layouts) {
             auto old=std::find_if(panels.begin(), panels.end(), [&](const Panel& p){ return p.layout.output==layout.output && !p.failed; });
             if (old!=panels.end()) continue;
-            Panel p; p.layout=layout; p.capture=std::make_unique<DesktopCapture>();
-            p.capture->setFrameRate(nextFps);
-            if (!p.capture->connect() || !p.capture->select(layout.output)) throw std::runtime_error(p.capture->error());
+            Panel p; p.layout=layout;
+            auto next=std::make_unique<DesktopCapture>();
+            next->setFrameRate(nextFps);
+            if (!next->connect() || !next->select(layout.output)) throw std::runtime_error(next->error());
+            p.capture=std::move(next);
             additions.push_back(std::move(p));
         }
         return additions;
@@ -695,37 +732,37 @@ struct View {
         controls->update();
         panGestureActive=controls->panActive;
         if (controls->panStarted || controls->panX || controls->panY) interactionUntil=monotonicSeconds()+.4;
-        if (controls->panStarted || controls->panX || controls->panY) panSelected(float(controls->panX), float(controls->panY), controls->panStarted);
+        if (controls->panStarted || controls->panX || controls->panY) navigate({Verb::Pan, float(controls->panX), float(controls->panY), controls->panStarted});
         sampleTarget();
-        if (controls->zoom) zoomBy(float(controls->zoom));
-        if (controls->fit==1) flickOut();
-        if (controls->fit==2) flickIn();
+        if (controls->zoom) navigate({Verb::ZoomBy, float(controls->zoom)});
+        if (controls->fit==1) navigate({Verb::FlickOut});
+        if (controls->fit==2) navigate({Verb::FlickIn});
         if (notificationHud && controls->fit>=6) {
             placeNotification(monotonicSeconds());
             notificationHud->flick(controls->notificationTarget,controls->fit==6);
         }
         if (controls->fit==3) tracking.recenterRequested=true;
-        if (controls->fit==4) zoomBy(-std::log(.9f));
-        if (controls->fit==5) zoomBy(std::log(.9f));
-        if (tracking.zoom) { zoomBy(float(tracking.zoom)*-std::log(.9f)); tracking.zoom=0; }
-        if (tracking.recenterRequested) { recenterSelected(); tracking.recenterRequested=false; }
-        if (tracking.fitRequested) { fit(); tracking.camera.recenter(monotonicSeconds()); tracking.fitRequested=false; }
-        if (tracking.fitTargetRequested) { fitTarget(); tracking.fitTargetRequested=false; }
-        if (!controls->focusOutput.empty()) fitOutput(controls->focusOutput);
+        if (controls->fit==4) navigate({Verb::ZoomBy, -std::log(.9f)});
+        if (controls->fit==5) navigate({Verb::ZoomBy, std::log(.9f)});
+        if (tracking.zoom) { navigate({Verb::ZoomBy, float(tracking.zoom)*-std::log(.9f)}); tracking.zoom=0; }
+        if (tracking.recenterRequested) { navigate({Verb::Recenter}); tracking.recenterRequested=false; }
+        if (tracking.fitRequested) { navigate({Verb::Fit}); tracking.fitRequested=false; }
+        if (tracking.fitTargetRequested) { navigate({Verb::FitTarget}); tracking.fitTargetRequested=false; }
+        if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
     }
     void pollInput() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type==SDL_QUIT) running=false;
             if (event.type==SDL_KEYDOWN) keyDown(event.key.keysym.sym);
-            if (event.type==SDL_MOUSEWHEEL) zoomBy(event.wheel.preciseY*-std::log(.9f));
+            if (event.type==SDL_MOUSEWHEEL) navigate({Verb::ZoomBy, event.wheel.preciseY*-std::log(.9f)});
             if (event.type==SDL_MOUSEMOTION) mouseMove(event.motion);
         }
     }
     void keyDown(SDL_Keycode key) {
         if (key==SDLK_ESCAPE) running=false;
-        if (key==SDLK_r) recenterSelected();
-        if (key==SDLK_f) { fit(); tracking.camera.recenter(monotonicSeconds()); }
+        if (key==SDLK_r) navigate({Verb::Recenter});
+        if (key==SDLK_f) navigate({Verb::Fit});
     }
     void mouseMove(const SDL_MouseMotionEvent& motion) {
         if (motion.state&SDL_BUTTON_RMASK) { yaw+=motion.xrel*.15f; pitch=std::clamp(pitch+motion.yrel*.15f, -80.f, 80.f); }
@@ -743,8 +780,8 @@ struct View {
         return cameraDt;
     }
     void easePan(float cameraDt) {
-        const auto found=std::find_if(geometry.begin(), geometry.end(), [&](const auto& p){ return p.output==focusOutput; });
-        if (found==geometry.end()) { panCamera=false; return; }
+        const auto* found=findLayout(focusOutput);
+        if (!found) { panCamera=false; return; }
         const auto pose=monitorPose(*found);
         smoothFocusX=navigation::ease(smoothFocusX, focusX, cameraDt);
         smoothFocusY=navigation::ease(smoothFocusY, focusY, cameraDt);
@@ -798,18 +835,25 @@ struct View {
         else ++skyCulled;
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
-        for (const auto& p:panels) if (p.visible) drawHalo(halo, accent.rgb, p, cx, cy, span(), distance, workspace);
-        for (size_t i=0;i<panels.size();++i) if (panels[i].visible) drawPanel(panels[i], i, cx, cy, span(), distance, workspace);
+        drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
         if(stereoView && notificationHud) notificationHud->draw(lastCameraTime);
+    }
+    // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
+    // candidates(visit) yields the surfaces to draw: every panel here, the culled windows in canvas mode.
+    template<class Walk> void drawSurfaces(Walk&& candidates) {
+        const auto c=sceneCylinder();
+        candidates([&](const SurfaceView& s){ if (s.visible) drawHalo(halo, accent.rgb, s, c); });
+        candidates([&](const SurfaceView& s){ if (s.visible) drawPanel(s, c); });
     }
     // One opaque panel filling this eye makes the full-screen sky draw pointless.
     bool skyHidden(float eyePosition, float tanV, float tanH) const {
         if (!environment->visible()) return false;
         const auto view=currentView();
+        const auto c=sceneCylinder();
         for (const auto& p:panels) {
             if (!p.visible) continue;
             const auto& l=p.layout;
-            const auto pose=spatial::pose((l.x+l.width/2-cx)/900, -(l.y+l.height/2-cy)/900, l.width/900, span(), distance, workspace, l.curvature);
+            const auto pose=c.pose(l);
             if (occlusion::panelCoversEye(l, pose, view, {panX, panY, panZ}, eyePosition, tanH, tanV)) return true;
         }
         return false;
@@ -832,9 +876,12 @@ struct View {
             while (glGetError()!=GL_NO_ERROR) {} // optional window failure must not stop stereo
         }
     }
-    bool draw(float cameraDt, int w, int h) {
-        // The selection rim comes in within about 120 ms; the camera easing would take half a second.
+    // The selection rim comes in within about 120 ms; the camera easing would take half a second.
+    void easeHalos(float cameraDt) {
         for (auto& p:panels) { const float target=selection.output==p.layout.output ? 1.f:0.f; p.halo+=(target-p.halo)*std::min(1.f, cameraDt/.12f); }
+    }
+    bool draw(float cameraDt, int w, int h) {
+        easeHalos(cameraDt);
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
         environment->update(monotonicSeconds());
         // The spectator render queues ahead of the stereo scene, so both must finish before the flip;
@@ -909,6 +956,7 @@ struct View {
         if (posePath.empty()) return;
         std::ostringstream stats;
         stats << "{\"pid\":" << getpid() << ",\"time\":" << std::setprecision(12) << now << ",\"fps\":" << reportFrames/(now-reportTime)
+            << ",\"mode\":" << std::quoted(mode==SceneMode::Monitors?"monitors":"canvas")
             << ",\"environmentLoading\":" << (environment->loadingImage()?"true":"false") << ",\"environmentError\":" << std::quoted(environment->error)
             << ",\"geometryDistance\":" << distance
             << ",\"zoomDepth\":" << (focusOutput.empty()?distance-panZ:focusDepth) << ",\"maxZoomDepth\":" << maxZoomDepth() << ",\"panX\":" << focusX << ",\"panY\":" << focusY
@@ -945,7 +993,8 @@ struct View {
         }
     }
     void sceneBounds() {
-        left=panels[0].layout.x; top=panels[0].layout.y; right=left; bottom=top;
+        left=top=right=bottom=0;
+        if (!panels.empty()) { left=panels[0].layout.x; top=panels[0].layout.y; right=left; bottom=top; }
         for (auto& p:panels) {
             left=std::min(left, p.layout.x); top=std::min(top, p.layout.y);
             right=std::max(right, p.layout.x+p.layout.width); bottom=std::max(bottom, p.layout.y+p.layout.height);
@@ -1022,10 +1071,8 @@ struct View {
         scene.tanV=std::tan(fov*pi/360);scene.tanH=scene.tanV*aspect();scene.ipd=ipd/1000;
         scene.depth=std::max(.85f,distance-panZ);
         const std::string& focused=focusOutput.empty()?selection.output:focusOutput;
-        for(const auto& panel:geometry)if(panel.output==focused){
-            scene.depth=notifications::space::length(targeting::sub(monitorPose(panel).center,scene.eye));break;
-        }
-        scene.monitors(geometry,cx,cy,span(),distance,workspace);
+        if(const auto* panel=findLayout(focused))scene.depth=notifications::space::length(targeting::sub(monitorPose(*panel).center,scene.eye));
+        scene.tessellate(sceneGeometry(),sceneCylinder());
         notificationHud->place(std::move(scene),now);
     }
     void collectGpu() {
@@ -1133,8 +1180,9 @@ int main(int argc,char** argv) {
             if (path.empty()) p.layout.curvature=surfaceCurve;
             if (live) {
                 if (!names.insert(layout.output).second) throw std::runtime_error("Duplicate capture output: "+layout.output);
-                p.capture=std::make_unique<DesktopCapture>(); p.capture->setFrameRate(fps);
-                if (!p.capture->connect() || !p.capture->select(layout.output)) throw std::runtime_error(p.capture->error());
+                auto next=std::make_unique<DesktopCapture>(); next->setFrameRate(fps);
+                if (!next->connect() || !next->select(layout.output)) throw std::runtime_error(next->error());
+                p.capture=std::move(next);
             }
             panels.push_back(std::move(p));
         }

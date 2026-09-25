@@ -15,6 +15,27 @@
 - `src/pixels.hpp`: stride/format/inversion conversion with deterministic tests.
 - `src/layout.hpp`: renderer layout format and validation.
 
+## Scene modes
+
+The viewer draws and navigates through one scene seam so that a window canvas can
+replace the monitor scene without touching capture, drawing or input. `View::mode`
+is a `SceneMode`: `Monitors` is live, `Canvas` is reserved for the infinite canvas.
+Geometry is read through `sceneGeometry()`, `sceneCylinder()` and
+`findLayout(name)`. Drawing walks `forEachSurface()`, which yields a read-only
+`SurfaceView` placed on a `Cylinder` (`src/surface.hpp`); `drawSurfaces(candidates)`
+draws the halos and then the panels of a candidate walk: monitor mode passes
+`forEachSurface`, canvas mode will pass its angular-culled visible windows.
+Notification occlusion tessellates through `space::Scene::tessellate(panels, cylinder)`;
+the plan's `surfaces()` name clashes with the `Scene::surfaces` facet member, so the
+entry point is `tessellate()` and `monitors()` stays as the old alias. Every external navigation input (controls, tracking
+requests, wheel, keys) is routed as a `Move` through `navigate()`, the one place
+canvas mode will branch per verb. Sources implement `FrameSource`
+(`src/frame_source.hpp`); `DesktopCapture` is the monitor implementation.
+`make check-preview` guards pixel identity across the seam, and
+`make check-scene-seam` checks the seam on the real `View`: poses, lookups,
+surface views, the stats mode, navigate equivalence, an empty scene and
+tolerance of appended live-settings fields.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping
@@ -56,6 +77,11 @@ resize, removal and cleanup under Hyprland. The renderer smoke test requires
 frames from every selected source. Native panel loading, theme integration,
 Apply/Stop, and five-panel capture are also checked in the running Omarchy shell.
 CI can run unit tests and synthetic rendering; it does not provide Omarchy.
+`make check-preview` renders the seven notification-preview stills and requires
+them to match `tests/baselines/notification-preview/` exactly; it guards the M1
+scene-seam refactor, which must not change a single pixel. The baseline is bound
+to the GPU driver that rendered it, so other machines regenerate it with
+`PREVIEW_UPDATE=1`.
 
 ## Next milestones
 

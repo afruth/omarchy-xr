@@ -221,7 +221,7 @@ Not measured: eDP frame-time p99 and package watts (optional, `sudo turbostat` d
 
 - `const std::vector<PanelLayout>& sceneGeometry()` — `geometry` in monitor mode; `canvas->geometry()` (already projected) in canvas mode.
 - `template<class F> void forEachSurface(F)` — iterates `panels` or `canvas->windows`, yielding `SurfaceView{layout*, texture, width, height, status*, halo, visible, alpha, label}` (`src/surface.hpp`).
-- `void drawSurfaces(ctx, candidates)` — the `drawHalo`/`drawPanel` loop lifted out of `drawEye`, fed by `forEachSurface`; monitor mode passes every panel, canvas mode passes `visibleCandidates(heading)`.
+- `template<class Walk> void drawSurfaces(Walk&& candidates)` — the `drawHalo`/`drawPanel` loop lifted out of `drawEye`; `candidates(visit)` yields `SurfaceView`s (no ctx argument: the GL state is the View's own); monitor mode passes `forEachSurface`, canvas mode passes a walk over `visibleCandidates(heading)`.
 - `Cylinder sceneCylinder()` — `{cx, cy, span, distance, workspace}`; canvas: `{0, 0, 2π·R − gap, R, {degrees=360, follow=true, gap}}` (so `workspaceBend`'s `k = 2π/(span+gap)` yields radius exactly R **[verified: `curvature.hpp:34`]**).
 
 **Every** `geometry`/`panels` consumer, and how it changes (nothing is renamed; the three `#include "../src/main.cpp"` tests keep compiling):
@@ -232,7 +232,7 @@ Not measured: eDP frame-time p99 and package watts (optional, `sudo turbostat` d
 | `skyHidden` `:806-816` | unchanged | test only the staged window. |
 | `projectPanels` `:764-774` | unchanged | `adaptive::project` on candidates → `CaptureGovernor` → per-window `setDemand`/`setFrameRate`. |
 | `sampleTarget` `:263-281` | unchanged | `targeting::query(ray, candidates, cyl)`; `selection.validate()` against the **unculled** window list; dwell radius in projected px (constant angle). |
-| `placeNotification` `:1018-1030`, depth loop `:1025` | unchanged | `scene.surfaces(occluders(heading), cyl)`, depth = staged window centre or 0.85·R (§6.1). |
+| `placeNotification` `:1018-1030`, depth loop `:1025` | unchanged | `scene.tessellate(occluders(heading), cyl)`, depth = staged window centre or 0.85·R (§6.1). |
 | `serviceCaptures`/`updateCaptures`/`reconnectCaptures`/`dropCapture` | unchanged | via `FrameSource*`; hub `pump()` once per tick; window-closed = `alive()==false`, no backoff. |
 | `ensureLease` `:464-496`, `finish` `:1046-1063` | unchanged | also release/regenerate hub, per-window textures/slots, overlay textures; canvas textures are recreated after the lease returns. |
 | `draw()` halo easing `:837` | unchanged | `forEachSurface`. |
@@ -404,7 +404,7 @@ On `window.active` Lua publishes `.focus` with the address; the renderer moves t
 
 ### 6.1 Notifications
 - `Hud` construction (`main.cpp:1068`) becomes `!posePath.empty()` so `--display` and windowed runs show cards (the uncommitted `drawEye` change already draws them in mono). **[decision D6]**
-- `space::Scene::monitors()` → `surfaces()` (alias kept); canvas feeds ≤ 24 angular-culled visible windows, so `findPlace()`'s 1250-berth search stays bounded; `depth` = staged window centre (or 0.85·R).
+- `space::Scene::monitors()` → `tessellate()` (alias kept; named `tessellate` because `Scene::surfaces` is already the facet member); canvas feeds ≤ 24 angular-culled visible windows, so `findPlace()`'s 1250-berth search stays bounded; `depth` = staged window centre (or 0.85·R).
 - **Inside-the-ring routing**: in canvas mode `route()`/`outerRadius()` are capped at `R − 0.3` and berths are searched in a view-relative lower band (independent of rows, so cards are inside the ±14° view), and `Hud::draw` runs with depth test off after the scene — cards can never fly behind the window wall or land far overhead. `tests/notification_space.cpp` adds: dense 360° wall, path never exceeds R, berth within the view band.
 - Flicks 6/7, dismissal JSON, Quickshell service: unchanged; `notification_controls.cpp` also runs with `mode=Canvas`.
 
@@ -437,7 +437,7 @@ Unchanged (`environment.tsv` from `dirname(--canvas FILE)`); `skyHidden` tests o
 **Outcome**: toplevel export chosen; park + pull replaces the frozen park and the sliver strip; capture policy and ladder fixed (§4.4); scale 1.0 and 60 Hz defaults (D3); Quickshell prompt (D4); SUPER+F takeover required (D5); Lua names recorded (§3.3/§3.4). Still to wire into the main build: `Makefile` scanner rules for both XMLs in `GEN_HEADERS`/`APP_OBJS` and `package-release.py` (M2, with the hub).
 
 ### M1 — Scene seam refactor, no behaviour change (1 week)
-**Changes**: `src/frame_source.hpp` (+ `DesktopCapture` adapter); `src/surface.hpp`; `View::sceneGeometry/forEachSurface/sceneCylinder/navigate/drawSurfaces`; `SceneMode` with only `Monitors` live; `GpuCapture` device injection (shared device optional); `notification_space.hpp` `surfaces()` alias; zero-panel guards; tolerant `readLiveSettings`; `writeStats mode`; new Makefile target **`check-preview`** with a committed baseline PNG (taken after committing the mono-HUD change) and `notification-preview` diff; `UNIT_BINS` wiring for future tests.
+**Changes**: `src/frame_source.hpp` (+ `DesktopCapture` adapter); `src/surface.hpp`; `View::sceneGeometry/forEachSurface/sceneCylinder/navigate/drawSurfaces`; `SceneMode` with only `Monitors` live; `GpuCapture` device injection (shared device optional); `notification_space.hpp` `tessellate()` entry point (`monitors()` alias kept); zero-panel guards; tolerant `readLiveSettings`; `writeStats mode`; new Makefile target **`check-preview`** with a committed baseline PNG (taken after committing the mono-HUD change) and `notification-preview` diff; `UNIT_BINS` wiring for future tests.
 **Acceptance**: `check-preview` diff = 0; `make check`, `check-san`, `check-notifications`, `check-workspace-focus`, `smoke`, `check-lint` green.
 **Shippable**: yes (neutral refactor).
 

@@ -15,7 +15,8 @@ GEN_HEADERS = $(BUILD)/xdg-shell-client.h $(BUILD)/linux-dmabuf-client.h \
 	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h
 UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking \
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
-	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell
+	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
+	$(BUILD)/test-frame-source
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -116,6 +117,8 @@ $(BUILD)/test-sky-cull.o: tests/sky_cull.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-dwell.o: tests/dwell.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-frame-source.o: tests/frame_source.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -138,6 +141,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-load-governor
 	./$(BUILD)/test-sky-cull
 	./$(BUILD)/test-dwell
+	./$(BUILD)/test-frame-source
 
 check: all run-units
 	lua tests/controls.lua
@@ -224,6 +228,14 @@ check-workspace-focus: $(BUILD)/test-workspace-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
 .PHONY: check-workspace-focus
 
+$(BUILD)/test-scene-seam: tests/scene_seam.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# The View scene seam (geometry, cylinder, surface views, shared GBM device, routing) on a hidden offscreen window; part of check-notifications.
+check-scene-seam: $(BUILD)/test-scene-seam
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-scene-seam
+.PHONY: check-scene-seam
+
 $(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDLIBS)
 
@@ -233,7 +245,7 @@ $(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_
 $(BUILD)/test-notification-controls: tests/notification_controls.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
-check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space $(BUILD)/test-notification-controls
+check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space $(BUILD)/test-notification-controls check-scene-seam
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notifications
 	./$(BUILD)/test-notification-space
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notification-controls
@@ -241,6 +253,19 @@ check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-spac
 
 $(BUILD)/notification-preview: tests/notification_preview.cpp src/notification_space.hpp src/notification_draw.hpp src/notification_hud.hpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+PREVIEW_BASELINE = tests/baselines/notification-preview
+PREVIEW_STILLS = overview turn behind settled zoomed reading cycled
+$(BUILD)/image-diff: tests/image_diff.cpp | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(shell pkg-config --libs cairo)
+# Pixel-exact renderer regression against a committed baseline (same machine and GL driver).
+# PREVIEW_UPDATE=1 rewrites the baseline after an intentional visual change.
+check-preview: $(BUILD)/notification-preview $(BUILD)/image-diff
+	rm -rf $(BUILD)/preview && mkdir -p $(BUILD)/preview
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/notification-preview $(BUILD)/preview
+	if [ -n "$(PREVIEW_UPDATE)" ]; then for s in $(PREVIEW_STILLS); do cp $(BUILD)/preview/$$s.png $(PREVIEW_BASELINE)/; done; fi
+	./$(BUILD)/image-diff $(PREVIEW_BASELINE) $(BUILD)/preview $(PREVIEW_STILLS)
+.PHONY: check-preview
 
 -include $(wildcard $(BUILD)/*.d)
 
