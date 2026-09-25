@@ -546,6 +546,64 @@ void firstMailboxLands(SDL_Window* window, const std::string& temp) {
     assert(stagedOffset(v)<1);
     v.finishCanvas();
 }
+// Windows grouped by category are contiguous in packing order: rows 0, +1, -1, then along the ring from the heading.
+void groupsContiguous(const canvas::Scene& s, float headingX) {
+    std::vector<std::tuple<int,float,std::string>> order;
+    const int rank[3]={2, 0, 1};
+    for (const auto& w:s.windows) {
+        if (w.gone || w.pinned) continue;
+        const int row=std::clamp(canvas::rowFor(w.rect.cy(), s.metrics), -1, 1);
+        order.emplace_back(rank[row+1], s.ring.unwrap(w.rect.x-headingX), canvas::categoryName(canvas::category(w.record.cls, w.record.title)));
+    }
+    std::sort(order.begin(), order.end());
+    std::set<std::string> closed; std::string last;
+    for (const auto& [row, x, group]:order) {
+        if (group==last) continue;
+        assert(!closed.count(group));
+        if (!last.empty()) closed.insert(last);
+        last=group;
+    }
+}
+// Arrange on a canvas that fits: no overlap, categories contiguous, inside the band, pinned windows stay.
+void arrangeFits() {
+    canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
+    // Two terminal classes on either side of code in MRU order (foot 1, code 2, alacritty 4): Terminal stays one run.
+    const char* classes[]={"firefox", "foot", "code", "slack", "alacritty", "firefox", "code", "slack", "foot", "firefox"};
+    std::vector<windows::Record> records;
+    for (int i=0;i<10;++i) { auto r=record(0xd000u+unsigned(i), "w"+std::to_string(i), 1100, 650, i, 200+i); r.cls=classes[i]; records.push_back(r); }
+    s.adopt(listOf(records), 1);
+    s.findMutable("0xd003")->pinned=true; const auto pinnedAt=s.find("0xd003")->rect;
+    s.overview({});
+    const float headingX=s.headingPoint().first;
+    assert(s.arrange({}) && s.history.undo.size()==1);
+    for (const auto& a:s.windows) {
+        assert(canvas::inBand(a.rect, s.metrics));
+        for (const auto& b:s.windows) if (&a!=&b && !a.pinned && !b.pinned) assert(!canvas::overlaps(a.rect, b.rect, 0, s.ring.period()));
+    }
+    assert(sameRect(s.find("0xd003")->rect, pinnedAt));
+    groupsContiguous(s, headingX);
+}
+// The palette never covers the selection: its bottom edge clears the palette top by 1.5°, its top stays in
+// view; a selection too tall for that band lowers the Search zoom, one that fits keeps it.
+void paletteClear() {
+    canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
+    s.adopt(listOf({record(0xe001, "tall editor", 1200, 1000, 1, 300), record(0xe002, "small note", 700, 400, 0, 301)}), 1);
+    const auto edges=[&](const std::string& name) {
+        const auto* w=s.find(name); const float perTan=900*s.ring.radius, h=w->rect.h*s.camera.targetZoom, c=s.aimY-s.camera.targetFocusY;
+        assert(std::abs(s.camera.targetFocusY-w->rect.cy())<1e-3f);
+        return std::pair{std::atan((c-h/2)/perTan)*180/float(pi), std::atan((c+h/2)/perTan)*180/float(pi)};
+    };
+    s.overview({}); s.camera.targetZoom=1;   // one window at zoom 1 is about 26° tall
+    s.searchType("tall editor", {});
+    assert(s.state==canvas::Scene::State::Search && s.selectedResult()=="0xe001" && s.camera.targetZoom<.6f);
+    auto [bottom, top]=edges("0xe001");
+    assert(bottom>=s.paletteTopDeg()+1.5f-1e-2f && top<=s.fov.vertical/2-.5f+1e-2f);
+    s.searchType("small note", {});
+    const float zoom=s.camera.targetZoom;
+    assert(s.selectedResult()=="0xe002");
+    std::tie(bottom, top)=edges("0xe002");
+    assert(s.camera.targetZoom==zoom && bottom>=s.paletteTopDeg()+1.5f-1e-2f && top<=s.fov.vertical/2);
+}
 // The smoke rule: the focused window needs 10 frames, near windows one; gone, closed and dead ones pass.
 void smokeRule() {
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
@@ -593,6 +651,341 @@ void reloadSettings(View& v) {
     assert(!v.canvasRejected && v.canvas->ring.radius==2.4f && v.canvas->find("0x5003"));
     panInsideRing(v);
 }
+// M4 navigation. Helpers: a mailbox's whitespace fields, landing on a window with the View's follow-up,
+// the prompt's .search line (answering the current .prompt) and a pose socket datagram.
+std::vector<std::string> fieldsOf(const std::string& path) {
+    AsyncFile::instance().flush();
+    std::istringstream in(readFile(path)); std::vector<std::string> out; std::string f;
+    while (in>>f) out.push_back(f);
+    return out;
+}
+std::vector<std::string> promptFields(const View& v) {
+    const auto f=fieldsOf(mailbox(v)+".prompt");
+    assert(f.size()==6 && f[0]=="v1" && f[1]==std::to_string(getpid()));
+    return f;
+}
+void landOn(View& v, const std::string& name) {
+    v.applyAim(v.canvas->land(name, v.baseView())); v.afterCanvasVerb();
+    ease(v, 120); v.interactionUntil=0;
+    assert(v.canvas->landed==name);
+}
+void typeSearch(View& v, unsigned long long edit, const std::string& text, const std::string& key, bool open=true) {
+    std::ostringstream line;
+    line << "v1 " << getpid() << ' ' << promptFields(v)[2] << ' ' << edit << ' ' << windows::encodeHex(text) << ' ' << (open ? 1 : 0) << ' ' << key << ' ' << bootNow() << '\n';
+    write(mailbox(v)+".search", line.str()); v.steer();
+}
+using State=canvas::Scene::State;
+// (n) The prompt's query moves the camera to the best match above the palette; Enter lands on it
+// (explicit focus) whatever the gaze rests on, and the prompt closes.
+void searchLandingBeatsGaze(View& v) {
+    work(v); landOn(v, "0x5005");
+    v.navigate({View::Verb::Search});
+    assert(v.canvas->state==State::Search && v.canvas->search.open && v.promptShown && !v.promptSdl);
+    const auto opened=promptFields(v);
+    assert(opened[3]=="1" && opened[4]=="OMXRTEST-canvas");
+    typeSearch(v, 1, "term 20487", "-");   // the title of 0x5007
+    const auto& s=v.canvas->search; const auto* w=v.canvas->find("0x5007");
+    assert(s.query=="term 20487" && !s.results.empty() && s.results.front().name=="0x5007" && v.canvas->selectedResult()=="0x5007");
+    assert(std::abs(v.canvas->ring.wrap(v.canvas->camera.targetFocusX-w->rect.cx()))<1 && std::abs(v.canvas->camera.targetFocusY-w->rect.cy())<1);
+    assert(v.canvas->aimY>w->rect.cy()+.2f*v.canvas->metrics.viewH);
+    assert(v.canvas->haloTarget("0x5007")==1 && v.canvas->haloTarget("0x5003")==0 && v.canvas->brightness(*v.canvas->find("0x5003"), 0)<50);
+    const auto hit=hitOn(v, "0x5003"); const double start=monotonicSeconds()+1;
+    for (double t=start;t<start+3;t+=.05) v.dwellOn(hit, t);
+    assert(v.canvas->selectedResult()=="0x5007");
+    const auto serial=v.pointerSerial;
+    v.gaze.current=hitOn(v, "0x5003");
+    typeSearch(v, 2, "term 20487", "enter");
+    assert(v.canvas->landed=="0x5007" && v.canvas->state==State::Work && v.hoverOutput=="0x5007" && v.pointerSerial==serial+1);
+    assert(!v.canvas->search.open && !v.promptShown);
+    const auto closed=promptFields(v);
+    assert(closed[3]=="0" && std::stoull(closed[2])==std::stoull(opened[2])+1);
+    v.gaze.current.reset(); ease(v, 120);
+}
+// (o) Esc clears the query first, then closes and restores state, landing and camera exactly.
+void escReverts(View& v) {
+    work(v); landOn(v, "0x5005");
+    const auto camera=v.canvas->camera; const auto rotation=v.targetRotation;
+    v.navigate({View::Verb::Search}); v.searchInput("term", "-");
+    assert(v.canvas->state==State::Search && v.canvas->search.query=="term");
+    v.searchInput("term", "esc");
+    assert(v.canvas->search.open && v.canvas->search.query.empty() && v.canvas->state==State::Search);
+    v.searchInput("", "esc");
+    assert(!v.canvas->search.open && v.canvas->state==State::Work && v.canvas->landed=="0x5005");
+    const auto& c=v.canvas->camera;
+    assert(c.targetFocusX==camera.targetFocusX && c.targetFocusY==camera.targetFocusY && c.targetZoom==camera.targetZoom);
+    assert(sameRotation(rotation, v.targetRotation));
+    ease(v, 60);
+}
+// (o2) The Quickshell prompt's Esc lines: the first clears its text (a plain edit), the second
+// reports open 0 with key esc, which closes help first and otherwise reverts; open 0 alone keeps the landing.
+void promptEscLines(View& v) {
+    work(v); landOn(v, "0x5005");
+    const auto camera=v.canvas->camera;
+    v.navigate({View::Verb::Search});
+    typeSearch(v, 1, "term", "-");
+    typeSearch(v, 2, "", "-");
+    assert(v.canvas->search.open && v.canvas->search.query.empty());
+    typeSearch(v, 3, "", "f1");
+    assert(v.canvas->helpOpen);
+    typeSearch(v, 4, "", "esc", false);
+    assert(!v.canvas->helpOpen && v.canvas->search.open);
+    typeSearch(v, 5, "", "esc", false);
+    assert(!v.canvas->search.open && v.canvas->state==State::Work && v.canvas->landed=="0x5005");
+    assert(v.canvas->camera.targetFocusX==camera.targetFocusX && v.canvas->camera.targetZoom==camera.targetZoom);
+    v.navigate({View::Verb::Search});
+    typeSearch(v, 1, "term", "-");
+    typeSearch(v, 2, "term", "-", false);
+    assert(!v.canvas->search.open && v.canvas->landed=="0x5005");
+    ease(v, 60);
+}
+// (o3) Two prompt keys between two polls: the key log replays Down before Enter, and keys already read
+// (by editSeq) are not replayed.
+void lostKeys(View& v) {
+    work(v); landOn(v, "0x5005");
+    v.navigate({View::Verb::Search});
+    typeSearch(v, 1, "term", "-");
+    assert(v.canvas->search.results.size()>3 && v.canvas->search.selected==0);
+    const auto second=v.canvas->search.results[1].name;
+    typeSearch(v, 3, "term", "down,enter");   // line 2 (down) was replaced before the renderer polled
+    assert(v.canvas->landed==second && !v.canvas->search.open);
+    ease(v, 60);
+    v.navigate({View::Verb::Search});
+    typeSearch(v, 1, "term", "-");
+    const auto order=v.canvas->search.results;
+    typeSearch(v, 2, "term", "down");
+    assert(v.canvas->selectedResult()==order[1].name);
+    typeSearch(v, 4, "term", "down,down,enter");   // the first down (edit 2) was read already
+    assert(v.canvas->landed==order[2].name);
+    ease(v, 60);
+}
+std::vector<std::string> fillFields(const View& v) {
+    const auto f=fieldsOf(mailbox(v)+".fill");
+    assert(f.size()==7 && f[0]=="v1" && f[1]==std::to_string(getpid()));
+    return f;
+}
+std::string logical(const View& v, float px) { return std::to_string(std::lround(px/v.canvas->settings.outputScale)); }
+// (p) Fill: fill size and .fill; untouched toggles restore, moved restores the old size at the new
+// centre, resized fills again; flick in fills from Work and flick out restores.
+void fillThreeCase(View& v) {
+    work(v); landOn(v, "0x5005");
+    auto& w=*v.canvas->findMutable("0x5005"); assert(canvas::Scene::onStage(w));
+    const auto before=w.rect; const auto f=canvas::fillSize(v.canvas->metrics, v.canvas->settings.outputScale);
+    v.navigate({View::Verb::Fill});
+    assert(v.canvas->state==State::Fill && v.canvas->filled=="0x5005" && w.rect.w==f.w && w.rect.h==f.h);
+    assert(std::abs(v.canvas->ring.wrap(w.rect.cx()-before.cx()))<1 && std::abs(w.rect.cy()-before.cy())<1);
+    auto line=fillFields(v); const auto seq=std::stoull(line[2]);
+    assert(line[3]=="0x5005" && line[4]==logical(v, f.w) && line[5]==logical(v, f.h));
+    ease(v, 120); panInsideRing(v);
+    v.navigate({View::Verb::Fill});
+    assert(sameRect(w.rect, before) && v.canvas->state==State::Work && !w.beforeFill);
+    line=fillFields(v);
+    assert(std::stoull(line[2])==seq+1 && line[4]==logical(v, before.w) && line[5]==logical(v, before.h));
+    v.navigate({View::Verb::Fill}); v.navigate({.verb=View::Verb::Nudge, .output="right"});
+    const auto moved=w.rect; v.navigate({View::Verb::Fill});
+    assert(v.canvas->state==State::Work && w.rect.w==before.w && w.rect.h==before.h);
+    assert(std::abs(v.canvas->ring.wrap(w.rect.cx()-moved.cx()))<1 && std::abs(w.rect.cy()-moved.cy())<1);
+    w.rect=before; v.canvas->refresh(monotonicSeconds());
+    // Resized since (a user resize, or a client or Lua clamp that missed the fill size): fill again, and the
+    // restore point stays the rect before the first Fill.
+    v.navigate({View::Verb::Fill}); w.sourceWidth=1200; w.sourceHeight=700; v.canvas->sizeFromBuffer(w);
+    v.navigate({View::Verb::Fill});
+    assert(v.canvas->state==State::Fill && w.rect.w==f.w && w.beforeFill && sameRect(*w.beforeFill, before));
+    w.sourceWidth=unsigned(f.w)-4; w.sourceHeight=unsigned(f.h); v.canvas->sizeFromBuffer(w);
+    v.navigate({View::Verb::Fill});
+    assert(v.canvas->state==State::Fill && w.beforeFill && sameRect(*w.beforeFill, before));
+    w.sourceWidth=unsigned(f.w); v.canvas->sizeFromBuffer(w);
+    v.navigate({View::Verb::Fill});
+    assert(v.canvas->state==State::Work && w.rect.w==before.w && w.rect.h==before.h);
+    w.rect=before; w.pixelW=unsigned(before.w); w.pixelH=unsigned(before.h); w.sourceWidth=w.sourceHeight=0; w.sized=false;
+    v.canvas->refresh(monotonicSeconds());
+    v.navigate({View::Verb::FlickIn}); assert(v.canvas->state==State::Fill);
+    ease(v, 120); panInsideRing(v);
+    v.navigate({View::Verb::FlickOut});
+    assert(v.canvas->state==State::Work && sameRect(w.rect, before));
+    ease(v, 120); assert(v.monitorMathCalls==0);
+}
+// (q) Alt-Tab: held steps reveal the list after 0.2 s and never move the camera; the finish lands with
+// explicit focus; a tap never reveals; without a release the switcher lands 1.5 s after the last step.
+void switcherHold(View& v) {
+    work(v); landOn(v, "0x5005");
+    auto& s=v.canvas->switcher; const auto rotation=v.targetRotation;
+    v.navigate({View::Verb::Switch, 1});
+    const size_t n=s.order.size();
+    assert(s.active && !s.revealed && s.selected==1 && n>3 && s.order.front()==v.canvas->stagedName);
+    s.openedAt-=.1; v.navigate({View::Verb::Switch, 1});
+    s.openedAt-=.15; v.navigate({View::Verb::Switch, 1});
+    assert(s.revealed && s.selected==3%n && sameRotation(rotation, v.targetRotation) && v.canvas->overlayOpen());
+    const auto target=s.order[3%n]; const auto serial=v.pointerSerial;
+    v.navigate({.verb=View::Verb::Switch, .begin=true});
+    assert(!s.active && !s.revealed && v.canvas->landed==target && v.hoverOutput==target && v.pointerSerial==serial+1);
+    ease(v, 60);
+    v.navigate({View::Verb::Switch, 1}); assert(!s.revealed);
+    const auto tap=s.order[1];
+    v.navigate({.verb=View::Verb::Switch, .begin=true});
+    assert(v.canvas->landed==tap && !s.revealed);
+    ease(v, 60);
+    v.navigate({View::Verb::Switch, 1});
+    const auto held=s.order[1];
+    s.lastStep-=1.6; v.steer();
+    assert(!s.active && v.canvas->landed==held);
+    ease(v, 60);
+}
+bool sameLayout(const canvas::Snapshot& a, const canvas::Snapshot& b) {
+    return a.rects.size()==b.rects.size() && std::equal(a.rects.begin(), a.rects.end(), b.rects.begin(),
+        [](const auto& x, const auto& y) { return x.first==y.first && sameRect(x.second, y.second); });
+}
+// (r) Arrange in Overview keeps windows in the band; undo and redo are exact.
+void arrangeUndo(View& v) {
+    work(v); v.navigate({View::Verb::FlickOut}); ease(v, 60);
+    assert(v.canvas->zoomedOut());
+    const std::pair<const char*, const char*> classes[]={{"0x5001", "firefox"}, {"0x5004", "code"}, {"0x5008", "firefox"}, {"0x5009", "code"}};
+    for (const auto& [name, cls]:classes) v.canvas->findMutable(name)->record.cls=cls;
+    const auto before=v.canvas->snapshot(); const float headingX=v.canvas->ring.unwrap(v.canvas->aimX);
+    (void)headingX;
+    v.navigate({View::Verb::Arrange});
+    const auto arranged=v.canvas->snapshot();
+    assert(!sameLayout(before, arranged) && v.canvas->zoomedOut());
+    // This set overflows the ring (900 px tall windows fit row 0 only), so the rest keep their places;
+    // arrangeFits checks overlap and grouping on a set that fits.
+    ease(v, 120); panInsideRing(v);
+    for (const auto& w:v.canvas->windows) assert(w.gone || canvas::inBand(w.rect, v.canvas->metrics));
+    v.navigate({View::Verb::Undo}); assert(sameLayout(before, v.canvas->snapshot()));
+    ease(v, 60); panInsideRing(v);
+    v.navigate({View::Verb::Redo}); assert(sameLayout(arranged, v.canvas->snapshot()));
+    ease(v, 60); panInsideRing(v);
+    v.navigate({View::Verb::Undo}); assert(sameLayout(before, v.canvas->snapshot()));
+    for (const auto& [name, cls]:classes) v.canvas->findMutable(name)->record.cls="foot";
+    ease(v, 60); assert(v.monitorMathCalls==0);
+}
+// (r2) Arrange from Work (Studio, the pose verb, SDL Ctrl+A) packs from the view heading, ends in Overview
+// over the new layout and undoes exactly.
+void arrangeFromWork(View& v) {
+    work(v); landOn(v, "0x5005");
+    const auto before=v.canvas->snapshot(); const auto undos=v.canvas->history.undo.size();
+    const float headingX=v.canvas->headingPoint().first;
+    v.navigate({View::Verb::Arrange});
+    assert(v.canvas->state==State::Overview && v.canvas->history.undo.size()==undos+1 && !sameLayout(before, v.canvas->snapshot()));
+    float nearest=INFINITY;
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.pinned) nearest=std::min(nearest, std::abs(v.canvas->ring.wrap(w.rect.x-headingX)));
+    assert(nearest<=v.canvas->settings.gapPx+1);
+    ease(v, 120); panInsideRing(v);
+    v.navigate({View::Verb::Undo}); assert(sameLayout(before, v.canvas->snapshot()));
+    ease(v, 60); assert(v.monitorMathCalls==0);
+}
+// A pinned window: out of the cull and hit testing (zero-size layout), Near for the governor at native demand; unpin restores.
+void pinned(View& v, const std::string& name) {
+    const auto index=size_t(v.canvas->find(name)-v.canvas->windows.data());
+    const auto& w=v.canvas->windows[index]; const auto& c=v.canvas->candidates;
+    assert(std::find(c.begin(), c.end(), index)!=c.end() && !w.staged);
+    v.navigate({.verb=View::Verb::Pin, .output=name});
+    assert(w.pinned && v.canvas->pinnedCount()==1 && v.canvas->projected[index].width==0);
+    assert(std::find(c.begin(), c.end(), index)==c.end());
+    const double t=monotonicSeconds();
+    v.canvas->schedule(false, t); v.canvas->schedule(false, t+.6);
+    assert(w.decision.tier==governor::Tier::Near);
+    // Never projected on the ring, it asks for its native buffer; zoomed out it stays Near.
+    auto& demanded=v.canvas->windows[index]; demanded.demandW=demanded.demandH=1;
+    v.canvas->schedule(true, t+.7);
+    assert(w.decision.tier==governor::Tier::Near && w.demandW==std::max(1u, w.pixelW) && w.demandH==std::max(1u, w.pixelH));
+    v.navigate({.verb=View::Verb::Pin, .output=name});
+    assert(!w.pinned && v.canvas->projected[index].width>0 && std::find(c.begin(), c.end(), index)!=c.end());
+}
+// (s) Neighbour is the 45° rule and focuses; nudge moves one snapped step; summon comes to the heading;
+// a pinned window leaves targeting and the cull and counts as near.
+void neighbourNudgeSummonPin(View& v) {
+    work(v); landOn(v, "0x5005");
+    const auto expected=canvas::neighbour("0x5005", canvas::Direction::Right, v.canvas->arrangeable(), v.canvas->ring);
+    assert(expected);
+    auto serial=v.pointerSerial;
+    v.navigate({.verb=View::Verb::Neighbour, .output="right"});
+    assert(v.canvas->landed==*expected && v.hoverOutput==*expected && v.pointerSerial==serial+1);
+    ease(v, 60);
+    auto& w=*v.canvas->findMutable(*expected); const auto r0=w.rect;
+    canvas::Rect step=canvas::snap(canvas::nudge(r0, canvas::Direction::Right, canvas::nudgeStep)); step.x=v.canvas->ring.unwrap(step.x);
+    v.navigate({.verb=View::Verb::Nudge, .output="right"});
+    assert(sameRect(w.rect, step) && std::abs(v.canvas->ring.wrap(w.rect.x-r0.x)-canvas::nudgeStep)<=10);
+    v.navigate({View::Verb::Undo}); assert(sameRect(w.rect, r0));
+    v.navigate({View::Verb::FlickOut}); ease(v, 60);
+    const auto* mover=v.canvas->find("0x5003"); auto others=v.canvas->taken();
+    std::erase_if(others, [](const auto& p) { return p.name=="0x5003"; });
+    float free=-1;
+    for (float x=0;x<v.canvas->ring.period() && free<0;x+=100) {
+        const auto at=canvas::snap({x-mover->rect.w/2, -mover->rect.h/2, mover->rect.w, mover->rect.h});
+        if (canvas::freeAt(at, others, v.canvas->settings.gapPx, v.canvas->ring.period())) free=x;
+    }
+    assert(free>=0);
+    v.canvas->camera.targetFocusX=v.canvas->aimX=free; v.canvas->camera.targetFocusY=v.canvas->aimY=0;
+    v.navigate({.verb=View::Verb::Summon, .output="0x5003"});
+    const auto& ring=v.canvas->ring;
+    const auto& summoned=v.canvas->find("0x5003")->rect;
+    assert(v.canvas->landed=="0x5003" && angle(ring.heading(summoned.cx())-ring.heading(free))<1 && canvas::freeAt(summoned, others, 0, ring.period()));
+    ease(v, 120); panInsideRing(v);
+    pinned(v, "0x5003");
+    assert(v.monitorMathCalls==0);
+}
+// The twelve windows plus a Chrome window, off the canvas or (member) on it.
+std::string listWithChrome(unsigned long long seq, bool member) {
+    auto text=mailboxFile(seq, twelve());
+    text+="0x9100 "+windows::encodeHex("google-chrome")+' '+windows::encodeHex("Docs - Google Chrome")+" 1280 800 20000 0 60 "
+        +(member ? "park" : "off")+" 0 4242 0 "+(member ? "1" : "0")+"\n";
+    return text;
+}
+// (t) A window off the canvas is found at x0.7; Enter asks for it (hover v4) and lands once it arrives.
+void bringToCanvas(View& v) {
+    write(mailbox(v)+".windows", listWithChrome(v.windowsSeq+1, false)); v.steer();
+    assert(!v.canvas->find("0x9100"));
+    work(v); v.navigate({View::Verb::Search});
+    typeSearch(v, 1, "chrome", "-");
+    const auto& results=v.canvas->search.results;
+    assert(results.size()==1 && results[0].name=="0x9100" && !results[0].canvas);
+    const auto serial=v.pointerSerial;
+    typeSearch(v, 2, "chrome", "enter");
+    assert(v.canvas->bringRequested=="0x9100" && v.hoverOutput=="0x9100" && v.pointerSerial==serial+1 && !v.canvas->search.open);
+    assert(v.pointerX==640 && v.pointerY==400);
+    assert(v.tick());
+    const auto f=hoverFields(v);
+    assert(f[3]=="1" && f[4]=="0x9100" && f[7]==std::to_string(serial+1));
+    write(mailbox(v)+".windows", listWithChrome(v.windowsSeq+1, true)); v.steer();
+    assert(v.canvas->find("0x9100") && v.canvas->landed=="0x9100" && v.canvas->state==State::Work && v.canvas->bringRequested.empty());
+    ease(v, 120); panInsideRing(v);
+}
+void sendPose(View& v, const std::string& packet) {
+    const int fd=socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0); assert(fd>=0);
+    sockaddr_un address{}; address.sun_family=AF_UNIX; std::memcpy(address.sun_path, v.posePath.c_str(), v.posePath.size()+1);
+    assert(sendto(fd, packet.data(), packet.size(), 0, reinterpret_cast<sockaddr*>(&address), sizeof(address))==ssize_t(packet.size()));
+    close(fd);
+    v.tracking.update(); v.steer();
+}
+// (u) Pose socket verbs route to the scene.
+void poseVerbs(View& v) {
+    work(v);
+    sendPose(v, "search"); assert(v.canvas->state==State::Search && v.promptShown);
+    sendPose(v, "arrange"); assert(!v.canvas->history.undo.empty() && v.canvas->state==State::Search);
+    sendPose(v, "undo"); assert(!v.canvas->history.redo.empty());
+    sendPose(v, "redo"); sendPose(v, "undo");
+    sendPose(v, "focus:0x5003");
+    assert(v.canvas->landed=="0x5003" && v.hoverOutput=="0x5003" && v.canvas->state==State::Work && !v.promptShown);
+    sendPose(v, "fill"); assert(v.canvas->state==State::Fill && v.canvas->landed==v.canvas->stagedName);
+    sendPose(v, "fill"); assert(v.canvas->state==State::Work);
+    sendPose(v, "pin"); assert(v.canvas->pinnedCount()==1);
+    sendPose(v, "pin"); assert(v.canvas->pinnedCount()==0);
+    sendPose(v, "help"); assert(v.canvas->helpOpen && v.canvas->overlayOpen());
+    sendPose(v, "help"); assert(!v.canvas->helpOpen);
+    sendPose(v, "overview"); assert(v.canvas->zoomedOut());
+    ease(v, 120); panInsideRing(v); assert(v.monitorMathCalls==0);
+}
+// (v) canvas.tsv field 9 switches the optional takeovers through the .mode heartbeat.
+void takeoverFlag(View& v) {
+    const auto heartbeat=[&](const char* flag) {
+        write(v.layoutPath, std::string("# canvas v1 60 2.4 60 0.35 0.8 1 300 all ")+flag+"\n");
+        v.nextCanvasCheck=0; v.reloadLayout(); assert(!v.canvasRejected);
+        v.steer();
+        const auto f=fieldsOf(mailbox(v)+".mode");
+        assert(f.size()==5 && f[0]=="v1" && f[1]==std::to_string(getpid()) && f[2]=="canvas" && f[3]==flag);
+    };
+    heartbeat("0"); assert(!v.canvas->settings.takeoverKeys);
+    heartbeat("1"); assert(v.canvas->settings.takeoverKeys);
+}
 }
 
 int main() {
@@ -615,12 +1008,14 @@ int main() {
         navigationInvariants(v); workAndOverview(v); zoomAnchor(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
         mailboxList(v); hoverV4(v); virtualCursor(v); clickPath(v); stageSourceFallback(v); stageRegion(v);
+        searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
+        bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
     firstMailboxLands(window, temp);
-    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp);
+    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule and the controls version gate passed\n";
+    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs and the takeover flag passed\n";
 }

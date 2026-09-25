@@ -110,7 +110,64 @@ static void neighbours() {
     const auto moved=nudge({10,10,5,5}, Direction::Left, 20);
     assert(moved.x==-10 && moved.y==10 && nudge(moved, Direction::Down, 20).y==30 && nudge(moved, Direction::Up, 20).y==-10);
 }
+// A category-like key over several classes: every group stays one contiguous run along the ring.
+static void grouping() {
+    std::vector<Placed> windows;
+    static const char* classes[]={"foot", "firefox", "kitty", "chromium", "code", "alacritty"};
+    const auto groupOf=[](const Placed& p) {
+        return p.cls=="foot" || p.cls=="kitty" || p.cls=="alacritty" ? std::string("terminal") : p.cls=="code" ? std::string("dev") : std::string("web");
+    };
+    for(int i=0;i<18;++i) windows.push_back({"0x"+std::to_string(100+i), {float(i*3000%13000), 0, 400, 300}, 0, classes[i%6]});
+    const auto out=arrange(windows, 2000, ring, m, gap, {"0x105", "0x101"}, groupOf);
+    assertApart(out);
+    // Along the ring, top-down inside a column.
+    std::vector<std::tuple<float,float,std::string>> along;
+    for(const auto& w:out) along.push_back({ring.unwrap(w.rect.x-2000), w.rect.y, groupOf(w)});
+    std::sort(along.begin(), along.end());
+    std::vector<std::string> runs;
+    for(const auto& [x, y, g]:along) if(runs.empty() || runs.back()!=g) runs.push_back(g);
+    assert(runs==(std::vector<std::string>{"terminal", "web", "dev"}));   // alacritty (0x105) is the most recent
+    // Inside a group: class, then MRU; the class overload groups by class alone.
+    assert(out[0].name=="0x105" && out[2].cls=="alacritty" && out[3].cls=="foot" && out[9].cls=="chromium");
+    const auto byClass=arrange(windows, 2000, ring, m, gap, {"0x105", "0x101"});
+    assert(byClass[0].cls=="alacritty" && byClass[3].cls=="firefox");
+    // A two-level key (category, class): classes of one category stay together even when a window of
+    // another category sits between them in MRU order (foot 0, firefox 1, alacritty 2).
+    const std::vector<Placed> three{{"0x1", {0, 0, 400, 300}, 0, "foot"}, {"0x2", {3000, 0, 400, 300}, 0, "firefox"}, {"0x3", {6000, 0, 400, 300}, 0, "alacritty"}};
+    const auto twoLevel=[](const Placed& p) { return std::string(p.cls=="firefox" ? "Web" : "Terminal")+'\t'+p.cls; };
+    const auto packed=arrange(three, 2000, ring, m, gap, {"0x1", "0x2", "0x3"}, twoLevel);
+    assert(packed[0].name=="0x1" && packed[1].name=="0x3" && packed[2].name=="0x2");
+}
+static Snapshot snapshotOf(float x) { return {{{"a", Rect{x, 0, 10, 10}}}}; }
+static void undoing() {
+    Undo u;
+    assert(!u.popUndo(snapshotOf(0)) && !u.popRedo(snapshotOf(0)));
+    u.checkpoint(snapshotOf(1)); u.checkpoint(snapshotOf(2));
+    auto back=u.popUndo(snapshotOf(3));
+    assert(back && back->rects[0].second.x==2 && u.undo.size()==1 && u.redo.size()==1);
+    auto forward=u.popRedo(snapshotOf(2));
+    assert(forward && forward->rects[0].second.x==3 && u.undo.size()==2 && u.redo.empty());
+    u.popUndo(snapshotOf(3)); assert(u.redo.size()==1);
+    u.checkpoint(snapshotOf(9)); assert(u.redo.empty() && u.undo.size()==2);   // a new change clears redo
+    for(int i=0;i<40;++i) u.checkpoint(snapshotOf(100+i));
+    assert(u.undo.size()==Undo::limit && u.undo.front().rects[0].second.x==110 && u.undo.back().rects[0].second.x==139);
+    for(int i=0;i<40;++i) u.popUndo(snapshotOf(200+i));
+    assert(u.undo.empty() && u.redo.size()==Undo::limit);
+}
+static void summoning() {
+    const float p=ring.period();
+    const auto free=summonRect({7000, -300, 800, 600}, p-100, 0, {}, ring, m, gap);
+    assert(free.w==800 && free.h==600 && std::abs(ring.wrap(free.cx()-(p-100)))<=10 && std::abs(free.cy())<=10 && free.x>=0 && free.x<p);
+    std::vector<Placed> others{{"a", {1600, -400, 800, 800}}, {"b", {2460, -400, 800, 800}}};
+    for(int i=0;i<8;++i) {
+        const auto r=summonRect({0, 0, 900, 500}, 2000, 0, others, ring, m, gap);
+        assert(freeAt(r, others, gap, p) && inBand(r, m) && r.w==900 && r.h==500);
+        others.push_back({"s"+std::to_string(i), r});
+    }
+    assert(std::abs(ring.wrap(others[2].rect.cx()-2000))<=3*(900+gap));   // the nearest free spot, not across the ring
+    assert(nudge({0,0,1,1}, Direction::Right, nudgeStep).x==100 && nudgeStep==5*20);
+}
 int main() {
-    placement(); dialogs(); arranging(); neighbours();
-    std::cout<<"Canvas placement: periodic no-overlap, determinism, dialog start, arrange and neighbours passed\n";
+    placement(); dialogs(); arranging(); neighbours(); grouping(); undoing(); summoning();
+    std::cout<<"Canvas placement: periodic no-overlap, determinism, dialog start, arrange, groups, neighbours, undo and summon passed\n";
 }

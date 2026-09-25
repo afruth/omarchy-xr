@@ -1,6 +1,7 @@
 #pragma once
 #include "canvas_model.hpp"
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -89,17 +90,31 @@ inline bool shelve(Placed& w, Shelf& shelf, int row, float headingX, const std::
         shelf.cursor=std::max(shelf.cursor, after(r.x+clearRight(r, hit->rect, gap, period))); shelf.open=false;
     }
 }
-// Groups by class, groups ordered by their most recent member; shelf-packed from the heading along
-// row 0, then +1, then -1. Sizes are kept. A canvas too full for three rows keeps the rest in place.
+// Groups (by default the class) ordered by their most recent member, then class, MRU and name inside a
+// group. A key "outer\tinner" (category, class) groups twice: outer groups by their most recent member
+// first, so a category stays together, then its inner groups the same way. Shelf-packed from the heading
+// along row 0, then +1, then -1. Sizes are kept. A canvas too full for three rows keeps the rest stacked
+// at the heading (M4 overflow policy; extra rows come later).
 inline std::vector<Placed> arrange(std::vector<Placed> windows, float headingX, const Ring& ring, const Metrics& m,
-                                   float gap, const std::vector<std::string>& mruOrder) {
-    std::map<std::string,size_t> rank, groupRank;
+                                   float gap, const std::vector<std::string>& mruOrder,
+                                   const std::function<std::string(const Placed&)>& groupOf) {
+    std::map<std::string,size_t> rank, groupRank, outerRank;
+    std::map<std::string,std::string> group, outer;
     for(size_t i=0;i<mruOrder.size();++i) rank.emplace(mruOrder[i], i);
     const auto rankOf=[&](const Placed& p) { const auto it=rank.find(p.name); return it==rank.end() ? mruOrder.size() : it->second; };
-    for(const auto& w:windows) { auto [it, fresh]=groupRank.emplace(w.cls, rankOf(w)); if(!fresh) it->second=std::min(it->second, rankOf(w)); }
+    const auto note=[&](std::map<std::string,size_t>& ranks, const std::string& key, size_t r) {
+        auto [it, fresh]=ranks.emplace(key, r); if(!fresh) it->second=std::min(it->second, r);
+    };
+    for(const auto& w:windows) {
+        const auto& key=group[w.name]=groupOf(w);
+        note(groupRank, key, rankOf(w)); note(outerRank, outer[w.name]=key.substr(0, key.find('\t')), rankOf(w));
+    }
     std::stable_sort(windows.begin(), windows.end(), [&](const Placed& a, const Placed& b) {
-        const auto ga=groupRank[a.cls], gb=groupRank[b.cls];
-        if(ga!=gb) return ga<gb;
+        const auto &ka=group[a.name], &kb=group[b.name], &oa=outer[a.name], &ob=outer[b.name];
+        if(outerRank[oa]!=outerRank[ob]) return outerRank[oa]<outerRank[ob];
+        if(oa!=ob) return oa<ob;
+        if(groupRank[ka]!=groupRank[kb]) return groupRank[ka]<groupRank[kb];
+        if(ka!=kb) return ka<kb;
         if(a.cls!=b.cls) return a.cls<b.cls;
         if(rankOf(a)!=rankOf(b)) return rankOf(a)<rankOf(b);
         return a.name<b.name;
@@ -119,6 +134,10 @@ inline std::vector<Placed> arrange(std::vector<Placed> windows, float headingX, 
         placed.push_back(w);
     }
     return placed;
+}
+inline std::vector<Placed> arrange(std::vector<Placed> windows, float headingX, const Ring& ring, const Metrics& m,
+                                   float gap, const std::vector<std::string>& mruOrder) {
+    return arrange(std::move(windows), headingX, ring, m, gap, mruOrder, [](const Placed& p) { return p.cls; });
 }
 // The 45° rule: candidates within 45° of the direction, scored 13·gap² + offset² (gap along, offset across).
 inline std::optional<std::string> neighbour(const std::string& from, Direction dir, const std::vector<Placed>& windows, const Ring& ring) {
@@ -145,4 +164,35 @@ inline Rect nudge(Rect r, Direction dir, float step) {
     else if(dir==Direction::Up) r.y-=step; else r.y+=step;
     return r;
 }
+// One nudge step: 5 snap cells, about 2.7 degrees at R 2.4. A nudge may overlap (phantomat).
+inline constexpr float nudgeStep=100;
+// Summon: centred at the heading (and y), snapped; a taken spot resolves like a new window from there.
+inline Rect summonRect(const Rect& r, float headingX, float y, const std::vector<Placed>& others, const Ring& ring,
+                       const Metrics& m, float gap) {
+    Rect at=snap({headingX-r.w/2, y-r.h/2, r.w, r.h}); at.x=ring.unwrap(at.x);
+    if(freeAt(at, others, gap, ring.period())) return at;
+    if(auto placed=placeNew(r.w, r.h, headingX, y, others, ring, m, gap)) return *placed;
+    return at;
+}
+// Undo of canvas layout changes (phantomat checkpointCanvas/applyCanvasSnapshot): a checkpoint
+// before each change clears redo; both stacks keep the latest 30.
+struct Snapshot { std::vector<std::pair<std::string,Rect>> rects; };
+struct Undo {
+    std::vector<Snapshot> undo, redo;
+    static constexpr size_t limit=30;
+    static void push(std::vector<Snapshot>& stack, Snapshot s) {
+        if(stack.size()>=limit) stack.erase(stack.begin());
+        stack.push_back(std::move(s));
+    }
+    void checkpoint(Snapshot s) { push(undo, std::move(s)); redo.clear(); }
+    // current: the layout being left, pushed onto the other stack.
+    std::optional<Snapshot> popUndo(Snapshot current) { return swap(undo, redo, std::move(current)); }
+    std::optional<Snapshot> popRedo(Snapshot current) { return swap(redo, undo, std::move(current)); }
+    static std::optional<Snapshot> swap(std::vector<Snapshot>& from, std::vector<Snapshot>& to, Snapshot current) {
+        if(from.empty()) return {};
+        Snapshot s=std::move(from.back()); from.pop_back();
+        push(to, std::move(current));
+        return s;
+    }
+};
 }

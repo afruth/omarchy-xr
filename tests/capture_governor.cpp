@@ -125,8 +125,37 @@ static void speed(){
 #endif
 }
 
+// Pinned windows rank first: Near even when smallest or off-screen, and Near still never exceeds four.
+static void pinned(){
+    Fixed g; auto in=desk();
+    in[1].pinned=true;                                  // 6 deg, the smallest visible window
+    in[20].pinned=true;                                 // off-screen
+    g.plan(in,false,0); auto out=g.plan(in,false,.6);
+    unsigned nearN=0;
+    for(const auto& d:out) nearN+=d.tier==Tier::Near;
+    assert(out[1].tier==Tier::Near && out[20].tier==Tier::Near && nearN==4 && out[0].tier==Tier::Focused);
+    for(int i=2;i<=10;++i) in[i].pinned=true;
+    g.plan(in,false,1); out=g.plan(in,false,2);
+    nearN=0; for(const auto& d:out) nearN+=d.tier==Tier::Near;
+    assert(nearN==4);
+}
+
+// Zoomed out, pinned windows still count as near (off-screen too); the others keep the overview rate.
+static void pinnedZoomedOut(){
+    Fixed g; auto in=desk();
+    in[3].pinned=true; in[30].pinned=true;
+    const auto out=g.plan(in,true,0);
+    assert(out[3].tier==Tier::Near && out[3].rateHz==nearHz && out[30].tier==Tier::Near && out[30].rateHz==nearHz);
+    assert(out[0].tier==Tier::Focused && out[1].tier==Tier::Overview && out[1].rateHz==overviewHz && out[31].tier==Tier::Idle);
+    for(int i=2;i<=10;++i) in[i].pinned=true;
+    unsigned nearN=0; for(const auto& d:g.plan(in,true,1)) nearN+=d.tier==Tier::Near;
+    assert(nearN==nearCount);
+}
+
 int main(){
     tiers();
+    pinned();
+    pinnedZoomedOut();
     hysteresis();
     overview();
     rateCap();

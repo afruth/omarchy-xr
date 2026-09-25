@@ -339,7 +339,7 @@ Other rules: park ↔ sliver moves go to Lua via the `.tiers` mailbox at most ev
 - Rows of `rowHeight` (850 px) around the ring, `gapPx` 60; row 0 at eye height, then one above, then one below (never more: ±25° pitch). Windows taller than a row are allowed (they span rows in placement collision terms) but placement prefers the ring before adding rows.
 - A window wider than `P/2` is clamped.
 - **New window**: (1) session position, (2) `Memory::claim()` by class/title, (3) parent rule (dialogs: centred over the parent, staged), (4) `placeNew()`: start at the camera focus, ring search 1..16 in 8 directions with step `(size + gap)`, periodic collision test, snap 20 px. Then a 300 ms halo pulse and, if outside the FOV, an edge cue (reuse `notification_draw.hpp` cue). The camera flies to it only if Hyprland focused it (§5.7).
-- **Arrange** (`CTRL+A`, Overview only; Studio button): category grouping + shelf-pack along the ring from the current heading, rows filled before adding one; undo/redo.
+- **Arrange** (`CTRL+A` in the prompt or the SDL window, Studio button, pose verb; from Work or Fill it ends in Overview): category grouping (categories by their most recent window, classes inside) + shelf-pack along the ring from the canvas point at the view heading, rows filled before adding one; undo/redo.
 - **Move by hand**: `SUPER+SHIFT+arrows` nudge one grid step; `Shift+Enter` in search = summon to the heading; in Overview a mouse drag (2D or real mouse) moves the gazed window along the ring. Head-drag is deferred (no hold-able gesture in the current control set).
 - **Pin**: keeps a window body-locked at 0.85·R (lazy-follow) until unpinned; pinned windows always count as near.
 - **Closed windows** fade out over 200 ms; memory keeps their slot.
@@ -349,7 +349,7 @@ Other rules: park ↔ sliver moves go to Lua via the `.tiers` mailbox at most ev
 | State | Camera | Input |
 |---|---|---|
 | **Work** | `zoom = workZoom(staged window)` (≤ 1), focus = staged window centre, eye dolly `panZ` from the zoom gesture; head look free | real mouse/keyboard into the staged window; gaze only halos; explicit actions move focus (§5.6) |
-| **Overview** | `zoom = fitBounds(...)`, focus = used-bounds centre (or of matches during search), `panZ = 0`; labels on; non-gazed dimmed; radar strip shown | gaze halos; flick-in / `fit_target` / click / Enter lands; wheel/pinch zooms about the latched anchor; 4-finger pan moves focus; **typing starts search** (the prompt opens with Overview) |
+| **Overview** | `zoom = fitBounds(...)`, focus = used-bounds centre (or of matches during search), `panZ = 0`; labels on; non-gazed dimmed; radar strip shown | gaze halos; flick-in / `fit_target` / click / Enter lands; wheel/pinch zooms about the latched anchor; 4-finger pan moves focus; **typing starts search** in an Overview entered from Work or Fill (the prompt opens with it; otherwise `SUPER+CTRL+G`, see M4 notes) |
 | **Search** | Overview + palette; camera follows the best match (`followSelection`, target moved up so the palette never covers it) | text; `↑/↓/Tab` cycle; `Ctrl+1..8` pick; `Enter` land; `Shift+Enter` summon; `Esc` clears, second `Esc` reverts camera and focus (`returnFocus` snapshot) |
 | **Fill** | staged window resized to `fillSize`, `zoom = 1`, eye dolly so it covers ≈ 90 % of the view; a soft leash (head turns > 15° pan within an oversized window, top-left kept visible) | as Work; `SUPER+F`/flick-out restores (three-case rule) |
 
@@ -378,11 +378,11 @@ The **canvas key set** is fixed (not user-configured) and active only while the 
 | 9 | `search` | `SUPER+CTRL+G` (free in Omarchy **[verified]**) | – |
 | 10 | `fill` | `SUPER+F` (takeover, **required**; `window.fullscreen` guard as backstop) | – |
 | 11 / 12 | `mru_next` / `mru_prev` (hold-to-show switcher; release lands) | `ALT+TAB` / `ALT+SHIFT+TAB` (takeover) | – |
-| 13 | `arrange` | `CTRL+A` (Overview submap only) | – |
+| 13 | `arrange` | `Ctrl+A` as a prompt key (the prompt holds the keyboard in Overview; no submap; mode reserved) | – |
 | 14 | `neighbour` | `SUPER+arrows` (takeover) | hex `left|right|up|down` |
-| 15 | `nudge` | `SUPER+SHIFT+arrows` | hex direction |
-| 16 | `pin` | `SUPER+O` (to confirm free in M4) | – |
-| 17 | `help` | `F1` (Overview submap only) | – |
+| 15 | `nudge` | `SUPER+SHIFT+arrows` (takeover, optional: Omarchy's *Swap window*) | hex direction |
+| 16 | `pin` | `SUPER+ALT+P` (free **[verified M4]**; `SUPER+O` is Omarchy's *Pop window out*) | – |
+| 17 | `help` | `F1` as a prompt key (no submap; mode reserved) | – |
 
 `live_controls.hpp`: modes ≥ 8 accepted only in canvas mode, require the stamp, and require a target only for 14/15 (the `mode>7` check at `:194` and the "≥ 6 needs target" rule at `:202` change accordingly). `input_settings.py` adds `slash`/`period` to `KEYS` and exempts takeover chords from the clash validator in canvas mode.
 
@@ -391,7 +391,7 @@ The **canvas key set** is fixed (not user-configured) and active only while the 
 - `Hit.output` = address; dwell radius constant in angle.
 - **Work: dwell only halos.** Focus moves on explicit actions: `fit_target`/flick-in on the gazed window, `SUPER+arrows`, Alt-Tab, search landing, a click, or the virtual cursor crossing into another window. (Dense small targets make dwell-focus steal keyboard focus while typing.)
 - Overview/Search: dwell = selection + halo; landing uses the gazed window if a dwell settled within 2 s, else the search selection, else MRU.
-- `Hud::interacting()` and an overlay under gaze suppress dwell; 400 ms `hoverFocusSettling` after keyboard/flick jumps via `interactionUntil`.
+- `Hud::interacting()` and an overlay under gaze (the view-centre ray meets a drawn overlay quad; a shown palette alone does not) suppress dwell; 400 ms `hoverFocusSettling` after keyboard/flick jumps via `interactionUntil`.
 
 ### 5.7 Focus follow (Hyprland → renderer)
 
@@ -400,7 +400,7 @@ On `window.active` Lua publishes `.focus` with the address; the renderer moves t
 ### 5.8 Glasses vs 2D
 
 - Glasses: the ring is physical — head turns walk along windows at Work zoom; Overview compresses the used ring into the view (or ±45°); overlays are body-locked at 0.9·R; the radar strip along the lower view edge shows ring positions and heading.
-- 2D and spectator: same scene; mouse look, wheel zoom, middle-drag pan, click to focus, `/` search, `F` Fill, `Tab` MRU, `Esc`; overlays in screen space; the spectator shows exactly what the wearer sees.
+- 2D and spectator: same scene; mouse look, wheel zoom, middle-drag pan, click to focus, `/` search, `F` Fill, `Tab` MRU, `Esc`; overlays are the same body-locked quads, which read as screen space in 2D (M4 notes); the spectator shows exactly what the wearer sees.
 
 ---
 
@@ -541,11 +541,49 @@ Open items found by M3 (not blockers):
 - [ ] Studio's Canvas tab (settings save, decimal fields, window count in the footer) in the real Quickshell Studio.
 - [ ] Direct mode: the region source keeps the staged window at ≥ 58 fps (no windowed settle there; the capture service runs during the presentation wait).
 
-### M4 — Navigation UX: search, Fill, switcher, arrange, pin, radar, help (2 weeks)
+### M4 — Navigation UX: search, Fill, switcher, arrange, pin, radar, help — **DONE** (2026-09-25; glasses checklist pending)
 **Changes**: `canvas_search.hpp`, `canvas_overlay.hpp` (body-locked placement, screen-space 2D), `SearchPrompt.qml` + `.search` (kept loaded in the plugin), `canvas_scene` states Search/Fill, summon/nudge/neighbour/pin/undo, hold-to-show switcher, radar strip, F1 help; `PoseSocket` verbs; Studio View-controls canvas buttons; Lua key set 8–17 with the optional takeovers; Fill dispatch behind the `SUPER+F` takeover from M3 (the `window.fullscreen` guard now triggers Fill); SDL mapping.
 **Acceptance**: open search with one chord in stereo (or by typing in Overview), camera follows the best match, Enter lands; Fill fills ≈ 90 % of the view with native text and restores; Alt-Tab shows the list while held; arrange + undo; pin stays body-locked; palette never covers the selection; all visible in spectator/2D.
-**Tests**: `canvas_search.cpp` (phantomat ranking cases: origin penalty, AND tokens, accent folding, non-canvas ×0.7), `canvas_preview.cpp` (PNG smoke of overlays), `canvas_focus.cpp` (search landing beats gaze; Esc reverts; Fill three-case restore), `controls.lua` (modes 8–17, tokens, submaps), `tst_search_prompt.qml`, `test_studio` verbs.
+**Tests**: `canvas_search.cpp` (phantomat ranking cases: origin penalty, AND tokens, accent folding, non-canvas ×0.7), `canvas_preview.cpp` (PNG smoke of overlays), `canvas_focus.cpp` (search landing beats gaze; Esc reverts; Fill three-case restore), `controls.lua` (modes 8–17, tokens, takeovers and their restore, `.fill`), `tst_search_prompt.qml`, `test_canvas.py` verbs and `canvas.tsv` field 9.
 **Shippable**: yes — feature-complete canvas.
+**Delivered** in five work packages: WP1 pure logic (`canvas_search.hpp` phantomat port, arrange grouped by category, `Undo` snapshots, the `.search`/`.prompt`/`.fill` codecs, `canvas.tsv` `takeoverKeys`); WP2 renderer states and verbs (Search/Fill, three-case Fill, hold-to-show switcher, arrange/undo/redo, neighbour/nudge/summon/pin, bring to canvas, modes 8–17, pose-socket verbs, SDL keys) with `canvas_focus.cpp`; WP3 `canvas_overlay.hpp` (palette, switcher, radar, F1 help, pinned quads) with `make check-canvas-preview`; WP4 the Lua v6 canvas key set with takeovers, release binds and the `.fill` consumer in `tests/controls.lua`; WP5 the Quickshell prompt (`SearchPrompt.qml`, `SearchPromptWindow.qml`, `tst_search_prompt.qml`), `canvas.tsv` field 9, Studio/backend canvas verbs, [`docs/window-canvas.md`](window-canvas.md) and this checklist.
+
+#### M4 notes
+
+Decisions taken while implementing M4:
+- **Mailboxes** beside the pose socket (all `v1`, one line, replaced atomically):
+  - `.prompt` (renderer → prompt): `v1 <pid> <seq> <open 0/1> <output|-> <stamp>`; `seq` counts every open and close, the line is rewritten with the heartbeat while open (boot-clock stamp), so a prompt older than 3 s belongs to a dead renderer and closes. The prompt converts the stamp with `/proc/uptime`.
+  - `.search` (prompt → renderer): `v1 <owner> <promptSeq> <editSeq> <hex text|-> <open 0/1> <keys> <stamp>` with keys from `enter shift-enter up down tab shift-tab esc ctrl-1..ctrl-8 ctrl-a ctrl-z ctrl-shift-z f1`. The prompt owns the keyboard, so it forwards keys; `editSeq` restarts with every `promptSeq`; the text is UTF-8 hex cut at 550 bytes on a character boundary; the stamp is Unix time. `keys` is `-` for a text edit, else the key log: the keys since the last text edit, comma-separated, oldest first, at most 8, the newest being this line's. The mailbox keeps one line, so two keys between two renderer polls (Down then Enter, key repeat) would otherwise lose the first; the renderer replays the keys whose `editSeq` (counting back from the line's) it has not read. The renderer applies the text, then the unseen keys in order (a key that ends the session drops the rest). The prompt's first Esc is a plain edit to the empty text; the second sends `open 0` with key `esc`, which the renderer routes through its Esc rule (help closes first, otherwise close and revert); `open 0` with any other key closes keeping the landing.
+  - `.fill` (renderer → Lua): `v1 <pid> <seq> <address> <w> <h> <stamp>` in logical px, applied only to the staged window. The renderer owns the fill size (0.9 of the view, so no soft leash) and the three-case restore; Lua only resizes.
+- **Chords**: pin is `SUPER+ALT+P` (`SUPER+O` is Omarchy's *Pop window out*); `SUPER+CTRL+G` search and `SUPER+F` Fill are always bound in canvas mode; the optional takeover set is `SUPER+TAB`, `ALT+TAB`/`ALT+SHIFT+TAB` (with `{release=true}` binds on `ALT_L`/`ALT_R` publishing mode 11 token `release`, plus a 1.5 s landing fallback), `SUPER+arrows` and `SUPER+SHIFT+arrows` (nudge collides with Omarchy's *Swap window*). Exit rebinds Omarchy's default dispatchers from `default/hypr/bindings/tiling.lua`.
+- **Takeover switch**: Studio → `canvas.tsv` field 9 (`takeoverKeys` 0/1 after `adoptPolicy`) → renderer settings → the `.mode` heartbeat flag → Lua (one live source).
+- **No submap**: the layer-shell prompt opens (holding exclusive keyboard focus) when Overview is entered from Work or Fill and with every explicit search (`SUPER+CTRL+G`, `/`, Studio, pose verb), so arrange, undo/redo and help arrive as prompt keys; modes 13 and 17 stay reserved, and Studio buttons, pose-socket verbs and SDL `Ctrl+A`/`F1` cover them in any state (arrange from Work or Fill ends in Overview). An Overview reached otherwise (at start, after Esc reverted a search to an Overview snapshot) has no prompt, deliberately: reopening it would grab the keyboard at start and make the dismissing Esc useless; `SUPER+CTRL+G` brings it back with the prompt keys.
+- **Palette clearance**: in Search the selection is centred with its bottom edge 1.5° above the full-height palette's top edge (berth pitch −5°, 480 raster px at 45 px/°) and its top 0.5° below the view top; 0.22 view heights above the aim when that fits. A selection taller than that band lowers the Search zoom until it fits (Esc restores the snapshot zoom).
+- **Dwell under overlays**: dwell is suppressed only while the view-centre ray meets a drawn overlay quad (`notifications::space::gazeHit` over the last `overlayQuads`), so in Search gaze still selects windows above the palette and a flick-in lands on a dwell settled within 2 s.
+- **Fill restore point**: filling again (the buffer differs from the fill size by 2 px or more: a user resize, a client minimum, or Lua's clamp to the output) keeps the rect from before the first Fill, so the window always restores to its pre-Fill size.
+- **Pinned windows** ask for their native buffer size (they are never projected on the ring) and hold a Near place (at most four, pinned first) zoomed in and zoomed out.
+- **Reserved chords**: Studio's hotkey validator rejects the canvas chords (`SUPER+F`, `SUPER+CTRL+G`, `SUPER+ALT+P` and the takeover set) in every mode, since canvas binds carry `XR:` descriptions the clash check skips; a profile saved before M4 still loads. The F1 help hides the takeover rows while the takeover switch is off.
+- **Deferred to M5**: the new-window cues of §5.1 (300 ms halo pulse, off-FOV edge cue) and the Overview mouse drag that moves the gazed window along the ring. Nudge, summon and arrange cover moving windows in M4.
+- **Prompt hosting**: `SearchPromptWindow.qml` (`WlrLayershell`, namespace `omarchy-xr-search`, overlay layer, exclusive keyboard only while visible) is instantiated once in `MonitorStudio.qml`, so it stays loaded with the plugin (`keepLoaded`). The renderer uses SDL text input only when its own window has keyboard focus; otherwise it asks the prompt. Fallback if a Studio version loads the panel lazily: move the host to `BarWidget.qml`.
+- **Overlays, one code path**: palette, switcher, radar, help and pinned windows are body-locked lazy-follow quads at 0.9 (pinned 0.85) of the eye-to-ring distance, drawn depth-test-off after the surfaces in stereo, the 2D window and the spectator alike; no separate screen-space path.
+- **Search index**: title ×1, class ×0.85, category ×0.55, MRU bonus `max(0, 36 − 4·rank)`, origin −24, non-canvas ×0.7 with *bring to canvas* (reusing the hover v4 staging path). Workspace names are not indexed (the `.windows` mailbox has none).
+- **Ring overflow**: arrange packs by category, then class, along the ring; windows that do not fit keep their place (M2 behaviour). Extra rows and shrinking idle windows are deferred. Nudge is 100 px and may overlap; arrange and summon avoid overlap while `placeNew` finds room.
+- **Studio**: `camera_control` also sends `overview search fill arrange undo redo pin help` in canvas mode (`ValueError` in monitor mode); the View controls relabel *Fit workspace*/*Fit monitor* to *Overview*/*Land on window* and add Search, Fill, Arrange and Undo; `status()` reports `canvasState`.
+
+**M4 glasses PR checklist**
+- [ ] SUPER+CTRL+G in stereo opens the search; typing in Overview (entered with SUPER+TAB or a flick out) searches too; the camera follows the best match and the palette never covers it; Enter lands, Shift+Enter summons, Esc clears then reverts.
+- [ ] The Quickshell prompt holds the keyboard only while open; focus returns to the staged window on close; no pointer warp while it is open.
+- [ ] A window off the canvas found by search is brought over and landed on.
+- [ ] SUPER+F fills ≈ 90 % of the view with native text; the three-case restore (untouched, moved, resized); browser F11 fills instead of going fullscreen.
+- [ ] ALT+TAB: a tap flips to the previous window, holding shows the list, releasing Alt lands (release binds fire); the 1.5 s fallback lands if they do not. Confirm one `hl.unbind("ALT + TAB")` drops both Omarchy binds.
+- [ ] SUPER+TAB, SUPER+arrows, SUPER+SHIFT+arrows drive the canvas; with the takeover switch off they keep Omarchy's meaning while SUPER+F, SUPER+CTRL+G and SUPER+ALT+P stay canvas keys.
+- [ ] Ctrl+A arranges by kind without overlap; Ctrl+Z / Ctrl+Shift+Z undo and redo.
+- [ ] SUPER+ALT+P pins the window body-locked and it stays readable while turning; unpin puts it back.
+- [ ] Radar strip and F1 help readable in the glasses; overlays lazily follow the head (no jitter within 12°).
+- [ ] Spectator and windowed preview show the same overlays; windowed keys `/ F O P Tab Alt+arrows F1 Esc`.
+- [ ] Stop: every taken chord has Omarchy's default binding again (`hyprctl binds -j`).
+- [ ] Studio View controls (Overview, Land on window, Search, Fill, Arrange, Undo) in the real Quickshell Studio; the prompt is loaded after Studio was opened once and hidden.
+- [ ] `make check-preview` pixel-identical (monitor mode unchanged).
 
 ### M5 — Capture scheduling: the pixel-budget ladder (1–2 weeks)
 **Changes**: full `capture_governor.hpp` (§4.4 ladder `60 › 40 › 30 › 24 › 20 › 15 › 10 › 6` under a 300 Mpix/s budget, importance order by angular size then MRU, tier caps, 2 s raise hysteresis, self-calibration from request→ready p50, GPU-p80 feedback, VRAM cap, overview rate `min(10, budget / Σ pixels)`, 2 in flight for windows rated > 30 Hz), `.tiers` writer in `live_controls.hpp` and `.tiers` consumer in Lua (sliver ↔ park moves for windows rated > 30 Hz, `no_follow_mouse` slivers), screencast-event rate limiting, Studio budget setting, `live_canvas.py` extended, performance table in docs.
@@ -647,7 +685,7 @@ Items marked † were later superseded by the M0 measurements (parked windows ar
 
 **UX/performance review**
 1. Geometry vs FOV — **accepted**: all constants FOV-derived (§4.3 table); Fill resizes the real window; never magnify above 1; frustum test.
-2. Shortcut collisions — **accepted** (as above); arrange/help in an Overview submap.
+2. Shortcut collisions — **accepted** (as above); arrange/help in an Overview submap (M4: prompt keys instead, see M4 notes).
 3. Dwell steals focus — **accepted**: dwell only halos in Work; the "1.5 s after keypress" variant **rejected** as unnecessary once dwell no longer focuses.
 4. Invisible mouse escape / 2D pointer path — **accepted**: virtual cursor, warp-back, XR cursor, SDL click path, return chord.
 5. Warm at 5–10 Hz stutters video — **accepted**: near windows get 24–40 Hz by angular size within the pixel budget (§4.4).

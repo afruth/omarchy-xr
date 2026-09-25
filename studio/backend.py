@@ -31,6 +31,9 @@ from clock import boot_time
 from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
 
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
+CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out")
+# Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
+CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
 
 def default_layout():
@@ -966,8 +969,10 @@ class Manager:
         self.save_presentation()
 
     def camera_control(self, action):
-        if action not in ("recenter", "fit", "fit_target", "zoom_in", "zoom_out"):
+        if action not in CAMERA_ACTIONS and action not in CANVAS_ACTIONS:
             raise ValueError("Unknown camera action")
+        if action in CANVAS_ACTIONS and not self.canvas_mode:
+            raise ValueError("Only available in Window canvas mode")
         if not self.viewer or self.viewer.poll() is not None:
             raise RuntimeError("Start stereo or a preview before using view controls.")
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
@@ -1103,6 +1108,7 @@ class Manager:
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
                 "canvasWindows": performance.get("canvasWindows", 0) if self.canvas_mode else 0,
+                "canvasState": performance.get("canvasState", "") if self.canvas_mode else "",
                 "restorationError": "; ".join(filter(None, (self.restoration_error, self.output_error, self.viewer_exit))), "glasses": glasses}
 
     def append_backend_log(self, text):
@@ -1230,7 +1236,9 @@ def action_canvas_settings(manager, request):
 
 
 def action_camera(manager, request):
-    messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out."}
+    messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out.",
+                "overview": "Overview toggled.", "search": "Search opened.", "fill": "Fill toggled.", "arrange": "Windows arranged.",
+                "undo": "Undone.", "redo": "Redone.", "pin": "Pin toggled.", "help": "Help toggled."}
     manager.camera_control(request["action"])
     return {"message": messages[request["action"]]}
 
@@ -1311,7 +1319,7 @@ def action_status(_manager, _request):
 
 def perform(manager, request):
     action = request["action"]
-    if action in ("recenter", "fit", "fit_target", "zoom_in", "zoom_out"):
+    if action in CAMERA_ACTIONS or action in CANVAS_ACTIONS:
         return action_camera(manager, request)
     handler = {
         "load": action_load,

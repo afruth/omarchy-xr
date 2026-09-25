@@ -44,6 +44,21 @@ void exercise(View& view,const std::string& directory) {
     request(6,next);assert(hud.count()==0 && !hud.visible());
     hud.release();
 }
+// Canvas verbs 8..17 exist only in canvas mode; Alt-Tab's release bind sends mode 11 with the token "release".
+void releaseToken(const std::string& directory) {
+    const auto accepted=[&](bool canvasMode,int mode,const std::string& token) {
+        const std::string pose=directory+(canvasMode?"/canvas.sock":"/monitors.sock");
+        LiveControls controls(pose);controls.setCanvasMode(canvasMode);
+        {std::ofstream file(pose+".controls");file<<"v3 "<<getpid()<<" 1 0 1 "<<mode<<' '<<token<<' '<<std::time(nullptr)<<'\n';}
+        controls.update();
+        return controls.fit==mode?controls.notificationTarget:std::string("rejected");
+    };
+    assert(accepted(true,11,hextoken::encodeHex("release"))=="release");
+    assert(accepted(true,12,"-").empty());
+    assert(accepted(true,14,"-")=="rejected"); // a direction needs its token
+    assert(accepted(false,11,hextoken::encodeHex("release"))=="rejected");
+    assert(accepted(true,6,hextoken::encodeHex("card"))=="card" && accepted(false,7,hextoken::encodeHex("card"))=="card");
+}
 int main() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     auto* window=SDL_CreateWindow("Notification controls",0,0,1280,720,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);assert(window);
@@ -54,7 +69,8 @@ int main() {
         View view(panels,false,spatial::Workspace{40},30,empty,empty,false,true,64,28,empty,60,false);
         view.window=window;exercise(view,temp);
     }
+    releaseToken(temp);
     AsyncFile::instance().flush();std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay and no camera fit passed\n";
+    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay, no camera fit and the canvas-only release token passed\n";
 }

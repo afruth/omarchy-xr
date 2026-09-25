@@ -18,7 +18,8 @@ UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking 
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
 	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
-	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns
+	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns \
+	$(BUILD)/test-canvas-search
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -137,9 +138,12 @@ $(BUILD)/test-capture-governor.o: tests/capture_governor.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-region-turns.o: tests/region_turns.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-search.o: tests/canvas_search.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(UNIT_LIBS)
+$(BUILD)/test-canvas-search: UNIT_LIBS = $(shell pkg-config --libs glib-2.0)
 
 compile_commands.json: $(APP_OBJS) $(UNIT_OBJS)
 	@python3 -c 'import json,pathlib,sys; root=pathlib.Path(sys.argv[1]); items=[json.loads(p.read_text()) for p in sorted(root.glob("*.json"))]; pathlib.Path(sys.argv[2]).write_text(json.dumps(items, indent=2)+"\n")' $(BUILD)/cc $@
@@ -167,6 +171,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-capture-cadence
 	./$(BUILD)/test-capture-governor
 	./$(BUILD)/test-region-turns
+	./$(BUILD)/test-canvas-search
 
 check: all run-units
 	lua tests/controls.lua
@@ -196,7 +201,7 @@ smoke-canvas: all $(BUILD)/spike-window-capture
 
 # Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
 # the offscreen canvas focus invariants (also in check-workspace-focus). Adds no coverage of its own.
-CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns,$(UNIT_BINS))
+CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns %canvas-search,$(UNIT_BINS))
 check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus
 	for t in $(CANVAS_UNITS); do ./$$t || exit 1; done
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
@@ -253,7 +258,8 @@ check-lint:
 	$(RUFF) check studio scripts tests
 	$(MYPY)
 	$(LUACHECK) config/xr-controls.lua tests/controls.lua
-	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml
+	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml \
+		studio/SearchPrompt.qml studio/SearchPromptWindow.qml
 	python3 scripts/function_length.py
 .PHONY: check-lint
 
@@ -318,6 +324,18 @@ check-preview: $(BUILD)/notification-preview $(BUILD)/image-diff
 	if [ -n "$(PREVIEW_UPDATE)" ]; then for s in $(PREVIEW_STILLS); do cp $(BUILD)/preview/$$s.png $(PREVIEW_BASELINE)/; done; fi
 	./$(BUILD)/image-diff $(PREVIEW_BASELINE) $(BUILD)/preview $(PREVIEW_STILLS)
 .PHONY: check-preview
+
+# Canvas overlays (palette, switcher, radar, help, pinned window) in the real renderer: six stereo stills in
+# $(BUILD)/canvas-preview-out. A content smoke (lit overlay regions, distinct eyes, no GL error), not a
+# pixel baseline, so fonts and drivers never break it; check-preview stays the monitor-mode pixel gate.
+CANVAS_PREVIEW_STILLS = overview search switcher help fill pinned
+$(BUILD)/canvas-preview: tests/canvas_preview.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+check-canvas-preview: $(BUILD)/canvas-preview
+	rm -rf $(BUILD)/canvas-preview-out && mkdir -p $(BUILD)/canvas-preview-out
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/canvas-preview $(BUILD)/canvas-preview-out
+	for s in $(CANVAS_PREVIEW_STILLS); do test -s $(BUILD)/canvas-preview-out/$$s.png || exit 1; done
+.PHONY: check-canvas-preview
 
 -include $(wildcard $(BUILD)/*.d)
 

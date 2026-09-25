@@ -5,7 +5,8 @@ application window sits on its own panel on a ring around you. You look at a win
 and the window you work in is live at 60 Hz with its menus, tooltips and mouse pointer. The design
 is in [infinite-canvas-plan.md](infinite-canvas-plan.md).
 
-It arrives with milestone M3. Search, Fill, the window switcher and arranging arrive in M4.
+It arrived with milestone M3; search, Fill, the window switcher, arranging, pinning, the radar strip
+and the F1 key help arrived with M4.
 
 ## Requirements
 
@@ -54,12 +55,52 @@ position. A window you moved off the canvas yourself stays where you put it; if 
 before, it is tiled again. Windows that had no recorded origin go to the laptop's active workspace.
 Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
 
-## Keys and the pointer
+## Keys
 
-- **SUPER+F** is taken over while the canvas runs. In M3 it does nothing visible (it will be *Fill*
-  in M4), and it never makes a window fullscreen. A window that asks for fullscreen itself, such as
-  a browser after F11, is put back at once, because a fullscreen window would cover the canvas
-  output.
+These are the canvas keys; **F1** shows the same table in the glasses (and in the preview).
+
+| Keys | What they do |
+|---|---|
+| **SUPER+CTRL+G** | Search your windows by title, class or kind (browser, terminal, editor, …). After you zoom out to Overview (SUPER+TAB or a flick out) you can also just start typing: the search field opens with it. |
+| type, **↑/↓**, **Tab/Shift+Tab** | Filter and move the selection; the camera follows the best match and the other windows dim. |
+| **Enter** / **Shift+Enter** | Land on the selection / summon it next to you first. A window that is not on the canvas yet is marked *bring to canvas* and is brought over. |
+| **Ctrl+1…8** | Land on that row of the results. |
+| **Esc** | Clears the text; a second Esc closes the search and puts the camera and focus back where they were. An open help closes first. |
+| **ALT+TAB** / **ALT+SHIFT+TAB** | Recent-window switcher: a quick tap flips to the previous window, holding shows the list (after 0.2 s), releasing Alt lands. |
+| **SUPER+F** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. |
+| **SUPER+TAB** | Overview on and off. |
+| **SUPER+arrows** | Land on the neighbouring window in that direction. |
+| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px (it may overlap others). |
+| **Ctrl+A**, **Ctrl+Z**, **Ctrl+Shift+Z** (in the search field) | Arrange: group windows by kind, then application, along the ring from where you look, without overlap, and show the Overview; undo and redo arrange, nudge and summon. Studio's **Arrange** and **Undo** work from any view. |
+| **SUPER+ALT+P** | Pin the window you work in to your view (body-locked), or unpin it. |
+| **F1** (in the search field) | This help. It lists the takeover keys only while the takeover switch is on. |
+
+**Take over Omarchy window keys in canvas mode** (Studio, **Canvas** tab, on by default) governs
+SUPER+TAB, ALT+TAB, ALT+SHIFT+TAB, SUPER+arrows and SUPER+SHIFT+arrows. Turned off, those keep
+Omarchy's meaning (next workspace, window cycling, focus and swap) and the canvas uses only
+SUPER+F, SUPER+CTRL+G and SUPER+ALT+P, which are always taken while the canvas runs. When the
+canvas stops, every taken chord gets Omarchy's default binding back; a chord you customised in
+your Hyprland config returns with the next `hyprctl reload`. Studio's XR hotkeys (Input tab) cannot
+use these canvas chords, in either mode.
+
+The **radar strip** under the view in Overview and search shows the whole ring around you: three
+row lanes, the window you work in in the accent colour and the part of the ring you are looking at.
+
+Studio's **View controls** show **Overview**, **Land on window**, **Search**, **Fill**, **Arrange**
+and **Undo** in canvas mode.
+
+**In the windowed preview** the renderer window takes these keys itself while it has keyboard focus:
+`/` search (then type), `F` Fill, `O` Overview, `P` pin, `Tab`/`Shift+Tab` switcher (Return, or 1.5 s without a step, lands),
+`Alt+arrows` neighbour, `Alt+Shift+arrows` nudge, `Ctrl+A`, `Ctrl+Z`, `Ctrl+Shift+Z`, `F1`, and
+`Esc`, which closes overlays before it quits. Without keyboard focus (and in the glasses) search
+typing goes to a small search field that Studio keeps loaded on the canvas output; it holds the
+keyboard only while the search is open.
+
+## The pointer and other keys
+
+- **SUPER+F** is taken over while the canvas runs: it is *Fill* (see Keys below) and never makes a
+  window fullscreen. A window that asks for fullscreen itself, such as a browser after F11, is put
+  back at once and filled instead, because a fullscreen window would cover the canvas output.
 - SUPER+number, SUPER+SHIFT+number and the scratchpad work as usual. A foreign workspace or the
   scratchpad that lands on the canvas output is sent to the laptop so the canvas never freezes.
   SUPER+SHIFT+number takes a window off the canvas and gives it back its borders and its tiled
@@ -75,6 +116,15 @@ Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
   pointer there. Looking at a window and using **Fit** does the same in the glasses.
 
 ## Troubleshooting
+
+- **Typing in Overview or SUPER+CTRL+G does nothing in the glasses**: the search field lives in the
+  Studio plugin, so Studio must have been started once in this Quickshell session (it stays loaded
+  when hidden). Check that `pose.sock.controls.prompt` in the runtime directory says `v1 <pid> <seq> 1 …`
+  while the search is open; the field answers in `pose.sock.controls.search`. The field opens by itself
+  only when you zoom out from a window; an Overview shown at start or after Esc closed a search has
+  none (so it never grabs the keyboard unasked): press SUPER+CTRL+G.
+- **ALT+TAB, SUPER+TAB or SUPER+arrows do Omarchy's thing during a canvas session**: the takeover
+  switch is off (Canvas tab), or the controls predate M4: reinstall them.
 
 - **"Window canvas needs XR controls v6"**: reinstall the controls (see Requirements). A controls
   file edited by hand, or an older one restored by a sync tool, shows the same hint.

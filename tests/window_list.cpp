@@ -78,7 +78,34 @@ static void cursor() {
                   "v1 o 1 0 inf 0 0 5", "v1 o 1 0 0 -inf 0 5", "v1 o 1 1000001 0 0 0 5", "v1 o 1 0 0 0 -1e7 5", "v1 o 1 0 0 0 0 s"})
         assert(!parseCursor(bad));
 }
+static void search() {
+    const auto s=parseSearch("v1 omxr-9 4 17 "+encodeHex("café ✓")+" 1 shift-enter 1700000000\n");
+    assert(s && s->owner=="omxr-9" && s->promptSeq==4 && s->editSeq==17 && s->text=="café ✓" && s->open && s->key=="shift-enter" && s->stamp==1700000000);
+    const auto closed=parseSearch("v1 o 0 0 - 0 - 5");
+    assert(closed && closed->text.empty() && !closed->open && closed->key=="-");
+    for(auto key:{"enter", "up", "down", "tab", "shift-tab", "esc", "ctrl-1", "ctrl-8", "ctrl-a", "ctrl-z", "ctrl-shift-z", "f1"})
+        assert(parseSearch(std::string("v1 o 1 2 - 1 ")+key+" 5")->key==key);
+    for(auto bad:{"", "v1 o 1 2 - 1 - ", "v1 o 1 2 - 1 - 5 6", "v2 o 1 2 - 1 - 5", "v1 o 1 2 - 1 ctrl-9 5", "v1 o 1 2 - 1 ctrl-0 5",
+                  "v1 o 1 2 - 1 space 5", "v1 o 1 2 - 1 ENTER 5", "v1 o 1 2 abc 1 - 5", "v1 o 1 2 ZZ 1 - 5", "v1 o 1 2 - 2 - 5",
+                  "v1 o x 2 - 1 - 5", "v1 o 1 -2 - 1 - 5", "v1 o 1 2 - 1 - s",
+                  "v1 o 1 2 - 1 down,,enter 5", "v1 o 1 2 - 1 down, 5", "v1 o 1 2 - 1 ,enter 5", "v1 o 1 2 - 1 -,enter 5",
+                  "v1 o 1 9 - 1 tab,tab,tab,tab,tab,tab,tab,tab,tab 5", "v1 o 1 2 - 1 down,bogus 5"})
+        assert(!parseSearch(bad));
+    // The key log: the keys since the last text edit, oldest first; the newest is this line's key.
+    const auto log=parseSearch("v1 o 1 3 - 1 down,down,enter 5");
+    assert(log && log->keys==(std::vector<std::string>{"down", "down", "enter"}) && log->key=="enter");
+    assert(parseSearch("v1 o 1 8 - 1 tab,tab,tab,tab,tab,tab,tab,tab 5")->keys.size()==maxSearchKeys);
+    assert(closed->keys.empty() && s->keys==std::vector<std::string>{"shift-enter"});
+    const auto prompt=promptLine(4242, 7, true, "OMXR-0123abcd-canvas", 1700000000);
+    assert(prompt=="v1 4242 7 1 OMXR-0123abcd-canvas 1700000000\n" && promptLine(1, 2, false, "", 3)=="v1 1 2 0 - 3\n");
+    const auto f=fields(std::string_view(prompt).substr(0, prompt.size()-1));
+    assert(f.size()==6 && canvasOutputName(f[4]));
+    const auto fill=fillLine(4242, 8, 0x55d4a1b2c3d0ULL, 1622, 950, 1700000001);
+    assert(fill=="v1 4242 8 0x55d4a1b2c3d0 1622 950 1700000001\n");
+    const auto g=fields(std::string_view(fill).substr(0, fill.size()-1));
+    unsigned w=0, h=0; assert(g.size()==7 && parseAddress(g[3])==0x55d4a1b2c3d0ULL && number(g[4],w) && w==1622 && number(g[5],h) && h==950);
+}
 int main() {
-    sample(); hex(); rejections(); cursor();
-    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header and the cursor line passed\n";
+    sample(); hex(); rejections(); cursor(); search();
+    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header, the cursor, search, prompt and fill lines passed\n";
 }

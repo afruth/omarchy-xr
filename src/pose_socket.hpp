@@ -7,6 +7,8 @@
 #include <ctime>
 #include <cstring>
 #include <stdexcept>
+#include <string>
+#include <utility>
 
 inline double monotonicSeconds() {
     timespec t{}; clock_gettime(CLOCK_MONOTONIC,&t);
@@ -19,6 +21,24 @@ public:
     tracking::Camera camera;
     bool recenterRequested=false,fitRequested=false,fitTargetRequested=false;
     int zoom=0,spectator=-1;
+    // Canvas verbs (Studio, scripts; docs/infinite-canvas-plan.md §5.5): the View reads them in canvas
+    // mode only and clears them otherwise. focus:0x<hex> lands on and focuses that window.
+    bool overviewRequested=false,searchRequested=false,fillRequested=false,arrangeRequested=false,undoRequested=false,
+        redoRequested=false,pinRequested=false,helpRequested=false;
+    std::string focusRequested;
+    bool canvasVerb(const std::string& packet) {
+        static constexpr std::pair<const char*,bool PoseSocket::*> verbs[]={{"overview",&PoseSocket::overviewRequested},
+            {"search",&PoseSocket::searchRequested},{"fill",&PoseSocket::fillRequested},{"arrange",&PoseSocket::arrangeRequested},
+            {"undo",&PoseSocket::undoRequested},{"redo",&PoseSocket::redoRequested},{"pin",&PoseSocket::pinRequested},{"help",&PoseSocket::helpRequested}};
+        for(const auto& [name,flag]:verbs) if(packet==name) { this->*flag=true; return true; }
+        if(!packet.starts_with("focus:0x") || packet.size()>6+18) return false;
+        focusRequested=packet.substr(6);
+        return true;
+    }
+    void clearCanvasVerbs() {
+        overviewRequested=searchRequested=fillRequested=arrangeRequested=undoRequested=redoRequested=pinRequested=helpRequested=false;
+        focusRequested.clear();
+    }
     explicit PoseSocket(const std::string& name):path(name) {
         if(path.empty()) return;
         sockaddr_un address{}; address.sun_family=AF_UNIX;
@@ -53,6 +73,7 @@ public:
                 else if(packet=="fit_target" || packet=="fit_center")fitTargetRequested=true;
                 else if(packet=="zoom_in")++zoom;
                 else if(packet=="zoom_out")--zoom;
+                else if(canvasVerb(packet)) {}
                 else camera.accept(packet,monotonicSeconds());
             }
         }
