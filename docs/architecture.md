@@ -19,7 +19,7 @@
 
 The viewer draws and navigates through one scene seam so that a window canvas can
 replace the monitor scene without touching capture, drawing or input. `View::mode`
-is a `SceneMode`: `Monitors` is live, `Canvas` is reserved for the infinite canvas.
+is a `SceneMode`: `Monitors` (the default) or `Canvas` (`--canvas`, developer preview).
 Geometry is read through `sceneGeometry()`, `sceneCylinder()` and
 `findLayout(name)`. Drawing walks `forEachSurface()`, which yields a read-only
 `SurfaceView` placed on a `Cylinder` (`src/surface.hpp`); `drawSurfaces(candidates)`
@@ -35,6 +35,38 @@ canvas mode will branch per verb. Sources implement `FrameSource`
 `make check-scene-seam` checks the seam on the real `View`: poses, lookups,
 surface views, the stats mode, navigate equivalence, an empty scene and
 tolerance of appended live-settings fields.
+
+**Canvas mode** (M2, renderer-only; `docs/infinite-canvas-plan.md`) puts every window on
+a 360° ring of radius R around the eye (`Cylinder{0,0, 2πR − gap, R}`, 900 px per world
+unit, three rows of 850 px). `canvas::Scene` (`src/canvas_scene.hpp`) owns the windows:
+it adopts the window list by address, places new windows (session memory, then the
+dialog's parent, then a ring search from the camera focus), fades closed ones out over
+200 ms, projects them into `PanelLayout`s whose `output` is the `0x` address, and culls
+them by angle around the heading with a 10° margin; `targeting::query` and
+`drawSurfaces` only walk those candidates. Work (one landed window) and Overview (the
+used arc fitted into the view) are camera states; every `navigate` verb has a canvas
+branch that aims the eye inside the ring (`|pan| ≤ R − 0.3`) and never calls monitor
+math. Captures come from one `WindowCaptureHub` (`src/window_capture.{hpp,cpp}`: one
+Wayland connection and a GBM device shared by all windows, `hyprland_toplevel_export_v1`
+by address, a request always outstanding, `ignore_damage` pulls for parked windows).
+`governor::Fixed` (`src/capture_governor.hpp`) assigns the fixed S1b rates each frame:
+the staged window 60 Hz on two staggered lanes, the four largest other visible windows
+24 Hz (0.5 s entry / 1 s exit hysteresis), other visible windows 10 Hz, every visible
+window 10 Hz in Overview (6 Hz when 10 would exceed the 300 Mpix/s budget), off-screen
+windows idle with a ≤ 256 px thumbnail; `src/capture_cadence.hpp` spreads the phases.
+Until the Lua `.windows` mailbox lands (M3) the list comes from `--canvas-windows-file`
+in the same format, polled by mtime every 100 ms; `canvas.tsv` (the `--canvas` path) is
+polled every 250 ms and `canvas-memory.tsv` next to it keeps positions. `pose.sock.stats`
+adds `canvasWindows`, `canvasState` (`work`/`overview`), `tiers` (counts per tier) and,
+per window in `captures`, `tier`, `rateHz`, `fps`, `visible` and `requestToReadyMs`.
+Lease loss releases textures, labels and the hub with the GL context and regenerates
+them; a lost compositor connection recreates the hub. Overview labels are a Pango atlas
+(`src/canvas_labels.hpp`). The pure parts are `src/canvas_model.hpp` (ring, FOV, camera,
+`canvas.tsv`), `src/window_list.hpp` (mailbox parser), `src/canvas_placement.hpp` and
+`src/canvas_memory.hpp`; their tests run in `make check` (`run-units`), the offscreen
+`test-canvas-focus` invariants in `make check-workspace-focus` (`make check-canvas` runs
+just these), and `tests/live_canvas.py` is the opt-in live harness (`make smoke-canvas`,
+`profile zoomed-in-near-parked`).
 
 ## Lifecycle
 
@@ -81,7 +113,9 @@ CI can run unit tests and synthetic rendering; it does not provide Omarchy.
 them to match `tests/baselines/notification-preview/` exactly; it guards the M1
 scene-seam refactor, which must not change a single pixel. The baseline is bound
 to the GPU driver that rendered it, so other machines regenerate it with
-`PREVIEW_UPDATE=1`.
+`PREVIEW_UPDATE=1`. Canvas mode leaves those stills untouched; its live check is
+`tests/live_canvas.py`, which runs the renderer windowed against a temporary
+`SPIKE-canvas` headless output and asserts the capture rates from `pose.sock.stats`.
 
 ## Next milestones
 

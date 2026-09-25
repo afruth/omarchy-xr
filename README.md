@@ -206,9 +206,12 @@ make check-workspace-focus # workspace-to-camera integration; hidden offscreen w
 make check-scene-seam # renderer scene seam (geometry, surfaces, stats mode); hidden offscreen window
 make smoke           # ten rendered frames; requires a graphical session
 make check-preview   # pixel-exact renderer regression against tests/baselines; same GPU driver
+make check-canvas    # alias: just the window canvas tests (check and check-workspace-focus run them too)
+make smoke-canvas    # opt-in, Hyprland session: canvas smoke against a temporary SPIKE-canvas output
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first
 python3 tests/live_dedicated.py # opt-in stereo/DRM handoff/restoration test
+python3 tests/live_canvas.py profile zoomed-in-near-parked # opt-in window canvas capture rates
 ```
 
 For UI review without changing a running XR session, use a native preview with
@@ -223,6 +226,37 @@ python3 scripts/preview-ui.py call tab 1
 python3 scripts/preview-ui.py capture /tmp/xr-monitors.png
 quickshell kill -p /tmp/omarchy-xr-ui-preview
 ```
+
+Window canvas (developer preview, not yet started by Studio) renders every window as its own quad
+on a 360° ring instead of monitor panels:
+`./build/omarchy-xr --canvas DIR/canvas.tsv --canvas-windows-file DIR/windows.tsv --pose-socket DIR/pose.sock`.
+`--canvas` names the settings file `canvas.tsv` (it may not exist yet; defaults apply; reloaded every
+250 ms), and `environment.tsv`, `tracking.tsv` and `gaze.tsv` are read from its directory. It cannot
+be combined with `--layout`, `--capture` or `--list-outputs`, and it needs Hyprland's
+`hyprland_toplevel_export_v1` v2. `F` toggles Overview and the staged window; `R` recenters.
+`pose.sock.stats` reports `"mode":"canvas"`, `canvasWindows`, the capture tiers and per-window
+rate and fps.
+
+The windows file uses the `.windows` mailbox format from `docs/infinite-canvas-plan.md` §3.1 and
+is re-read whenever its mtime changes. The first line is `v1 <owner> <seq> <stamp>`. Each further
+row is `<0xaddress> <class-hex> <title-hex> <w> <h> <atX> <atY> <focus_history_id> <stage|sliver|park|off> <floating 0/1> <pid> <xwayland 0/1> <canvas 0/1>`,
+with class and title in lowercase hex and `-` for an empty field. The `stage` row is the staged
+window; without one, the row with `focus_history_id` 0 is. The staged window is captured at 60 Hz
+and the camera lands on it. A malformed file, or one with a lower `seq`, is ignored and the
+previous list stays.
+
+`tests/live_canvas.py` (needs a Hyprland session; built on `tools/spike_canvas.py`, so run
+`make spike-canvas` first) writes such a file from `hyprctl clients -j`:
+`python3 tests/live_canvas.py write FILE [--stage 0xADDRESS] [--all]` writes it once, `watch`
+rewrites it every 500 ms (without `--all` only the spike test clients are listed). `profile
+[NAME] [--seconds 40] [--stereo]` is the M2 acceptance run: it creates the headless
+`SPIKE-canvas` output, spawns the profile's test clients (the default `zoomed-in-near-parked`:
+one staged 1920x1080 window, 4 + 6 parked 1280x720 and 39 parked 960x600), starts the
+renderer windowed on that output, feeds a steady pose, enters Overview after about 20 s and
+returns to Work two reports later, then prints the tier table and asserts the fixed rates
+(focused ≥ 58 fps, near ≥ 23, far 9–11, idle 0, Overview 10 or 6 Hz) and Hyprland CPU ≤ 20 %.
+`make smoke-canvas` (`--smoke`) runs `--smoke-test --stereo --canvas` against one staged and
+four parked clients. Both remove the output and the clients afterwards and give focus back.
 
 Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
 libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev libpango1.0-dev

@@ -10,13 +10,15 @@ LDLIBS += $(shell pkg-config --libs sdl2 gl wayland-client egl gbm libdrm pangoc
 
 APP_OBJS = $(BUILD)/main.o $(BUILD)/capture.o $(BUILD)/direct_output.o \
 	$(BUILD)/xdg-shell-protocol.o $(BUILD)/linux-dmabuf-protocol.o \
-	$(BUILD)/drm-lease-protocol.o $(BUILD)/wlr-screencopy-protocol.o
+	$(BUILD)/drm-lease-protocol.o $(BUILD)/wlr-screencopy-protocol.o \
+	$(BUILD)/window_capture.o $(BUILD)/hyprland-toplevel-export-protocol.o $(BUILD)/wlr-foreign-toplevel-protocol.o
 GEN_HEADERS = $(BUILD)/xdg-shell-client.h $(BUILD)/linux-dmabuf-client.h \
-	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h
+	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h $(BUILD)/hyprland-toplevel-export-client.h
 UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking \
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
-	$(BUILD)/test-frame-source
+	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
+	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -46,6 +48,8 @@ $(BUILD)/capture.o: src/capture.cpp $(GEN_HEADERS) | $(BUILD)
 	$(call compile_cxx,src/capture.cpp,$(BUILD)/capture.o,)
 $(BUILD)/direct_output.o: src/direct_output.cpp $(GEN_HEADERS) | $(BUILD)
 	$(call compile_cxx,src/direct_output.cpp,$(BUILD)/direct_output.o,)
+$(BUILD)/window_capture.o: src/window_capture.cpp $(GEN_HEADERS) | $(BUILD)
+	$(call compile_cxx,src/window_capture.cpp,$(BUILD)/window_capture.o,)
 
 $(BUILD)/wlr-screencopy-client.h: protocols/wlr-screencopy-unstable-v1.xml | $(BUILD)
 	wayland-scanner client-header $< $@
@@ -119,6 +123,18 @@ $(BUILD)/test-dwell.o: tests/dwell.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-frame-source.o: tests/frame_source.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-model.o: tests/canvas_model.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-window-list.o: tests/window_list.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-placement.o: tests/canvas_placement.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-memory.o: tests/canvas_memory.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-capture-cadence.o: tests/capture_cadence.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-capture-governor.o: tests/capture_governor.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -142,6 +158,12 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-sky-cull
 	./$(BUILD)/test-dwell
 	./$(BUILD)/test-frame-source
+	./$(BUILD)/test-canvas-model
+	./$(BUILD)/test-window-list
+	./$(BUILD)/test-canvas-placement
+	./$(BUILD)/test-canvas-memory
+	./$(BUILD)/test-capture-cadence
+	./$(BUILD)/test-capture-governor
 
 check: all run-units
 	lua tests/controls.lua
@@ -150,6 +172,9 @@ check: all run-units
 	./$(BUILD)/omarchy-xr --version
 	! ./$(BUILD)/omarchy-xr --invalid-option
 	! ./$(BUILD)/omarchy-xr --capture
+	! ./$(BUILD)/omarchy-xr --canvas x --layout y
+	! ./$(BUILD)/omarchy-xr --list-leases --layout x --capture y
+	! ./$(BUILD)/omarchy-xr --canvas-windows-file x
 
 # Address and undefined-behavior sanitizers on the unit binaries only.
 check-san:
@@ -158,6 +183,20 @@ check-san:
 # Requires a graphical session, or xvfb-run on CI.
 smoke: all
 	./$(BUILD)/omarchy-xr --smoke-test
+
+# Opt-in Window Canvas smoke (Hyprland session): SPIKE-canvas output, 1 staged + 4 parked test clients,
+# --smoke-test --stereo --canvas windowed; removes the output and the clients again. Not part of check.
+smoke-canvas: all $(BUILD)/spike-window-capture
+	python3 tests/live_canvas.py --smoke
+.PHONY: smoke-canvas
+
+# Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
+# the offscreen canvas focus invariants (also in check-workspace-focus). Adds no coverage of its own.
+CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor,$(UNIT_BINS))
+check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus
+	for t in $(CANVAS_UNITS); do ./$$t || exit 1; done
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
+.PHONY: check-canvas
 
 clean:
 	rm -rf $(BUILD) compile_commands.json
@@ -189,6 +228,11 @@ install-notifications:
 # Opt-in hardware probe; not part of unattended checks (moves the real pointer).
 $(BUILD)/capture-timing: tests/capture_timing.cpp src/capture.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc tests/capture_timing.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Opt-in window capture probe (Hyprland session): per-window distinct fps, request->ready p50, transport.
+$(BUILD)/window-capture-probe: tests/window_capture_probe.cpp $(BUILD)/window_capture.o $(BUILD)/linux-dmabuf-protocol.o \
+	$(BUILD)/hyprland-toplevel-export-protocol.o $(BUILD)/wlr-foreign-toplevel-protocol.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 # Optional Qt UI regression suite (requires Qt 6.6+ declarative development tools).
 QMLTESTRUNNER ?= /usr/lib/qt6/bin/qmltestrunner
@@ -223,9 +267,13 @@ check-environment: $(BUILD)/test-environment $(BUILD)/test-tron-environment
 $(BUILD)/test-workspace-focus: tests/workspace_focus.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Hidden SDL window; exercises the actual renderer without capturing the desktop.
-check-workspace-focus: $(BUILD)/test-workspace-focus
+$(BUILD)/test-canvas-focus: tests/canvas_focus.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Hidden SDL window; exercises the actual renderer without capturing the desktop (monitor and canvas mode).
+check-workspace-focus: $(BUILD)/test-workspace-focus $(BUILD)/test-canvas-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
 .PHONY: check-workspace-focus
 
 $(BUILD)/test-scene-seam: tests/scene_seam.cpp $(APP_OBJS)
@@ -236,7 +284,7 @@ check-scene-seam: $(BUILD)/test-scene-seam
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-scene-seam
 .PHONY: check-scene-seam
 
-$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
+$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/gl_texture.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDLIBS)
 
 $(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_space.hpp src/targeting.hpp src/curvature.hpp | $(BUILD)

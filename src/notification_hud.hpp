@@ -3,6 +3,7 @@
 #include "async_file.hpp"
 #include "tracking.hpp"
 #include "notification_draw.hpp"
+#include "gl_texture.hpp"
 #include <SDL_opengl.h>
 #include <pango/pangocairo.h>
 #include <chrono>
@@ -110,17 +111,7 @@ class Hud {
             if(wake.wait_for(lock,std::chrono::milliseconds(100),[&]{return stopping;})) return;
         }
     }
-    static GLuint upload(const Raster& image) {
-        GLuint texture=0;glGenTextures(1,&texture);
-        glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
-        glPixelStorei(GL_UNPACK_ALIGNMENT,4);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
-        glPixelStorei(GL_UNPACK_SKIP_ROWS,0);glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);
-        glPushAttrib(GL_TEXTURE_BIT);glBindTexture(GL_TEXTURE_2D,texture);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,image.width,image.height,0,GL_BGRA,GL_UNSIGNED_BYTE,image.pixels.data());
-        glPopAttrib();glPopClientAttrib();return texture;
-    }
+    static GLuint upload(const Raster& image) { return gltex::uploadBgra(image.pixels.data(),image.width,image.height); }
     void receive(double now) {
         std::vector<std::shared_ptr<Raster>> next;
         {

@@ -1,5 +1,6 @@
 #pragma once
 #include "async_file.hpp"
+#include "hex_token.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -160,17 +161,9 @@ public:
         const auto now=bootSeconds();
         if(identity==notificationPublished && now==notificationStamp)return;
         notificationPublished=identity;notificationStamp=now;
-        std::string token;
-        constexpr char digits[]="0123456789abcdef";
-        for(unsigned char c:identity){token+=digits[c>>4];token+=digits[c&15];}
-        writeFile(path+".notification","v1 "+session+" "+(token.empty()?"-":token)+" "+std::to_string(now)+"\n");
+        writeFile(path+".notification","v1 "+session+" "+hextoken::encodeHex(identity)+" "+std::to_string(now)+"\n");
     }
-    static std::string decodeTarget(const std::string& token) {
-        if(token.empty() || token.size()>1100 || token.size()%2 || token.find_first_not_of("0123456789abcdef")!=std::string::npos)return {};
-        std::string identity;
-        for(size_t i=0;i<token.size();i+=2)identity+=char(std::stoul(token.substr(i,2),nullptr,16));
-        return identity;
-    }
+    static std::string decodeTarget(const std::string& token) { return hextoken::decodeHex(token); }
     void update() {
         zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); if (path.empty()) return;
         updatePan();
