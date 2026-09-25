@@ -103,4 +103,13 @@ void indicators(){
         if(position.y!=0)assert((y>0)==(position.y>0));
     }
 }
-int main(){placement();closestBerth();motion();reading();changingLayout();refreshRates();indicators();std::cout<<"Spatial placement, smooth motion, reading lock and directional cues passed\n";}
+void cylinderAlias(){
+    std::vector<PanelLayout> panels{{"a",0,0,1920,1080,40},{"b",1950,120,2560,1440,0}};
+    spatial::Workspace workspace;workspace.degrees=120;workspace.follow=true;
+    Scene a,b;a.monitors(panels,2240,660,4480/900.f,5,workspace);b.tessellate(panels,Cylinder{2240,660,4480/900.f,5,workspace});
+    assert(!a.surfaces.empty() && a.surfaces.size()==b.surfaces.size() && a.ceiling==b.ceiling);
+    for(size_t i=0;i<a.surfaces.size();++i)for(int k=0;k<4;++k){
+        const auto u=a.surfaces[i][k],v=b.surfaces[i][k];assert(u.x==v.x && u.y==v.y && u.z==v.z);
+    }
+}
+int main(){cylinderAlias();placement();closestBerth();motion();reading();changingLayout();refreshRates();indicators();std::cout<<"Spatial placement, smooth motion, reading lock and directional cues passed\n";}

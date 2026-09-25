@@ -1,5 +1,6 @@
 #pragma once
 #include "targeting.hpp"
+#include "surface.hpp"
 #include <array>
 #include <vector>
 
@@ -21,7 +22,10 @@ struct Scene {
     float tanH=.45f,tanV=.25f,ipd=.064f,depth=5;
     std::vector<std::array<Vec,4>> surfaces;
     float ceiling=0;
-    void monitors(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace){
+    void monitors(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace){tessellate(panels,cx,cy,span,distance,workspace);}
+    void tessellate(const std::vector<PanelLayout>& panels,const Cylinder& c){tessellate(panels,c.cx,c.cy,c.span,c.distance,c.workspace);}
+    // Occluding facets of every surface; keeps its own /900 pose so placements stay bit-identical.
+    void tessellate(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace){
         surfaces.clear();ceiling=eye.y;
         for(const auto& p:panels){
             const float w=p.width/900,h=p.height/900;

@@ -34,7 +34,10 @@ void makeScene(View& view,const std::filesystem::path& directory){
     view.sceneBounds();view.primeCamera();view.panZ=view.targetPanZ;
     {std::ofstream file(directory/"environment.tsv");file<<"72 0 \"builtin:tron\" 1\n";}
     view.environment=std::make_unique<SkyEnvironment>((directory/"environment.tsv").string());
-    view.environment->update(monotonicSeconds());view.accent.update(monotonicSeconds());
+    // Reproducible pixels: the sky pulse runs on the synthetic clock and the accent is the stock
+    // colour, not this machine's Omarchy theme, so check-preview can diff against a baseline.
+    view.accent.path=(directory/"colors.toml").string();
+    view.environment->update(100);view.accent.update(100);
     publish(directory);view.notificationHud=std::make_unique<notifications::Hud>(directory.string());
     for(int i=0;i<100 && !view.notificationHud->visible();i++){SDL_Delay(10);view.notificationHud->update(view.tracking.camera,100);}
     assert(view.notificationHud->visible());
@@ -87,6 +90,7 @@ int main(int argc,char** argv){
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     auto* window=SDL_CreateWindow("Spatial notification preview",0,0,width*2,height,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);assert(window);
     auto context=SDL_GL_CreateContext(window);assert(context);
+    std::cout<<"OpenGL renderer: "<<glGetString(GL_RENDERER)<<'\n';
     const std::string empty;std::vector<Panel> panels(3);
     for(int i=0;i<3;++i)panels[i].layout={"preview-"+std::to_string(i),float(i*1950),0,1920,1080};
     View view(panels,false,spatial::Workspace{40},30,empty,empty,false,true,64,28,empty,60,false);view.window=window;

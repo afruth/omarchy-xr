@@ -36,6 +36,7 @@ struct DesktopCapture::Impl {
     bool ready = false, rebake = false;
     double interval = 1000./60;
     double importMs = -1;
+    double requestToReadyMs = -1;
     std::string failure;
     using Clock = std::chrono::steady_clock;
     Clock::time_point requested{}, next{}, readyAt{};
@@ -177,6 +178,7 @@ struct DesktopCapture::Impl {
         auto& self=*static_cast<Impl*>(data);
         self.ready = true;
         self.readyAt = Clock::now();
+        self.requestToReadyMs = std::chrono::duration<double,std::milli>(self.readyAt-self.requested).count();
     }
     static void onFailed(void* data, zwlr_screencopy_frame_v1*) {
         auto& s=*static_cast<Impl*>(data);
@@ -217,7 +219,7 @@ DesktopCapture::DesktopCapture() : impl(std::make_unique<Impl>()) {}
 DesktopCapture::~DesktopCapture() = default;
 void DesktopCapture::service(){if(impl->display && impl->failure.empty())impl->pump();}
 void DesktopCapture::setIncludeCursor(bool enabled){impl->includeCursor=enabled;}
-void DesktopCapture::setFrameRate(unsigned fps) { impl->interval = 1000. / std::clamp(fps, 1u, 120u); }
+void DesktopCapture::setFrameRate(unsigned fps,unsigned inFlight,double phase) { (void)inFlight; (void)phase; impl->interval = 1000. / std::clamp(fps, 1u, 120u); }
 void DesktopCapture::setDemand(bool visible,unsigned width,unsigned height){
     width=std::max(1u,width);height=std::max(1u,height);
     // The native GPU image does not depend on the requested size. Re-blit it
@@ -228,6 +230,7 @@ void DesktopCapture::setDemand(bool visible,unsigned width,unsigned height){
 }
 const char* DesktopCapture::transport() const{return impl->gpuMode?"dmabuf":"shm";}
 double DesktopCapture::importLatencyMs() const{return impl->importMs;}
+double DesktopCapture::requestToReadyMs() const{return impl->requestToReadyMs;}
 unsigned DesktopCapture::requests() const{return impl->requestCount;}
 const std::string& DesktopCapture::error() const { return impl->failure; }
 bool DesktopCapture::connect() {
