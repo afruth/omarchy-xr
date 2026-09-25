@@ -5,8 +5,13 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 5
-local setHoverTimer
+local CONTROLS_VERSION = 6
+-- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
+local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
+local CANVAS_MONITOR_PATTERN = "^OMXR%-%x%x%x%x%x%x%x%x%-canvas$"
+local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=true}
+local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17}
+local setHoverTimer, updateCanvas, releasePointer
 local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 local function retireHoverTimer()
@@ -18,18 +23,59 @@ end
 local function retireWorkspaceEvents()
     for _,subscription in ipairs(omarchy_xr_controls.workspace_events or {}) do subscription:remove() end
 end
+-- Canvas state that must survive a config reload: journaled origins, the staged address,
+-- event subscriptions, the SUPER+F takeover and the mailbox sequence numbers.
+local function canvasState()
+    omarchy_xr_canvas = omarchy_xr_canvas or {origin={}, staged=nil, events={}, fill=nil, windowsSeq=0, cursorSeq=0}
+    return omarchy_xr_canvas
+end
+local canvas = canvasState()
+local function retireCanvasEvents()
+    for _,subscription in ipairs(canvas.events or {}) do subscription:remove() end
+    canvas.events={}
+end
+local function retireFill()
+    local binding=canvas.fill
+    if not binding then return false end
+    pcall(function() binding:remove() end)
+    canvas.fill=nil
+    return true
+end
+-- Omarchy binds SUPER+F with o.bind, which discards the handle, and there is no hl.get_binds:
+-- its default dispatch is the only thing that can be restored (a custom SUPER+F returns on reload).
+local function restoreFullscreen()
+    retireFill()
+    hl.unbind("SUPER + F")
+    hl.bind("SUPER + F", hl.dsp.window.fullscreen({mode="fullscreen"}), {description="Full screen"})
+end
 retireHoverTimer()
 retireWorkspaceEvents()
+local function retireCanvas()
+    retireCanvasEvents()
+    if canvas.fill then restoreFullscreen() end
+end
+retireCanvas()
 local session, serial, total, fit_serial, fit_mode = nil, 0, 0, 0, 0
 local workspacePending, gazeDispatch = false, false
-local focusSerial, focusWaiting = 0, nil
-local active = false
+local focusWaiting = nil
+local active, canvasMode = false, false
 local lastTap, tapBlockedUntil=nil,0
 local function bootSeconds()
     local file=io.open("/proc/uptime","r")
     if not file then return os.time() end
     local seconds=file:read("*n");file:close()
     return seconds or os.time()
+end
+-- Every mailbox beside the pose socket is replaced atomically.
+local function writeMailbox(suffix,text)
+    local file=io.open(path..suffix..".tmp","w")
+    if not file then return end
+    file:write(text);file:close();os.rename(path..suffix..".tmp",path..suffix)
+end
+local focusSerial=0
+local function writeFocus(name)
+    focusSerial=focusSerial+1
+    writeMailbox(".focus",string.format("v1 %s %d %s %d\n",session,focusSerial,name,math.floor(bootSeconds())))
 end
 local function fresh(stamp)
     if stamp==nil then return false end
@@ -56,6 +102,7 @@ local function cancelTap()
 end
 local function publish(delta, mode, target)
     if not active then return end
+    if mode and mode>=8 then target=target or "-" end
     total = total + (delta or 0)
     serial = serial + 1
     if mode then fit_serial = serial; fit_mode = mode
@@ -128,10 +175,7 @@ local panSerial,panId,panX,panY,panActive=0,0,0,0,false
 local function publishPan()
     if not active then return end
     panSerial=panSerial+1
-    local file=io.open(path..".pan.tmp","w")
-    if not file then return end
-    file:write(string.format("v2 %s %d %d %.9f %.9f %d %d\n",session,panSerial,panId,panX,panY,panActive and 1 or 0,math.floor(bootSeconds())))
-    file:close();os.rename(path..".pan.tmp",path..".pan")
+    writeMailbox(".pan",string.format("v2 %s %d %d %.9f %.9f %d %d\n",session,panSerial,panId,panX,panY,panActive and 1 or 0,math.floor(bootSeconds())))
 end
 local panGesture={
     start=function(e)
@@ -148,7 +192,7 @@ local panGesture={
 }
 local function recordTap(now)
     if lastTap and now-lastTap>=40 and now-lastTap<=400 then
-        lastTap=nil;publish(0,3);return
+        lastTap=nil;publish(0,3);releasePointer();return
     end
     if not lastTap or now-lastTap>400 or now<lastTap then lastTap=now end
 end
@@ -254,6 +298,7 @@ local function refresh()
     if live ~= active then applyLive(live) end
     if active and panActive then publishPan() end
     writeControlsVersion()
+    updateCanvas()
     if setHoverTimer then setHoverTimer(active) end
 end
 local timer = hl.timer(refresh, {timeout=250, type="repeat"})
@@ -274,6 +319,390 @@ omarchy_xr_controls.workspace_events={
     hl.on("workspace.active",workspaceChanged),
     hl.on("monitor.focused",workspaceChanged),
 }
+-- Window canvas (§3): the renderer's `.mode` heartbeat switches names from monitors to window
+-- addresses. The staged window floats at the canvas output's origin on CANVAS_WS; every other
+-- canvas window is hidden on PARK_WS. Events only mark the list dirty; the timers write it.
+local MAX_ROWS=512
+local PROPS={{"border_size","0"},{"rounding","0"},{"no_anim","1"},{"no_shadow","1"},{"no_blur","1"},{"no_dim","1"}}
+local windowsDirty,lastWindowsWrite,canvasPolicy,canvasExcludes=false,-math.huge,"all",{}
+local snapshot,focusPending,focusAddress={},nil,nil
+local overflowX,overflowY,cursorLine,cursorWritten=0,0,nil,-math.huge
+local function pair(value)
+    if type(value)~="table" then return 0,0 end
+    return value.x or value[1] or 0,value.y or value[2] or 0
+end
+local function logicalSize(m)
+    local scale=m.scale or 1
+    return (m.width or 0)/scale,(m.height or 0)/scale
+end
+local function onMonitor(m,x,y)
+    local w,h=logicalSize(m)
+    return x>=m.x and x<m.x+w and y>=m.y and y<m.y+h
+end
+local function canvasMonitor()
+    for _,m in ipairs(hl.get_monitors()) do
+        if m.name and m.name:match(CANVAS_MONITOR_PATTERN) then return m end
+    end
+end
+local function laptopMonitor()
+    for _,m in ipairs(hl.get_monitors()) do
+        if m.name and not m.name:match("^OMXR%-") then return m end
+    end
+end
+local function isMember(w)
+    local workspace=w.workspace
+    return workspace~=nil and (workspace.name==CANVAS_WS or workspace.name==PARK_WS)
+end
+local function isRegular(w)
+    if not w.mapped or (w.workspace and w.workspace.special) or EXCLUDED_CLASSES[w.class or ""] then return false end
+    return not tostring(w.title or ""):find("^Omarchy XR") and w.xdg_tag==nil
+end
+-- canvas.tsv `exclude <class|pid>` rows (the user's exclusions and Studio itself): never adopted.
+local function isExcluded(w)
+    return canvasExcludes[tostring(w.class or "")] or canvasExcludes[tostring(math.floor(w.pid or -1))] or false
+end
+-- The renderer rejects tokens over 550 bytes; a cut never splits a UTF-8 character.
+local function hexToken(text)
+    text=tostring(text or "")
+    if #text>550 then
+        local cut=551
+        for _=1,3 do if cut>1 and (text:byte(cut)&0xC0)==0x80 then cut=cut-1 end end
+        text=text:sub(1,cut-1)
+    end
+    if text=="" then return "-" end
+    return (text:gsub(".",function(c) return ("%02x"):format(c:byte()) end))
+end
+local function windowDispatch(kind,address,spec)
+    spec=spec or {};spec.window="address:"..address
+    hl.dispatch(hl.dsp.window[kind](spec))
+end
+local function listWindows()
+    local fine,list=pcall(hl.get_windows)
+    local out={}
+    if not fine or type(list)~="table" then return out end
+    for _,w in ipairs(list) do if w.address and isRegular(w) then out[#out+1]=w end end
+    return out
+end
+-- Canvas windows float without decorations; the origin is recorded before the first change.
+local function enforce(w)
+    local address=w.address
+    if not canvas.origin[address] then
+        local width,height=pair(w.size)
+        local x,y=pair(w.at)
+        canvas.origin[address]={floating=w.floating,w=width,h=height,x=x,y=y}
+        for _,prop in ipairs(PROPS) do windowDispatch("set_prop",address,{prop=prop[1],value=prop[2]}) end
+    end
+    if not w.floating then windowDispatch("float",address,{action="float"}) end
+end
+local function place(w)
+    if w.address==canvas.staged then return "stage" end
+    return w.workspace and w.workspace.name==PARK_WS and "park" or "off"
+end
+local function flag(value) return value and 1 or 0 end
+local function windowRow(w)
+    local width,height=pair(w.size)
+    local x,y=pair(w.at)
+    local function size(value) return math.max(1,math.min(16384,math.floor(value+.5))) end
+    return string.format("%s %s %s %d %d %d %d %d %s %d %d %d %d",w.address,hexToken(w.class),hexToken(w.title),
+        size(width),size(height),math.floor(x+.5),math.floor(y+.5),math.floor(w.focus_history_id or 0),place(w),
+        flag(w.floating),math.max(0,math.floor(w.pid or 0)),flag(w.xwayland),flag(isMember(w)))
+end
+local function remember(w)
+    local x,y=pair(w.at)
+    local width,height=pair(w.size)
+    snapshot[w.address]={x=x,y=y,w=width,h=height}
+end
+-- One row per regular window, canvas members first when the list is over the cap.
+local function windowRows(list)
+    local members=0
+    for _,w in ipairs(list) do if isMember(w) then members=members+1 end end
+    local others,rows=MAX_ROWS-members,{}
+    snapshot={}
+    for _,w in ipairs(list) do
+        local member=isMember(w)
+        if member and not isExcluded(w) then enforce(w) end
+        remember(w)
+        if #rows<MAX_ROWS and (member or others>0) then
+            rows[#rows+1]=windowRow(w)
+            if not member then others=others-1 end
+        end
+    end
+    return rows
+end
+local function publishWindows(now,mon)
+    local rows=windowRows(listWindows())
+    canvas.windowsSeq=canvas.windowsSeq+1
+    local header=string.format("v1 %s %d %d %d %d %s",session,canvas.windowsSeq,math.floor(now),math.floor(mon.x),math.floor(mon.y),mon.name)
+    rows[#rows+1]=""
+    writeMailbox(".windows",header.."\n"..table.concat(rows,"\n"))
+    windowsDirty=false;lastWindowsWrite=now
+end
+local function stageWindow(address,mon)
+    local fine,w=pcall(hl.get_window,"address:"..address)
+    if not fine or not w then return false end
+    local previous=canvas.staged
+    if previous and previous~=address then windowDispatch("move",previous,{workspace="name:"..PARK_WS,follow=false}) end
+    enforce(w)
+    -- The stage band is the whole output in M3: the window sits at its origin, clamped to it.
+    local maxW,maxH=logicalSize(mon)
+    local width,height=pair(w.size)
+    width,height=math.floor(math.min(width,maxW)),math.floor(math.min(height,maxH))
+    windowDispatch("move",address,{workspace="name:"..CANVAS_WS,follow=false})
+    windowDispatch("resize",address,{x=width,y=height})
+    windowDispatch("move",address,{x=mon.x,y=mon.y})
+    windowDispatch("bring_to_top",address)
+    hl.dispatch(hl.dsp.focus({window="address:"..address}))
+    canvas.staged=address;overflowX,overflowY=0,0;windowsDirty=true
+    snapshot[address]={x=mon.x,y=mon.y,w=width,h=height}
+    return true
+end
+-- Stage the window if needed, then land the pointer on the buffer pixel the renderer chose.
+local function selectCanvasWindow(address,px,py)
+    local mon=canvasMonitor()
+    if not mon then return end
+    if canvas.staged~=address then
+        if not stageWindow(address,mon) then return end
+    else
+        hl.dispatch(hl.dsp.focus({window="address:"..address}))
+    end
+    local rect,scale=snapshot[address],mon.scale or 1
+    local x,y=rect and rect.x or mon.x,rect and rect.y or mon.y
+    hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+px/scale+.5),y=math.floor(y+py/scale+.5)}))
+end
+-- Same pointer-serial rule as monitor mode: warp once per new serial, never replay the first sample.
+local function canvasHover(mode,name,pointerSerial,px,py)
+    hoverName=nil
+    if not pointerSerial or pointerSerial==pointerSerialSeen then return end
+    local first=pointerSerialSeen==nil
+    pointerSerialSeen=pointerSerial
+    if first or pointerSerial==0 or mode~="1" or not name:match("^0x%x+$") or not px or not py then return end
+    selectCanvasWindow(name:lower(),px,py)
+end
+local function clampAxis(value,low,size)
+    if value>=low and value<low+size then return value end
+    return math.max(low+1,math.min(low+size-2,value))
+end
+local function bound(value) return math.max(-1e6,math.min(1e6,value)) end
+-- The pointer stays inside the staged window; motion beyond it accumulates for the renderer's cursor.
+local function confine(x,y)
+    local rect=canvas.staged and snapshot[canvas.staged]
+    if not rect then return x,y end
+    local cx,cy=clampAxis(x,rect.x,rect.w),clampAxis(y,rect.y,rect.h)
+    if cx==x and cy==y then return x,y end
+    overflowX,overflowY=bound(overflowX+x-cx),bound(overflowY+y-cy)
+    cx,cy=math.floor(cx),math.floor(cy)
+    hl.dispatch(hl.dsp.cursor.move({x=cx,y=cy}))
+    return cx,cy
+end
+-- Rewritten on change, and at least every 0.4 s: the renderer hides its cursor after 0.5 s.
+local function publishCursor(mon,now)
+    local fine,c=pcall(hl.get_cursor_pos)
+    if not fine or not c then return end
+    local x,y=c.x,c.y
+    if onMonitor(mon,x,y) then x,y=confine(x,y) else overflowX,overflowY=0,0 end
+    local line=string.format("%.1f %.1f %.1f %.1f",x,y,overflowX,overflowY)
+    if line==cursorLine and now-cursorWritten<.4 then return end
+    canvas.cursorSeq=canvas.cursorSeq+1
+    writeMailbox(".cursor",string.format("v1 %s %d %s %d\n",session,canvas.cursorSeq,line,math.floor(now)))
+    cursorLine,cursorWritten=line,now
+end
+local function flushFocus()
+    if not focusPending then return end
+    writeFocus(focusPending)
+    focusPending=nil
+end
+local function canvasTick()
+    local mon=canvasMonitor()
+    if not mon then return end
+    local now=bootSeconds()
+    if windowsDirty and now-lastWindowsWrite>=.1 then publishWindows(now,mon) end
+    publishCursor(mon,now)
+    flushFocus()
+end
+-- The 3-finger double tap hands the pointer back to the first non-XR monitor.
+releasePointer=function()
+    if not canvasMode then return end
+    local mon,laptop=canvasMonitor(),laptopMonitor()
+    local fine,c=pcall(hl.get_cursor_pos)
+    if not (mon and laptop and fine and c and onMonitor(mon,c.x,c.y)) then return end
+    local w,h=logicalSize(laptop)
+    hl.dispatch(hl.dsp.cursor.move({x=math.floor(laptop.x+w/2),y=math.floor(laptop.y+h/2)}))
+    overflowX,overflowY=0,0
+end
+-- A special workspace toggles on the focused monitor: close it on the canvas output, focus the
+-- laptop's workspace and open it there.
+local function showSpecialOnLaptop(name)
+    local laptop=laptopMonitor()
+    hl.dispatch(hl.dsp.focus({workspace="name:"..CANVAS_WS}))
+    hl.dispatch(hl.dsp.workspace.toggle_special(name))
+    local workspace=laptop and laptop.active_workspace
+    if not (workspace and workspace.id) then return end
+    hl.dispatch(hl.dsp.focus({workspace=tostring(workspace.id)}))
+    hl.dispatch(hl.dsp.workspace.toggle_special(name))
+end
+-- SUPER+1..9 or a special workspace on the canvas output: bring the canvas workspace back and
+-- send the intruder to the laptop (§3.3 guards).
+local function guardWorkspace()
+    local mon=canvasMonitor()
+    if not mon then return end
+    local special,current=mon.active_special_workspace,mon.active_workspace
+    if special then
+        pcall(showSpecialOnLaptop,(tostring(special.name or ""):gsub("^special:","")))
+    elseif current and current.name~=CANVAS_WS then
+        hl.dispatch(hl.dsp.focus({workspace="name:"..CANVAS_WS}))
+        local laptop=laptopMonitor()
+        if laptop and current.id then hl.dispatch(hl.dsp.workspace.move({workspace=current.id,monitor=laptop.name})) end
+    end
+end
+local function markWindowsDirty() windowsDirty=true end
+-- "unset" drops the set_prop overrides, so the window's own decorations come back.
+local function undecorate(address)
+    for _,prop in ipairs(PROPS) do pcall(windowDispatch,"set_prop",address,{prop=prop[1],value="unset"}) end
+end
+-- The backend floats tiled windows before Lua sees them: its journal (canvas-session.json, written by
+-- json.dumps) holds the true origin. A missing or unreadable entry falls back to Lua's own record.
+local function journaledOrigin(address)
+    local file=io.open(state.."/omarchy-xr/canvas-session.json","r")
+    if not file then return nil end
+    local text=file:read("*a") or "";file:close()
+    local block=text:match('"'..address..'"%s*:%s*(%b{})')
+    local floating=block and block:match('"floating"%s*:%s*(%a+)')
+    if floating~="true" and floating~="false" then return nil end
+    local function field(key)
+        local list=block:match('"'..key..'"%s*:%s*(%b[])') or ""
+        local a,b=list:match("^%[%s*(%-?%d+)%s*,%s*(%-?%d+)%s*%]$")
+        return tonumber(a),tonumber(b)
+    end
+    local width,height=field("size")
+    local x,y=field("at")
+    return {floating=floating=="true",w=width,h=height,x=x,y=y}
+end
+-- Leaving the canvas (SUPER+SHIFT+n) restores the window's origin state: decorations, then tiled, or
+-- its floating size and position.
+local function release(w)
+    local address=w.address
+    local origin=journaledOrigin(address) or canvas.origin[address]
+    undecorate(address)
+    if origin.floating==false then
+        if w.floating then windowDispatch("float",address,{action="tile"}) end
+    elseif origin.w and origin.x then
+        windowDispatch("resize",address,{x=math.floor(origin.w),y=math.floor(origin.h)})
+        windowDispatch("move",address,{x=math.floor(origin.x),y=math.floor(origin.y)})
+    end
+    canvas.origin[address]=nil
+    if canvas.staged==address then canvas.staged=nil;overflowX,overflowY=0,0 end
+end
+-- A small window of a canvas window's process is its dialog: it is staged, not parked.
+local function dialogParent(w)
+    local width,height=pair(w.size)
+    for _,other in ipairs(listWindows()) do
+        local otherW,otherH=pair(other.size)
+        if other.address~=w.address and other.pid==w.pid and isMember(other) and width*height<.6*otherW*otherH then return other end
+    end
+end
+-- An excluded window that lands on the canvas output goes to the laptop's workspace instead.
+local function evict(w)
+    local laptop=laptopMonitor()
+    local workspace=laptop and laptop.active_workspace
+    if isMember(w) and workspace and workspace.id then windowDispatch("move",w.address,{workspace=tostring(workspace.id),follow=false}) end
+end
+local function adopt(w)
+    local mon=canvasMonitor()
+    if not mon then return end
+    if isExcluded(w) then evict(w);return end
+    enforce(w)
+    if w.pid and dialogParent(w) then stageWindow(w.address,mon)
+    elseif w.address~=canvas.staged and w.workspace.name~=PARK_WS then
+        windowDispatch("move",w.address,{workspace="name:"..PARK_WS,follow=false})
+    end
+end
+local function onOpen(w)
+    windowsDirty=true
+    if not canvasMode or not w or not isRegular(w) then return end
+    if canvasPolicy=="all" or isMember(w) then adopt(w) end
+end
+local function onClose(w)
+    windowsDirty=true
+    if not w or not w.address then return end
+    if canvas.staged==w.address then canvas.staged=nil end
+    canvas.origin[w.address]=nil
+end
+local function onMove(w)
+    windowsDirty=true
+    if not canvasMode or not w or not w.address then return end
+    if isMember(w) then
+        if not canvas.origin[w.address] and isRegular(w) then adopt(w) end
+    elseif canvas.origin[w.address] then release(w) end
+end
+-- Compositor fullscreen slips past suppress_event: revert it and ask the renderer for Fill.
+local function onFullscreen(w)
+    windowsDirty=true
+    if not canvasMode or not w or not isMember(w) or (w.fullscreen or 0)==0 then return end
+    windowDispatch("fullscreen_state",w.address,{internal=0,client=0})
+    publish(0,CANVAS_MODES.fill)
+end
+-- Keyboard focus on a canvas window is published by address; XR's own staging never refits.
+local function onActive(w)
+    windowsDirty=true
+    if not canvasMode or not w then return end
+    local address=isMember(w) and w.address or nil
+    if address and address~=focusAddress and not gazeDispatch then focusPending=address end
+    focusAddress=address
+end
+local CANVAS_EVENTS={["window.open"]=onOpen, ["window.close"]=onClose, ["window.destroy"]=onClose,
+    ["window.title"]=markWindowsDirty, ["window.class"]=markWindowsDirty, ["window.active"]=onActive,
+    ["window.fullscreen"]=onFullscreen, ["window.move_to_workspace"]=onMove, ["window.urgent"]=markWindowsDirty}
+local function readMode()
+    local file=io.open(path..".mode","r")
+    if not file then return false end
+    local line=file:read("*l") or "";file:close()
+    local owner,mode,_,stamp=line:match("^v1 (%d+) (%a+) ([01]) (%d+)")
+    return owner==session and mode=="canvas" and fresh(tonumber(stamp))
+end
+-- adoptPolicy is the last field of the `# canvas v1 ...` header Studio writes; `exclude` rows follow.
+local function readCanvasSettings()
+    canvasPolicy,canvasExcludes="all",{}
+    local file=io.open(state.."/omarchy-xr/canvas.tsv","r")
+    if not file then return end
+    local text=file:read("*a") or "";file:close()
+    local policy=text:match("^# canvas v1"..("%s+%S+"):rep(7).."%s+([%a-]+)")
+    canvasPolicy=policy=="empty" and "empty" or "all"
+    for token in text:gmatch("\nexclude%s+(%S+)") do canvasExcludes[token]=true end
+end
+local function enterCanvas()
+    canvasMode=true
+    retireFill()
+    hl.unbind("SUPER + F")
+    canvas.fill=hl.bind("SUPER + F",function() publish(0,CANVAS_MODES.fill) end,{description="XR: fill window (canvas)"})
+    retireCanvasEvents()
+    for name,callback in pairs(CANVAS_EVENTS) do canvas.events[#canvas.events+1]=hl.on(name,callback) end
+    windowsDirty=true;lastWindowsWrite=-math.huge;readCanvasSettings()
+    focusAddress=nil;focusPending=nil;cursorLine=nil
+end
+local function leaveCanvas()
+    canvasMode=false
+    restoreFullscreen()
+    retireCanvasEvents()
+    for address in pairs(canvas.origin) do undecorate(address) end
+    canvas.staged=nil;canvas.origin={};snapshot={}
+    overflowX,overflowY,cursorLine=0,0,nil
+    focusAddress=nil;focusPending=nil
+end
+updateCanvas=function()
+    local wanted=active and readMode()
+    if wanted and not canvasMode then enterCanvas() elseif canvasMode and not wanted then leaveCanvas() end
+    if not canvasMode then return end
+    local now=bootSeconds()
+    local mon=now-lastWindowsWrite>=1 and canvasMonitor()
+    if mon then readCanvasSettings();publishWindows(now,mon) end
+end
+-- Canvas mode keeps the canvas workspace on the canvas output instead of publishing monitor focus.
+local function followCanvas()
+    if not workspacePending then return end
+    workspacePending=false
+    refresh()
+    if canvasMode then guardWorkspace() end
+end
 local function followWorkspace()
     if not workspacePending then return end
     workspacePending=false
@@ -284,11 +713,7 @@ local function followWorkspace()
     local name=monitor and monitor.name
     focusWaiting=nil
     if not name or workspace.special or monitor.active_special_workspace or not name:match("^OMXR%-[%w_-]+$") then return end
-    local file=io.open(path..".focus.tmp","w")
-    if not file then return end
-    focusSerial=focusSerial+1
-    file:write(string.format("v1 %s %d %s %d\n",session,focusSerial,name,math.floor(bootSeconds())))
-    file:close();os.rename(path..".focus.tmp",path..".focus")
+    writeFocus(name)
     focusWaiting={name=name,untilTime=bootSeconds()+2}
     gazeTarget=name
 end
@@ -305,8 +730,11 @@ local function waitForFocus(mode,name,pointerSerial)
     return true
 end
 -- v3 appends a pointer serial and the dwelled monitor pixel; older lines carry no pointer.
+-- v4 (canvas) names a window address and a pixel of that window's buffer.
 local function hoverTarget(line)
-    local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
+    local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v4 (%d+) (%d+) ([01]) (%S+) %S+ %S+ (%d+) (%S+) (%S+)")
+    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
+    owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
     if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
     owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
     if owner then return owner,serialText,mode,name end
@@ -370,6 +798,7 @@ local function selectGazeWorkspace()
     local owner,serialText,mode,name,pointerSerial,px,py=hoverTarget(line)
     local serialNumber=tonumber(serialText)
     if not noteHover(owner, serialNumber) then pointerSerialSeen=pointerSerial;return end
+    if canvasMode then canvasHover(mode,name,pointerSerial,px,py);return end
     if waitForFocus(mode,name,pointerSerial) then return end
     if pointerSerial and pointerSerial~=pointerSerialSeen then
         -- The first sample of a session only records the serial; a pre-existing dwell is not replayed.
@@ -386,7 +815,7 @@ end
 -- own focus history is what the pane fit needs.
 local paneSerial,paneLast=0,nil
 local function publishPane(name)
-    if not active then paneLast=nil;return end
+    if not active or canvasMode then paneLast=nil;return end
     local line="-"
     if name and name:match("^OMXR%-") then
         for _,m in ipairs(hl.get_monitors()) do
@@ -413,18 +842,16 @@ local function publishPane(name)
     end
     if line==paneLast then return end
     paneLast=line;paneSerial=paneSerial+1
-    local file=io.open(path..".pane.tmp","w")
-    if not file then return end
-    file:write(string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
-    file:close();os.rename(path..".pane.tmp",path..".pane")
+    writeMailbox(".pane",string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
 end
 local function updatePointer()
-    followWorkspace()
+    if canvasMode then followCanvas() else followWorkspace() end
     gazeDispatch=true
     local success,message=pcall(selectGazeWorkspace)
     gazeDispatch=false
     if not success then error(message) end
     publishPane(hoverName)
+    if canvasMode then canvasTick() end
 end
 local hoverTimer
 setHoverTimer = function(enabled)

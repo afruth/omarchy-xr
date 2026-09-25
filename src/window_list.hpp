@@ -1,6 +1,8 @@
 #pragma once
 #include "hex_token.hpp"
+#include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,7 +11,7 @@
 #include <vector>
 
 // The `.windows` mailbox (docs/infinite-canvas-plan.md §3.1), written by the Lua adapter:
-//   v1 <owner> <seq> <stamp>
+//   v1 <owner> <seq> <stamp> [<outX> <outY> <outName>]
 //   <address> <class-hex> <title-hex> <w> <h> <atX> <atY> <focus_history_id> <place> <floating> <pid> <xwayland> <canvas>
 namespace windows {
 enum class Place { Stage, Sliver, Park, Off };
@@ -29,7 +31,11 @@ struct Record {
         return "0x"+(hex.empty() ? std::string("0") : hex);
     }
 };
-struct List { std::string owner; unsigned long long seq=0; long stamp=0; std::vector<Record> records; };
+// outputX/Y/Name: the canvas output's global origin and name, when the header carries them.
+struct List { std::string owner; unsigned long long seq=0; long stamp=0; int outputX=0, outputY=0; std::string outputName; std::vector<Record> records; };
+// The `.cursor` mailbox: v1 <owner> <seq> <x> <y> <ox> <oy> <stamp>, the compositor cursor in global
+// logical px plus the cumulative overflow beyond the staged window's rectangle.
+struct Cursor { std::string owner; unsigned long long seq=0; double x=0, y=0, overflowX=0, overflowY=0; long stamp=0; };
 constexpr size_t maxRecords=512;
 
 using hextoken::validHex;
@@ -57,6 +63,25 @@ inline std::vector<std::string_view> fields(std::string_view line) {
         if(i>start) out.push_back(line.substr(start, i-start));
     }
     return out;
+}
+// OMXR-<8hex>-canvas, or a SPIKE-/OMXRTEST- test output.
+inline bool canvasOutputName(std::string_view name) {
+    const auto word=[](char c) { return (c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='-'; };
+    if(name.size()==20 && name.starts_with("OMXR-") && name.ends_with("-canvas"))
+        return std::all_of(name.begin()+5, name.begin()+13, [](char c) { return (c>='0' && c<='9') || (c>='a' && c<='f'); });
+    for(std::string_view prefix:{"SPIKE-", "OMXRTEST-"}) {
+        if(!name.starts_with(prefix)) continue;
+        const auto rest=name.substr(prefix.size());
+        return !rest.empty() && rest.size()<=40 && std::all_of(rest.begin(), rest.end(), word);
+    }
+    return false;
+}
+inline bool parseHeader(std::string_view line, List& list) {
+    const auto f=fields(line);
+    if((f.size()!=4 && f.size()!=7) || f[0]!="v1" || !number(f[2],list.seq) || !number(f[3],list.stamp)) return false;
+    if(f.size()==7 && (!number(f[4],list.outputX) || !number(f[5],list.outputY) || !canvasOutputName(f[6]))) return false;
+    if(f.size()==7) list.outputName=f[6];
+    list.owner=f[1]; return true;
 }
 inline std::optional<Place> parsePlace(std::string_view token) {
     if(token=="stage") return Place::Stage;
@@ -92,14 +117,24 @@ inline std::optional<List> parse(std::string_view text) {
         const auto line=text.substr(0, end);
         text=end==std::string_view::npos ? std::string_view{} : text.substr(end+1);
         if(header) {
-            const auto f=fields(line);
-            if(f.size()!=4 || f[0]!="v1" || !number(f[2],list.seq) || !number(f[3],list.stamp)) return {};
-            list.owner=f[1]; header=false; continue;
+            if(!parseHeader(line, list)) return {};
+            header=false; continue;
         }
         auto record=parseRecord(line);
         if(!record || list.records.size()>=maxRecords || !seen.insert(record->address).second) return {};
         list.records.push_back(std::move(*record));
     }
     return list;
+}
+inline bool coordinate(std::string_view token, double& value) {
+    return number(token, value) && std::isfinite(value) && std::abs(value)<=1e6;
+}
+inline std::optional<Cursor> parseCursor(std::string_view line) {
+    while(!line.empty() && (line.back()=='\n' || line.back()==' ')) line.remove_suffix(1);
+    const auto f=fields(line);
+    Cursor c;
+    if(f.size()!=8 || f[0]!="v1" || !number(f[2],c.seq) || !coordinate(f[3],c.x) || !coordinate(f[4],c.y)
+       || !coordinate(f[5],c.overflowX) || !coordinate(f[6],c.overflowY) || !number(f[7],c.stamp)) return {};
+    c.owner=f[1]; return c;
 }
 }

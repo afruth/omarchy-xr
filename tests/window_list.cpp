@@ -29,7 +29,12 @@ static void sample() {
     assert(list->records[3].place==Place::Sliver && list->records[3].name()=="0xa");
     Record zero; assert(zero.name()=="0x0");
     const auto empty=parse(header);
-    assert(empty && empty->records.empty());
+    assert(empty && empty->records.empty() && empty->outputName.empty() && empty->outputX==0);
+    // The 7-field header adds the canvas output's origin and name.
+    const auto placed=parse("v1 omxr-1234 43 1700000000 20000 -40 OMXR-0123abcd-canvas\n"+row("0x1"));
+    assert(placed && placed->seq==43 && placed->outputX==20000 && placed->outputY==-40 && placed->outputName=="OMXR-0123abcd-canvas");
+    assert(placed->records.size()==1);
+    for(auto name:{"SPIKE-canvas", "OMXRTEST-a_b-9"}) assert(parse(std::string("v1 o 1 2 0 0 ")+name+"\n")->outputName==name);
 }
 static void hex() {
     for(std::string text:std::initializer_list<std::string>{"", "foot", "tab\there", "Ünïcødé — ✓", std::string("\0\x01\xff", 3), std::string(550, 'x')}) {
@@ -58,8 +63,22 @@ static void rejections() {
     const auto capped=parse(full);
     assert(capped && capped->records.size()==512);
     assert(!parse(full+row("0x99999")));
+    // 5- and 6-field headers, bad origins and names outside the canvas/test namespaces.
+    for(auto bad:{"v1 o 1 2 0\n", "v1 o 1 2 0 0\n", "v1 o 1 2 x 0 SPIKE-a\n", "v1 o 1 2 0 0 SPIKE-a extra\n", "v1 o 1 2 0 0 eDP-1\n",
+                  "v1 o 1 2 0 0 DP-1\n", "v1 o 1 2 0 0 OMXR-0123abcd-left\n", "v1 o 1 2 0 0 OMXR-0123ABCD-canvas\n", "v1 o 1 2 0 0 OMXR-0123abc-canvas\n",
+                  "v1 o 1 2 0 0 SPIKE-\n", "v1 o 1 2 0 0 SPIKE-a.b\n", "v1 o 1 2 0 0 OMXRTEST-a/b\n"})
+        assert(!parse(bad));
+    assert(!parse("v1 o 1 2 0 0 SPIKE-"+std::string(41, 'a')+"\n") && parse("v1 o 1 2 0 0 SPIKE-"+std::string(40, 'a')+"\n"));
+}
+static void cursor() {
+    const auto c=parseCursor("v1 4242 7 20100.5 300 -12 40.25 1700000000\n");
+    assert(c && c->owner=="4242" && c->seq==7 && c->x==20100.5 && c->y==300 && c->overflowX==-12 && c->overflowY==40.25 && c->stamp==1700000000);
+    assert(parseCursor("v1 o 1 -1000000 1000000 0 0 5"));
+    for(auto bad:{"", "v1 o 1 0 0 0 0", "v1 o 1 0 0 0 0 5 6", "v2 o 1 0 0 0 0 5", "v1 o x 0 0 0 0 5", "v1 o 1 nan 0 0 0 5",
+                  "v1 o 1 0 inf 0 0 5", "v1 o 1 0 0 -inf 0 5", "v1 o 1 1000001 0 0 0 5", "v1 o 1 0 0 0 -1e7 5", "v1 o 1 0 0 0 0 s"})
+        assert(!parseCursor(bad));
 }
 int main() {
-    sample(); hex(); rejections();
-    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections and the 512-row cap passed\n";
+    sample(); hex(); rejections(); cursor();
+    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header and the cursor line passed\n";
 }

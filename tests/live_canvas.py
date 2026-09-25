@@ -69,7 +69,7 @@ def row(c: dict, stage: str | None) -> str:
 
 
 class Mailbox:
-    """Writes `v1 <pid> <seq> <boottime s>` plus 13-field rows with tmp+rename; seq only grows."""
+    """Writes `v1 <pid> <seq> <boottime s> <outX> <outY> <output>` plus 13-field rows with tmp+rename; seq only grows."""
 
     def __init__(self, path: pathlib.Path):
         self.path, self.seq = path, 0
@@ -79,7 +79,8 @@ class Mailbox:
         stage = stage or default_stage(rows)
         boot = time.clock_gettime(time.CLOCK_BOOTTIME)
         self.seq = max(self.seq + 1, int(boot * 1000))
-        text = "\n".join([f"v1 {os.getpid()} {self.seq} {int(boot)}", *(row(c, stage) for c in rows)]) + "\n"
+        header = f"v1 {os.getpid()} {self.seq} {int(boot)} {sc.OUT_X} 0 {sc.OUTPUT}"
+        text = "\n".join([header, *(row(c, stage) for c in rows)]) + "\n"
         part = self.path.with_name(self.path.name + ".tmp")
         part.write_text(text)
         os.replace(part, self.path)
@@ -129,7 +130,8 @@ class Pose:
 
     def close(self) -> None:
         self.stop.set()
-        self.thread.join(timeout=1)
+        if self.thread.is_alive():
+            self.thread.join(timeout=1)
         self.channel.close()
 
 
@@ -389,7 +391,7 @@ def profile(args: argparse.Namespace) -> int:
 
 
 def smoke(_args: argparse.Namespace) -> int:
-    """make smoke-canvas: 1 staged + 4 parked clients, `--smoke-test --stereo --canvas` must exit 0."""
+    """make smoke-canvas: 1 staged + 4 parked clients, `--smoke-test --stereo --canvas` must exit 0 with region frames."""
     user_window = active_window()
     try:
         with tempfile.TemporaryDirectory(prefix="xr-canvas-smoke-") as directory:
@@ -408,8 +410,10 @@ def smoke(_args: argparse.Namespace) -> int:
     finally:
         cleanup(user_window)
     print(log)
-    print(f"Canvas smoke: renderer exit {code}")
-    return 0 if code == 0 else 1
+    # M3: the staged window must be served by the region source (finishCanvas prints its frame count).
+    region = "(region " in log
+    print(f"Canvas smoke: renderer exit {code}, region frames {'yes' if region else 'none'}")
+    return 0 if code == 0 and region else 1
 
 
 def write(args: argparse.Namespace) -> int:

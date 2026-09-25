@@ -215,8 +215,17 @@ struct View {
     Uint64 nextWindowsCheck=0;
     double nextCanvasCheck=0;
     unsigned long long windowsSeq=0;
+    unsigned loggedLive=~0u;
     bool windowsRejected=false, canvasRejected=false;
     bool mousePanning=false;
+    // Canvas input (§3.4): the explicitly focused window published as .hover v4, the restage asked
+    // for and not yet seen in a window list, and the compositor cursor mapped onto the staged window.
+    std::string hoverOutput, restageRequested;
+    struct XrCursor { bool valid=false; std::string window; float px=0, py=0; };
+    XrCursor xrCursor;
+    std::optional<windows::Cursor> lastCursor;
+    double cursorAt=-1e9;
+    GLuint cursorTexture=0;
     // Monitor-only math (safe distance, overview depth, bounds); canvas mode must never run it.
     mutable unsigned monitorMathCalls=0;
     View(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace, float spacing, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& layoutPath, int fps, bool spectatorEnabled)
@@ -521,7 +530,10 @@ struct View {
     void canvasFitTarget(double now) {
         const std::string name=gaze.current ? gaze.current->output : selection.output;
         if (name.empty()) { std::cout << "Canvas: nothing gazed; fit ignored" << std::endl; return; }
-        explicitMove(now); selection.output=name;
+        explicitMove(now);
+        if (gaze.current) focusHit(*gaze.current);
+        else if (const auto* l=findLayout(name)) { targeting::Hit centre; centre.output=name; centre.pixelX=l->width/2; centre.pixelY=l->height/2; focusHit(centre); }
+        selection.output=name;
         applyAim(canvas->land(name, baseView()));
         std::cout << "Canvas: land on " << name << std::endl;
     }
@@ -577,6 +589,7 @@ struct View {
                     p.texture=0; p.frame.texture=0; p.cpuWidth=p.cpuHeight=0; p.capture.reset();
                 }
                 if (canvas) canvas->releaseGpu();
+                if (cursorTexture) { glDeleteTextures(1, &cursorTexture); cursorTexture=0; }
                 spectator.reset();
                 environment->release();
                 if(notificationHud) notificationHud->release();
@@ -602,11 +615,11 @@ struct View {
     }
     void serviceCaptures() {
         for (auto& p:panels) if (p.capture && !p.failed) p.capture->service();
-        if (canvas) canvas->pump();
+        if (canvas) canvas->service();
     }
     void reconnectCaptures() {
         const double now=monotonicSeconds();
-        if (canvas) { canvas->recoverHub(now); canvas->openSources(now); return; }
+        if (canvas) { canvas->recoverHub(now); canvas->openSources(now); for (auto& w:canvas->windows) canvas->openStage(w, now); return; }
         for (auto& p:panels) {
             if (p.capture || p.retryAt<=0 || now<p.retryAt) continue;
             auto next=std::make_unique<DesktopCapture>();
@@ -654,14 +667,23 @@ struct View {
     void updateWindowCaptures() {
         canvas->pump();
         for (auto& w:canvas->windows) {
+            if (w.stageSource) updateStage(w);
             if (!w.source) continue;
-            if (w.source->update(w.frame)) uploadWindow(w);
+            // While region frames are shown, the idling export's thumbnail must not replace them.
+            if (w.regionShown) { CapturedFrame parked; w.source->update(parked); }
+            else if (w.source->update(w.frame)) { w.stageFrame=false; uploadWindow(w); }
             if (!w.source) continue;
             if (!w.source->alive()) { std::cout << w.name << ": window closed" << std::endl; w.captureStatus="closed"; w.closed=true; canvas::Scene::dropSource(w); }
             else if (!w.source->error().empty()) dropWindow(w);
         }
         // Windowed, the swap blocks a whole frame without dispatch: let new requests reach their copy now.
         if (!output) canvas->settle(.002);
+    }
+    // A region frame uploads into the same texture; its size equals the window's, so sizeFromBuffer holds.
+    void updateStage(canvas::CanvasWindow& w) {
+        const double now=monotonicSeconds();
+        if (w.stageSource->update(w.frame)) { w.stageFrame=true; ++w.stageFrames; ++w.stageReportFrames; w.stageLastFrame=now; uploadWindow(w); }
+        if (w.stageSource && !w.stageSource->error().empty()) canvas->failStage(w, w.stageSource->error(), now);
     }
     void uploadWindow(canvas::CanvasWindow& w) {
         if (w.frame.width>unsigned(maxTexture) || w.frame.height>unsigned(maxTexture)) {
@@ -765,7 +787,7 @@ struct View {
         const double now=monotonicSeconds();
         if (!layoutPath.empty() && now>=nextCanvasCheck) { nextCanvasCheck=now+.25; pollCanvasSettings(); }
     }
-    // The .windows mailbox format; a rejected or older list is logged once and the last one stays.
+    // The .windows file (--canvas-windows-file); a rejected or older list is logged once and the last one stays.
     bool pollWindows() {
         std::error_code missing;
         const auto version=std::filesystem::last_write_time(windowsPath, missing);
@@ -773,17 +795,26 @@ struct View {
         windowsVersion=version;
         std::ifstream file(windowsPath); const std::string text((std::istreambuf_iterator<char>(file)), {});
         const auto list=windows::parse(text);
-        if (!list || list->seq<windowsSeq) {
+        if (!list || !adoptList(*list)) {
             if (!windowsRejected) std::cerr << "Ignoring invalid window list " << windowsPath << "; keeping the last one (format: docs/infinite-canvas-plan.md 3.1)" << std::endl;
             windowsRejected=true; return false;
         }
-        windowsRejected=false; windowsSeq=list->seq;
+        return true;
+    }
+    // One window list from the file or the .windows mailbox; an older sequence number is refused.
+    bool adoptList(const windows::List& list) {
+        if (list.seq<windowsSeq) return false;
+        windowsRejected=false; windowsSeq=list.seq;
         const auto focused=canvas->focusedName;
-        const bool stagedChanged=canvas->adopt(*list, monotonicSeconds());
-        std::cout << "Canvas: " << canvas->live() << " windows, staged " << (canvas->stagedName.empty() ? "none" : canvas->stagedName) << std::endl;
-        // M2's stand-in for the .focus mailbox: a new focus_history_id 0 window.
-        if (!focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
-        return stagedChanged;
+        const bool stagedChanged=canvas->adopt(list, monotonicSeconds());
+        if (canvas->stagedName==restageRequested) restageRequested.clear();
+        // The mailbox repeats unchanged lists as a heartbeat: log changes only.
+        if (stagedChanged || canvas->live()!=loggedLive) std::cout << "Canvas: " << canvas->live() << " windows, staged " << (canvas->stagedName.empty() ? "none" : canvas->stagedName) << std::endl;
+        loggedLive=canvas->live();
+        // --canvas-windows-file runs only: a new focus_history_id 0 window stands in for the .focus
+        // mailbox, which the mailbox path follows (it leaves out XR's own staging, §4.2).
+        if (!windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
+        return true;
     }
     // A missing canvas.tsv keeps the current settings; an invalid one is logged once.
     void pollCanvasSettings() {
@@ -884,14 +915,18 @@ struct View {
     }
     void steer() {
         controls->update();
+        if (canvas) adoptMailbox();
         panGestureActive=controls->panActive;
         if (controls->panStarted || controls->panX || controls->panY) interactionUntil=monotonicSeconds()+.4;
         if (controls->panStarted || controls->panX || controls->panY) navigate({Verb::Pan, float(controls->panX), float(controls->panY), controls->panStarted});
         sampleTarget();
+        if (canvas) updateVirtualCursor();
         if (controls->zoom) navigate({Verb::ZoomBy, float(controls->zoom)});
         if (controls->fit==1) navigate({Verb::FlickOut});
         if (controls->fit==2) navigate({Verb::FlickIn});
-        if (notificationHud && controls->fit>=6) {
+        // Canvas verbs (§5.5): Fill (10) is wired end to end and lands in M4 with the rest.
+        if (canvas && controls->fit>=8) std::cout << "Canvas: key action " << controls->fit << " (M4)" << std::endl;
+        if (notificationHud && (controls->fit==6 || controls->fit==7)) {
             placeNotification(monotonicSeconds());
             notificationHud->flick(controls->notificationTarget,controls->fit==6);
         }
@@ -904,10 +939,70 @@ struct View {
         if (tracking.fitTargetRequested) { navigate({Verb::FitTarget}); tracking.fitTargetRequested=false; }
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
     }
+    // The .windows mailbox (without --canvas-windows-file); the first list lands on its staged window.
+    void adoptMailbox() {
+        if (!windowsPath.empty() || !controls->windows) return;
+        const bool first=windowsSeq==0;
+        if (adoptList(*controls->windows) && first && canvas->staged()) applyAim(canvas->land(canvas->stagedName, baseView()));
+    }
+    // §3.4: inside the staged window the compositor cursor maps 1:1 onto its quad (the XR cursor); the
+    // overflow the adapter carried beyond its edge moves on over the canvas, and a fresh line whose
+    // virtual point lies in another window restages that window once.
+    void updateVirtualCursor() {
+        const double now=monotonicSeconds();
+        if (controls->cursor) { lastCursor=controls->cursor; cursorAt=now; }
+        xrCursor={};
+        const auto* staged=canvas->staged();
+        if (!staged || !canvas::Scene::onStage(*staged) || !lastCursor || now-cursorAt>.5) return;
+        const auto& r=staged->record; const auto& c=*lastCursor;
+        const double scale=canvas->settings.outputScale, lx=c.x-r.atX, ly=c.y-r.atY;
+        if (lx>=0 && ly>=0 && lx<r.w && ly<r.h) xrCursor={true, staged->name, float(lx*scale), float(ly*scale)};
+        if (!controls->cursor || (!c.overflowX && !c.overflowY)) return;
+        const float x=canvas->ring.unwrap(staged->rect.x+float((lx+c.overflowX)*scale)), y=staged->rect.y+float((ly+c.overflowY)*scale);
+        const auto contains=[&](const canvas::CanvasWindow& w) {
+            const float dx=canvas->ring.unwrap(x-w.rect.x), dy=y-w.rect.y;
+            return !w.gone && !w.staged && w.rect.w>0 && w.rect.h>0 && dx<w.rect.w && dy>=0 && dy<w.rect.h;
+        };
+        // Still inside the window already asked for: nothing new, even where windows overlap.
+        if (const auto* requested=canvas->find(restageRequested); requested && contains(*requested)) return;
+        const auto it=std::find_if(canvas->windows.begin(), canvas->windows.end(), contains);
+        if (it==canvas->windows.end()) return;
+        std::cout << "Canvas: cursor crossed into " << it->name << std::endl;
+        explicitFocus(it->name, canvas->ring.unwrap(x-it->rect.x)*it->pixelW/it->rect.w, (y-it->rect.y)*it->pixelH/it->rect.h);
+    }
+    // An explicit focus action (§5.6): selection, .hover v4 with one new pointer serial at buffer px,
+    // and a restage request until a window list shows the window staged.
+    void explicitFocus(const std::string& name, float px, float py) {
+        selection.output=name; hoverOutput=name; ++pointerSerial; pointerX=px; pointerY=py;
+        restageRequested=name==canvas->stagedName ? std::string() : name;
+    }
+    // A hit's projected px into window-buffer px (§3.4 step 2).
+    void focusHit(const targeting::Hit& hit) {
+        const auto* w=canvas->find(hit.output); const auto* l=findLayout(hit.output);
+        if (!w || !l || l->width<=0 || l->height<=0) return;
+        explicitFocus(hit.output, hit.pixelX*w->pixelW/l->width, hit.pixelY*w->pixelH/l->height);
+    }
+    // 2D click (§3.4): the pixel ray at (u, v) of the view focuses the window under it; no camera move.
+    void clickAt(float u, float v) {
+        const float t=std::tan(fov*pi/360), r=t*aspect();
+        const auto dir=targeting::rotate(tracking::conjugate(currentView()), targeting::normalize({(2*u-1)*r, (1-2*v)*t, -1}));
+        const auto c=sceneCylinder();
+        const auto hit=targeting::query({targeting::mul({panX, panY, panZ}, -1), dir}, sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, &canvas->candidates);
+        if (!hit) { std::cout << "Canvas: click hit no window" << std::endl; return; }
+        focusHit(*hit);
+        std::cout << "Canvas: click focus " << hit->output << " at " << int(pointerX) << "," << int(pointerY) << std::endl;
+    }
+    void click(const SDL_MouseButtonEvent& button) {
+        int w=0, h=0; SDL_GetWindowSize(window, &w, &h);
+        float u=float(button.x)/float(std::max(w, 1));
+        if (stereo) u=std::fmod(u*2, 1.f);
+        clickAt(u, float(button.y)/float(std::max(h, 1)));
+    }
     void pollInput() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type==SDL_QUIT) running=false;
+            if (event.type==SDL_MOUSEBUTTONDOWN && event.button.button==SDL_BUTTON_LEFT && canvas) click(event.button);
             if (event.type==SDL_KEYDOWN) keyDown(event.key.keysym.sym);
             if (event.type==SDL_MOUSEWHEEL) navigate({Verb::ZoomBy, event.wheel.preciseY*-std::log(.9f)});
             if (event.type==SDL_MOUSEMOTION) mouseMove(event.motion);
@@ -1022,6 +1117,7 @@ struct View {
             canvas->cull(headingDeg(view), canvasFov().horizontal()/2);
             drawSurfaces([&](const auto& visit){ canvas->forEachCandidate(visit); });
             drawCanvasLabels();
+            drawXrCursor();
         } else drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
         if(stereoView && notificationHud) notificationHud->draw(lastCameraTime);
     }
@@ -1049,6 +1145,46 @@ struct View {
         }
         glLoadIdentity(); glMatrixMode(GL_MODELVIEW);
         glPopAttrib();
+    }
+    // The staged window's layout while the XR cursor shows; a shown region frame already carries the native cursor.
+    const PanelLayout* xrCursorLayout() const {
+        const auto* staged=canvas->staged(); const auto* l=staged ? findLayout(staged->name) : nullptr;
+        if (!xrCursor.valid || !l || !staged->visible || staged->regionShown || xrCursor.window!=staged->name || !staged->pixelW || !staged->pixelH) return nullptr;
+        return l;
+    }
+    // The XR cursor over the staged window: a 16x24 window-buffer-px arrow, tip at the cursor, above the labels.
+    void drawXrCursor() {
+        const auto* l=xrCursorLayout();
+        if (!l) return;
+        const auto* staged=canvas->staged();
+        if (!cursorTexture) cursorTexture=cursorArrow();
+        const float sx=l->width/staged->pixelW/900, sy=l->height/staged->pixelH/900;
+        const float w=cursorW*sx, h=cursorH*sy, x=-l->width/1800+xrCursor.px*sx, y=l->height/1800-xrCursor.py*sy;
+        glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_TEXTURE_BIT|GL_CURRENT_BIT);
+        glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE); glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, cursorTexture); glColor4f(1, 1, 1, 1);
+        surface(sceneCylinder().pose(*l), x, y-h, w, h, .02f);
+        glPopAttrib();
+    }
+    static constexpr int cursorW=16, cursorH=24;
+    // A pointer arrow (premultiplied BGRA): white inside, a dark 1 px rim.
+    static GLuint cursorArrow() {
+        static constexpr float poly[][2]={{0,0},{0,17},{4,13},{7,20},{9,19},{6,12},{12,12}};
+        const auto inside=[](float x, float y) {
+            bool in=false;
+            for (size_t i=0, j=std::size(poly)-1; i<std::size(poly); j=i++)
+                if ((poly[i][1]>y)!=(poly[j][1]>y) && x<(poly[j][0]-poly[i][0])*(y-poly[i][1])/(poly[j][1]-poly[i][1])+poly[i][0]) in=!in;
+            return in;
+        };
+        std::vector<unsigned char> pixels(cursorW*cursorH*4, 0);
+        for (int y=0;y<cursorH;++y) for (int x=0;x<cursorW;++x) {
+            const float cx=x+.5f, cy=y+.5f;
+            if (!inside(cx, cy)) continue;
+            const bool rim=!inside(cx-1, cy) || !inside(cx+1, cy) || !inside(cx, cy-1) || !inside(cx, cy+1);
+            const unsigned char value=rim ? 24 : 255;
+            auto* p=&pixels[(y*cursorW+x)*4]; p[0]=p[1]=p[2]=value; p[3]=255;
+        }
+        return gltex::uploadBgra(pixels.data(), cursorW, cursorH);
     }
     // One opaque panel filling this eye makes the full-screen sky draw pointless.
     bool skyHidden(float eyePosition, float tanV, float tanH) const {
@@ -1151,7 +1287,7 @@ struct View {
         const unsigned missed=output?output->missedVblanks():0;
         printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
         writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
-        if (canvas) for (auto& w:canvas->windows) w.reportFrames=0;
+        if (canvas) for (auto& w:canvas->windows) w.reportFrames=w.stageReportFrames=0;
         missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; skyCulled=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
     }
     void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
@@ -1171,6 +1307,7 @@ struct View {
                       << (w.source ? w.source->transport() : "none") << " " << w.width << "x" << w.height << " source " << w.sourceWidth << "x" << w.sourceHeight
                       << " requests " << (w.source ? w.source->requests() : 0) << " frames " << w.frames;
             if (!w.captureStatus.empty()) std::cout << " (" << w.captureStatus << ")";
+            if (w.stageSource) std::cout << (w.regionShown ? " (region " : " (region idle ") << w.stageSource->transport() << " " << w.stageReportFrames/(now-reportTime) << " fps, request to ready " << w.stageSource->requestToReadyMs() << " ms)";
             std::cout << std::endl;
         }
     }
@@ -1199,8 +1336,17 @@ struct View {
                 << ",\"width\":" << w.width << ",\"height\":" << w.height << ",\"nativeWidth\":" << w.sourceWidth << ",\"nativeHeight\":" << w.sourceHeight << ",\"frames\":" << w.frames;
             if (ready>=0) stats << ",\"requestToReadyMs\":" << ready;
             if (!w.captureStatus.empty()) stats << ",\"status\":" << std::quoted(w.captureStatus);
+            if (w.stageSource) writeStageStats(stats, w, now);
             stats << "}";
         }
+    }
+    // The staged window's region source next to the export, so a run shows which one is cheaper.
+    void writeStageStats(std::ostringstream& stats, const canvas::CanvasWindow& w, double now) const {
+        const double ready=w.stageSource->requestToReadyMs();
+        stats << ",\"stage\":{\"transport\":" << std::quoted(w.stageSource->transport()) << ",\"shown\":" << (w.regionShown?"true":"false")
+            << ",\"fps\":" << w.stageReportFrames/std::max(now-reportTime, 1e-3) << ",\"frames\":" << w.stageFrames;
+        if (ready>=0) stats << ",\"requestToReadyMs\":" << ready;
+        stats << "}";
     }
     void writeStats(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         if (posePath.empty()) return;
@@ -1260,6 +1406,7 @@ struct View {
         if (canvas) distance=targetDistance=canvas->ring.radius;
         else { distance=safe(distance); targetDistance=distance; fit(); panZ=targetPanZ; }
         controls.emplace(posePath);
+        controls->setCanvasMode(bool(canvas));
         lastCameraTime=monotonicSeconds();
         glEnable(GL_DEPTH_TEST);
         started=SDL_GetTicks64();
@@ -1302,8 +1449,9 @@ struct View {
         int viewportWidth, viewportHeight; drawable(viewportWidth, viewportHeight);
         int w, h; drawable(w, h);
         if (w<=0 || h<=0) { SDL_Delay(16); return true; }
-        // Share exactly the halo target; the compositor consumes monitor transitions only.
-        controls->publishHover(direct && !canvas && !selection.output.empty(), selection.output, 0, 0, pointerSerial, pointerX, pointerY);
+        // Share exactly the halo target; the compositor consumes monitor transitions only. Canvas mode
+        // publishes explicit focus actions, windowed too (§3.4).
+        controls->publishHover(canvas ? !hoverOutput.empty() : (direct && !selection.output.empty()), canvas ? hoverOutput : selection.output, 0, 0, pointerSerial, pointerX, pointerY);
         projectPanels(viewportWidth, viewportHeight, lastCameraTime);
         collectGpu();
         const bool timeCapture=gpuTimers.begin(GpuTimers::Capture);
@@ -1371,10 +1519,12 @@ struct View {
     }
     void finishCanvas() {
         for (const auto& w:canvas->windows)
-            std::cout << w.name << ": " << w.frames << " frames (" << w.width << 'x' << w.height << ") " << canvas::tierName(w.decision.tier) << (w.captureStatus.empty() ? "" : ", "+w.captureStatus) << "\n";
+            std::cout << w.name << ": " << w.frames << " frames (" << w.width << 'x' << w.height << ") " << canvas::tierName(w.decision.tier) << (w.captureStatus.empty() ? "" : ", "+w.captureStatus)
+                      << (w.stageFrames ? " (region "+std::to_string(w.stageFrames)+" frames)" : "") << "\n";
         if (smoke && !canvas->smokeDone()) result=1;
         if (!canvas->memoryPath.empty() && canvas->memory.dirty) canvas->memory.save(canvas->memoryPath);
         canvas->releaseGpu();
+        if (cursorTexture) { glDeleteTextures(1, &cursorTexture); cursorTexture=0; }
     }
     // Settings and the initial window list, then land on the staged window (else the remembered camera,
     // else the overview) without easing.
@@ -1407,8 +1557,21 @@ struct View {
 int preview(std::vector<Panel>& panels, bool smoke, spatial::Workspace workspace, float spacing, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& layoutPath, int fps, bool spectatorEnabled) {
     return View(panels, smoke, workspace, spacing, display, posePath, direct, stereo, ipd, fov, layoutPath, fps, spectatorEnabled).run();
 }
+// The Lua adapter writes its version next to the pose socket; canvas mode needs v6 (§3.5).
+bool controlsVersionOk(const std::string& posePath, std::string& why) {
+    if (posePath.empty()) { why="no --pose-socket"; return false; }
+    const auto file=std::filesystem::path(posePath).parent_path()/"controls.version";
+    std::ifstream in(file); int version=0;
+    if (!in) { why=file.string()+" missing"; return false; }
+    if (!(in>>version)) { why=file.string()+" unreadable"; return false; }
+    if (version<6) { why="found version "+std::to_string(version); return false; }
+    return true;
+}
 // Window canvas mode: no monitor panels; the capture connection must work before any window opens.
 int canvasPreview(bool smoke, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& canvasPath, const std::string& windowsPath, int fps, bool spectatorEnabled) {
+    std::string why;
+    if (windowsPath.empty() && !controlsVersionOk(posePath, why))
+        throw std::runtime_error("Window canvas needs XR controls version 6 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
     const auto memory=(std::filesystem::path(canvasPath).parent_path()/"canvas-memory.tsv").string();
     auto scene=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, memory);
     std::string error;
@@ -1436,7 +1599,7 @@ int main(int argc,char** argv) {
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit; R: recenter; Esc: exit\n"
-                "Window canvas (developer): --canvas names canvas.tsv (settings; may not exist yet), --canvas-windows-file a window list\nin the .windows mailbox format. Formats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\n"; return 0; }
+                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 6 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.3.1\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;

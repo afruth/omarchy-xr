@@ -77,7 +77,7 @@ class LaptopDisplayTests(unittest.TestCase):
             manager.spectator_enabled=True
             manager.set_laptop_off(True)
             manager.laptop.start.assert_not_called()
-            self.assertEqual(json.loads(manager.presentation_profile.read_text()),{'spectator':True,'laptopOff':True})
+            self.assertEqual(json.loads(manager.presentation_profile.read_text()),{'spectator':True,'laptopOff':True,'renderMode':'monitors'})
             process=Mock();process.poll.return_value=None;process.pid=123
             manager.viewer=process;manager.direct=True;manager.stereo_active=True;manager.dedicated.output='DP-1'
             (self.root/'pose.sock.stats').write_text(json.dumps({'pid':123,'time':time.monotonic(),'fps':60}))

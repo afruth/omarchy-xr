@@ -29,6 +29,25 @@ Item {
     function setControl(key,value) {
         var copy=Object.assign({},controlDraft);copy[key]=value;controlDraft=copy;controlsDirty=true;
     }
+    property string renderMode: "monitors"
+    property string requestedMode: ""
+    property bool canvasActive: false
+    property int canvasWindows: 0
+    property int controlsVersion: 0
+    property var canvasSettings: ({})
+    property var canvasDraft: ({})
+    property bool canvasDirty: false
+    // Kept verbatim so typing a separator is not reformatted away mid-edit.
+    property string canvasExclude: ""
+    function setCanvas(key,value) {
+        var copy=Object.assign({},canvasDraft);copy[key]=value;canvasDraft=copy;canvasDirty=true;
+    }
+    function adoptCanvas(settings) {
+        canvasSettings=settings;
+        if (canvasDirty) return;
+        canvasDraft=Object.assign({},settings);
+        canvasExclude=(settings.exclude || []).join(", ");
+    }
     property var environmentSettings: ({id:"",brightness:25,rotation:0,animated:true})
     property var environmentItems: []
     property bool canImportEnvironment: false
@@ -162,6 +181,9 @@ Item {
             tab: activeTab,
             viewing: viewing,
             direct: directOutput,
+            renderMode: renderMode,
+            canvasActive: canvasActive,
+            canvas: canvasDraft,
             dirty: dirty
         });
     }
@@ -209,6 +231,8 @@ Item {
             imageResolution: imageResolution,
             enabled: enabled === undefined ? true : enabled,
             controls: controlDraft,
+            renderMode: requestedMode || renderMode,
+            canvas: canvasDraft,
             setupName: setupName,
             setupId: selectedSetup === undefined ? setupId : selectedSetup,
             updateSetup: !!updateSetup,
@@ -380,6 +404,13 @@ Item {
                         if(picked) root.setupName=picked.name;
                     }
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
+                    if (replyAction === "set_render_mode") root.requestedMode = "";
+                    if (replyAction === "set_canvas_settings" && response.ok) root.canvasDirty = false;
+                    if (response.canvas) root.adoptCanvas(response.canvas);
+                    if (response.renderMode) root.renderMode = response.renderMode;
+                    root.canvasActive = !!response.canvasActive;
+                    root.canvasWindows = response.canvasWindows || (response.performance || {}).canvasWindows || 0;
+                    if (response.controlsVersion !== undefined) root.controlsVersion = response.controlsVersion;
                     if (response.performance) {
                         var nextCaptures = response.performance.captures || [];
                         if (!JsonEqual.same(root.captureRows, nextCaptures))
@@ -507,6 +538,21 @@ Item {
         property string sourceValue: ""
         onSourceValueChanged: value = sourceValue
         Component.onCompleted: value = sourceValue
+    }
+    // Ui.NumberField is whole-numbered; tenths cover the canvas radius and label size.
+    component DecimalField: Ui.NumberField {
+        id: decimal
+        property real amount: 0
+        property real minimum: 0
+        property real maximum: 1
+        signal amountEdited(real amount)
+        from: Math.round(minimum * 10)
+        to: Math.round(maximum * 10)
+        value: Math.round(amount * 10)
+        field.textFromValue: function(value, locale) { return (value / 10).toFixed(1); }
+        field.valueFromText: function(text, locale) { return Math.round(Number(text) * 10); }
+        field.validator: DoubleValidator { bottom: decimal.minimum; top: decimal.maximum; decimals: 1; locale: "C"; notation: DoubleValidator.StandardNotation }
+        onModified: function(value) { amountEdited(value / 10); }
     }
     component Label: Text {
         id: label
@@ -788,7 +834,7 @@ Item {
                     Layout.fillWidth: true
                     spacing: 8
                     Repeater {
-                        model: ["Controls", "Monitors", "Environment", "Utilities"]
+                        model: ["Controls", root.renderMode === "canvas" ? "Canvas" : "Monitors", "Environment", "Utilities"]
                         Action {
                             required property int index
                             required property string modelData
@@ -897,15 +943,25 @@ Item {
                                         helpText: "Head tracking is " + (root.sdk.tracking ? "active" : root.sdk.communication ? "starting" : "not connected")
                                     }
                                 }
+                                ModeSelector {
+                                    Layout.fillWidth: true
+                                    mode: root.renderMode
+                                    locked: root.viewing || root.busy || !root.loaded
+                                    hint: root.loaded && root.controlsVersion < 6 ? "Window canvas needs XR controls v6 - open Utilities -> Setup & integrations and reinstall the controls" : ""
+                                    accent: Color.accent
+                                    foreground: Color.foreground
+                                    onPicked: function(m) { root.requestedMode = m; root.send("set_render_mode"); }
+                                }
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
                                     Action {
-                                        visible: !root.directOutput || root.dirty || root.pendingAction === "present_direct"
+                                        readonly property bool monitorChanges: root.dirty && root.renderMode !== "canvas"
+                                        visible: !root.directOutput || monitorChanges || root.pendingAction === "present_direct"
                                         text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? "Apply monitor changes" : "Start stereo"
                                         selected: true
-                                        helpText: "Show your virtual monitors in the glasses"
-                                        enabled: root.canStart && (!root.directOutput || root.dirty)
+                                        helpText: root.renderMode === "canvas" ? "Show your windows on the canvas in the glasses" : "Show your virtual monitors in the glasses"
+                                        enabled: root.canStart && (!root.directOutput || monitorChanges)
                                         onClicked: root.send("present_direct")
                                     }
                                     Action {
@@ -916,8 +972,8 @@ Item {
                                         onClicked: root.send("stop_viewer")
                                     }
                                     Action {
-                                        text: "Edit monitors"
-                                        helpText: "Configure the size and arrangement of your virtual monitors"
+                                        text: root.renderMode === "canvas" ? "Canvas settings" : "Edit monitors"
+                                        helpText: root.renderMode === "canvas" ? "Configure the window canvas output and ring" : "Configure the size and arrangement of your virtual monitors"
                                         onClicked: root.selectTab(1)
                                     }
                                 }
@@ -1073,7 +1129,7 @@ Item {
                             }
                         }
                         ColumnLayout {
-                            visible: root.activeTab === 1
+                            visible: root.activeTab === 1 && root.renderMode !== "canvas"
                             Layout.fillWidth: true
                             spacing: 12
                             RowLayout {
@@ -1515,6 +1571,144 @@ Item {
                                         Action {text:"Keep editing";onClicked:root.pendingSetupId=""}
                                         Action {text:"Discard and apply setup";enabled:!root.busy;onClicked:{var id=root.pendingSetupId;root.pendingSetupId="";root.send("use_setup",undefined,id);}}
                                     }
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            visible: root.activeTab === 1 && root.renderMode === "canvas"
+                            Layout.fillWidth: true
+                            spacing: 12
+                            Card {
+                                Heading { text: "Window canvas" }
+                                Hint { text: "Windows are shown on a ring around you; the canvas output is created when you start." }
+                                Label {
+                                    text: root.canvasActive ? "Canvas output active · " + root.canvasWindows + (root.canvasWindows === 1 ? " window" : " windows") : "Canvas output not created"
+                                    color: Qt.alpha(Color.foreground, .68)
+                                }
+                            }
+                            Disclosure {
+                                title: root.canvasDirty ? "Canvas settings · Unsaved" : "Canvas settings"
+                                helpText: "Changes apply to a running canvas without restarting XR"
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    columnSpacing: 16
+                                    rowSpacing: 12
+                                    enabled: root.loaded && !root.busy
+                                    BoundDropdown {
+                                        Layout.fillWidth: true
+                                        label: "Output refresh"
+                                        sourceValue: String(root.canvasDraft.refresh || 60)
+                                        options: [{value:"60",label:"60 Hz"},{value:"120",label:"120 Hz"}]
+                                        onChanged: function(picked) { root.setCanvas("refresh", Number(picked)); }
+                                    }
+                                    BoundDropdown {
+                                        Layout.fillWidth: true
+                                        label: "Output scale"
+                                        sourceValue: String(root.canvasDraft.outputScale || 1)
+                                        options: [{value:"1",label:"100%"},{value:"1.25",label:"125%"}]
+                                        onChanged: function(picked) { root.setCanvas("outputScale", Number(picked)); }
+                                    }
+                                    DecimalField {
+                                        label: "Ring radius (m)"
+                                        minimum: 1; maximum: 10
+                                        amount: root.canvasDraft.radius || 2.4
+                                        onAmountEdited: function(value) { root.setCanvas("radius", value); }
+                                    }
+                                    Ui.NumberField {
+                                        label: "Window gap (px)"
+                                        from: 0; to: 500; stepSize: 10
+                                        value: root.canvasDraft.gapPx === undefined ? 60 : root.canvasDraft.gapPx
+                                        onModified: function(value) { root.setCanvas("gapPx", value); }
+                                    }
+                                    DecimalField {
+                                        label: "Label size (°)"
+                                        minimum: .1; maximum: 5
+                                        amount: root.canvasDraft.labelDeg || .8
+                                        onAmountEdited: function(value) { root.setCanvas("labelDeg", value); }
+                                    }
+                                    Ui.NumberField {
+                                        label: "Capture budget (Mpix/s)"
+                                        from: 50; to: 2000; stepSize: 50
+                                        value: root.canvasDraft.captureBudgetMpix || 300
+                                        onModified: function(value) { root.setCanvas("captureBudgetMpix", value); }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "Move my windows to the canvas at start"
+                                        helpText: "Off starts with an empty canvas; windows you open or move onto it still join"
+                                    }
+                                    Ui.ToggleSwitch {
+                                        checked: root.canvasDraft.adoptPolicy !== "empty"
+                                        enabled: root.loaded && !root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.CheckBox
+                                        Accessible.name: "Move my windows to the canvas at start"
+                                        Accessible.checked: checked
+                                        Keys.onSpacePressed: if (enabled) toggled()
+                                        Accessible.onToggleAction: if (enabled) toggled()
+                                        onToggled: root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "Take over Omarchy window keys in canvas mode"
+                                        helpText: "SUPER + F is always taken over so full screen stays on the canvas; the other window keys follow this setting in a later update"
+                                    }
+                                    Ui.ToggleSwitch {
+                                        checked: root.canvasDraft.takeoverKeys !== false
+                                        enabled: root.loaded && !root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.CheckBox
+                                        Accessible.name: "Take over Omarchy window keys in canvas mode"
+                                        Accessible.checked: checked
+                                        Keys.onSpacePressed: if (enabled) toggled()
+                                        Accessible.onToggleAction: if (enabled) toggled()
+                                        onToggled: root.setCanvas("takeoverKeys", !checked)
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
+                                }
+                                Label {
+                                    text: "Exclusions"
+                                    helpText: "App classes or process ids that stay off the canvas, separated by commas"
+                                }
+                                Ui.TextField {
+                                    Layout.fillWidth: true
+                                    text: root.canvasExclude
+                                    placeholderText: "No exclusions"
+                                    enabled: root.loaded && !root.busy
+                                    Accessible.name: "Canvas exclusions"
+                                    Accessible.description: "App classes or process ids, separated by commas"
+                                    onTextEdited: {
+                                        root.canvasExclude = text;
+                                        root.setCanvas("exclude", text.split(/[\s,]+/).filter(function(t) { return t !== ""; }));
+                                    }
+                                }
+                                Action {
+                                    text: root.pendingAction === "set_canvas_settings" ? "Applying…" : "Apply canvas settings"
+                                    helpText: "Save the canvas settings and apply them to a running canvas"
+                                    enabled: root.loaded && !root.busy && root.canvasDirty
+                                    onClicked: root.send("set_canvas_settings")
                                 }
                             }
                         }
@@ -1970,8 +2164,8 @@ Item {
                                     enabled: root.loaded
                                     Action {
                                         text: "Open windowed preview"
-                                        helpText: "Preview the applied monitor layout on the desktop; apply pending changes first"
-                                        enabled: root.activeCount > 0 && !root.dirty && !root.viewing && !root.busy
+                                        helpText: root.renderMode === "canvas" ? "Preview the window canvas on the desktop; start the canvas first" : "Preview the applied monitor layout on the desktop; apply pending changes first"
+                                        enabled: (root.renderMode === "canvas" ? root.canvasActive : root.activeCount > 0 && !root.dirty) && !root.viewing && !root.busy
                                         onClicked: root.send("start")
                                     }
                                     Action {
@@ -1981,8 +2175,8 @@ Item {
                                         onClicked: root.send("present")
                                     }
                                     Action {
-                                        text: "Stop & remove monitors"
-                                        helpText: "Stop XR and move windows from its virtual monitors to another display"
+                                        text: root.renderMode === "canvas" ? "Stop & close canvas" : "Stop & remove monitors"
+                                        helpText: root.renderMode === "canvas" ? "Stop XR, return your windows to their workspaces and remove the canvas output" : "Stop XR and move windows from its virtual monitors to another display"
                                         enabled: root.activeCount > 0
                                         onClicked: root.send("stop")
                                     }
@@ -2042,19 +2236,22 @@ Item {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: root.backendSlow ? "Still working…" : root.busy ? "Working…" : root.activeCount + (root.activeCount === 1 ? " active monitor" : " active monitors")
-                        helpText: root.backendSlow ? "This is taking longer than expected. You can still use Stop & remove monitors in Utilities." : "Virtual monitors currently available on your desktop"
+                        text: root.backendSlow ? "Still working…" : root.busy ? "Working…"
+                            : root.renderMode === "canvas" ? (root.canvasActive ? "Window canvas · " + root.canvasWindows + (root.canvasWindows === 1 ? " window" : " windows") : "Window canvas")
+                            : root.activeCount + (root.activeCount === 1 ? " active monitor" : " active monitors")
+                        helpText: root.backendSlow ? "This is taking longer than expected. You can still use " + (root.renderMode === "canvas" ? "Stop & close canvas" : "Stop & remove monitors") + " in Utilities."
+                            : root.renderMode === "canvas" ? "Windows currently on the canvas output" : "Virtual monitors currently available on your desktop"
                         color: root.busy ? Color.accent : Color.foreground
                     }
                     Action {
-                        visible: root.activeTab === 1
+                        visible: root.activeTab === 1 && root.renderMode !== "canvas"
                         text: "Save layout"
                         helpText: "Save for the next session without applying"
                         enabled: root.loaded && !root.busy
                         onClicked: root.send("save")
                     }
                     Action {
-                        visible: root.activeTab === 1
+                        visible: root.activeTab === 1 && root.renderMode !== "canvas"
                         text: root.directOutput ? "Apply to XR" : "Apply layout"
                         selected: true
                         enabled: root.loaded && !root.busy

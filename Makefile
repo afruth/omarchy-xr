@@ -18,7 +18,7 @@ UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking 
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
 	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
-	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor
+	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -135,6 +135,8 @@ $(BUILD)/test-capture-cadence.o: tests/capture_cadence.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-capture-governor.o: tests/capture_governor.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-region-turns.o: tests/region_turns.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -164,6 +166,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-canvas-memory
 	./$(BUILD)/test-capture-cadence
 	./$(BUILD)/test-capture-governor
+	./$(BUILD)/test-region-turns
 
 check: all run-units
 	lua tests/controls.lua
@@ -175,6 +178,7 @@ check: all run-units
 	! ./$(BUILD)/omarchy-xr --canvas x --layout y
 	! ./$(BUILD)/omarchy-xr --list-leases --layout x --capture y
 	! ./$(BUILD)/omarchy-xr --canvas-windows-file x
+	! ./$(BUILD)/omarchy-xr --canvas $(BUILD)/no-such/canvas.tsv --pose-socket $(BUILD)/no-such/pose.sock
 
 # Address and undefined-behavior sanitizers on the unit binaries only.
 check-san:
@@ -192,7 +196,7 @@ smoke-canvas: all $(BUILD)/spike-window-capture
 
 # Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
 # the offscreen canvas focus invariants (also in check-workspace-focus). Adds no coverage of its own.
-CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor,$(UNIT_BINS))
+CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns,$(UNIT_BINS))
 check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus
 	for t in $(CANVAS_UNITS); do ./$$t || exit 1; done
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
@@ -249,7 +253,7 @@ check-lint:
 	$(RUFF) check studio scripts tests
 	$(MYPY)
 	$(LUACHECK) config/xr-controls.lua tests/controls.lua
-	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml
+	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml
 	python3 scripts/function_length.py
 .PHONY: check-lint
 

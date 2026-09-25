@@ -21,10 +21,11 @@ struct DesktopCapture::Impl {
     zwp_linux_dmabuf_v1* dmabuf=nullptr;
     std::unique_ptr<GpuCapture> gpu;
     bool gpuMode=false,gpuDisabled=std::getenv("OMARCHY_XR_SHM_CAPTURE")!=nullptr,retry=false;
-    bool visible=true,submitted=false,released=true,forceCopy=true,includeCursor=true;
+    bool visible=true,submitted=false,released=true,forceCopy=true,includeCursor=true,held=false;
     unsigned desiredWidth=16384,desiredHeight=16384,requestCount=0,version=1;
     unsigned allocatedWidth=0,allocatedHeight=0,allocatedStride=0,allocatedFormat=0;
     unsigned dmaFormat=0,dmaWidth=0,dmaHeight=0;
+    int regionX=0,regionY=0,regionW=0,regionH=0;
     zwlr_screencopy_manager_v1* manager = nullptr;
     zwlr_screencopy_frame_v1* pending = nullptr;
     wl_buffer* buffer = nullptr;
@@ -162,7 +163,7 @@ struct DesktopCapture::Impl {
         }
         if(!gpuMode && !allocateShm())return;
         auto destination=gpuMode?gpu->buffer():buffer;
-        if(version>=2 && !forceCopy)zwlr_screencopy_frame_v1_copy_with_damage(frame,destination);
+        if(version>=2 && !forceCopy && !regionW)zwlr_screencopy_frame_v1_copy_with_damage(frame,destination);
         else zwlr_screencopy_frame_v1_copy(frame,destination);
         submitted=true;released=false;forceCopy=false;
     }
@@ -218,7 +219,21 @@ struct DesktopCapture::Impl {
 DesktopCapture::DesktopCapture() : impl(std::make_unique<Impl>()) {}
 DesktopCapture::~DesktopCapture() = default;
 void DesktopCapture::service(){if(impl->display && impl->failure.empty())impl->pump();}
+void DesktopCapture::settle(double maxSeconds){
+    auto& s=*impl;
+    if(!s.display || !s.failure.empty())return;
+    const auto deadline=Impl::Clock::now()+std::chrono::duration_cast<Impl::Clock::duration>(std::chrono::duration<double>(maxSeconds));
+    s.pump();
+    while(s.failure.empty() && s.pending && !s.submitted && !s.ready){
+        const auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-Impl::Clock::now()).count();
+        if(left<=0)break;
+        pollfd descriptor{wl_display_get_fd(s.display),POLLIN,0};
+        if(poll(&descriptor,1,int(left))<=0)break;
+        s.pump();
+    }
+}
 void DesktopCapture::setIncludeCursor(bool enabled){impl->includeCursor=enabled;}
+void DesktopCapture::hold(bool held){impl->held=held;}
 void DesktopCapture::setFrameRate(unsigned fps,unsigned inFlight,double phase) { (void)inFlight; (void)phase; impl->interval = 1000. / std::clamp(fps, 1u, 120u); }
 void DesktopCapture::setDemand(bool visible,unsigned width,unsigned height){
     width=std::max(1u,width);height=std::max(1u,height);
@@ -257,6 +272,13 @@ bool DesktopCapture::select(const std::string& name) {
     impl->failure = "Unknown output '" + name + "'; use --list-outputs";
     return false;
 }
+bool DesktopCapture::selectRegion(const std::string& output,int x,int y,int width,int height){
+    if(!select(output))return false;
+    if(width<1 || height<1){impl->selected=nullptr;impl->failure="Invalid capture region";return false;}
+    impl->regionX=x;impl->regionY=y;impl->regionW=width;impl->regionH=height;
+    return true;
+}
+bool DesktopCapture::region() const{return impl->regionW>0;}
 bool DesktopCapture::update(CapturedFrame& frame) {
     auto& s = *impl;
     if (!s.failure.empty() || !s.selected) return false;
@@ -264,7 +286,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
     if (!s.failure.empty()) return false;
     const auto now = Impl::Clock::now();
     if(s.retry){s.clearFrame();s.gpu->clearSource();s.gpuMode=false;s.retry=false;s.forceCopy=true;}
-    if (s.pending && !s.ready && (!s.submitted || s.version<2) && now - s.requested > std::chrono::seconds(3)) {
+    if (s.pending && !s.ready && (!s.submitted || s.version<2 || s.regionW) && now - s.requested > std::chrono::seconds(3)) {
         s.failure = "Capture timed out after three seconds"; return false;
     }
     bool updated = false;
@@ -297,8 +319,12 @@ bool DesktopCapture::update(CapturedFrame& frame) {
         frame.texture=s.gpu->present(frame.width,frame.height,s.gpu->invertY,true);
         frame.rgba.clear();s.rebake=false;updated=true;
     }
-    if (s.visible && !s.pending && s.released && now + std::chrono::milliseconds(1) >= s.next) {
-        s.pending=zwlr_screencopy_manager_v1_capture_output(s.manager,s.includeCursor?1:0,s.selected->proxy);
+    // A region lane asks again right after ready: GPU slots rotate, so the shown slot's pending
+    // release only matters to the single shared-memory buffer.
+    if (s.visible && !s.held && !s.pending && (s.released || (s.regionW && s.gpuMode)) && now + std::chrono::milliseconds(1) >= s.next) {
+        s.pending=s.regionW>0
+            ? zwlr_screencopy_manager_v1_capture_output_region(s.manager,s.includeCursor?1:0,s.selected->proxy,s.regionX,s.regionY,s.regionW,s.regionH)
+            : zwlr_screencopy_manager_v1_capture_output(s.manager,s.includeCursor?1:0,s.selected->proxy);
         zwlr_screencopy_frame_v1_add_listener(s.pending,&Impl::frameListener,&s);
         s.requested=now;
         const auto interval=std::chrono::duration_cast<Impl::Clock::duration>(std::chrono::duration<double,std::milli>(s.interval));
@@ -308,4 +334,31 @@ bool DesktopCapture::update(CapturedFrame& frame) {
         ++s.requestCount;wl_display_flush(s.display);
     }
     return updated;
+}
+
+RegionCapture::RegionCapture(){for(auto& lane:lanes)lane=std::make_unique<DesktopCapture>();}
+RegionCapture::~RegionCapture()=default;
+bool RegionCapture::open(const std::string& output,int x,int y,int width,int height,unsigned fps){
+    for(auto& lane:lanes){
+        lane->setIncludeCursor(true);lane->setFrameRate(120);
+        if(!lane->connect() || !lane->selectRegion(output,x,y,width,height))return false;
+    }
+    setFrameRate(fps);
+    return true;
+}
+bool RegionCapture::update(CapturedFrame& frame){
+    const double now=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return turns.step({lanes[0].get(),lanes[1].get()},frame,now);
+}
+void RegionCapture::service(){for(auto& lane:lanes)lane->service();}
+void RegionCapture::settle(double maxSeconds){for(auto& lane:lanes)lane->settle(maxSeconds);}
+void RegionCapture::setDemand(bool visible,unsigned width,unsigned height){for(auto& lane:lanes)lane->setDemand(visible,width,height);}
+void RegionCapture::setFrameRate(unsigned fps,unsigned,double){turns.period=1000./std::clamp(fps,1u,120u);}
+const char* RegionCapture::transport() const{return lanes[turns.last]->transport();}
+unsigned RegionCapture::requests() const{unsigned n=0;for(const auto& lane:lanes)n+=lane->requests();return n;}
+double RegionCapture::importLatencyMs() const{return lanes[turns.last]->importLatencyMs();}
+double RegionCapture::requestToReadyMs() const{return lanes[turns.last]->requestToReadyMs();}
+const std::string& RegionCapture::error() const{
+    for(const auto& lane:lanes)if(!lane->error().empty())return lane->error();
+    return lanes[0]->error();
 }
