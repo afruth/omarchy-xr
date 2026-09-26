@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.3.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.1).
+[Download the 0.4.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.4.0).
 The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.4.0-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -98,6 +98,24 @@ the selected Omarchy theme.
    to the laptop or another available desktop display, then removes the virtual monitors.
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
+
+**Window canvas** is the second mode. Choose **Window canvas** above the Start buttons on
+**Controls**, before starting or while stereo or a preview runs: a running session switches in
+place, keeping the glasses in stereo (if the renderer does not confirm within 3 s, Studio restarts
+XR in the new mode; the switch is refused while the laptop display is off). Each application window then gets its own panel on a cylinder
+around you (beside, above and below), instead of sitting on a virtual monitor. At start Studio moves your windows to one
+hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
+SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
+and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
+SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
+SUPER+wheel or SUPER+CTRL+Page_Up/Down scroll the cylinder up and down; new windows open next to where
+you look. F1 lists every canvas key. New windows pulse briefly, and one placed outside your view gets an edge
+arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
+capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
+line under it shows the live use while the canvas runs. Window canvas
+needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
+shortcuts & gestures** (or `make install-controls`). Until you do, the option is disabled. See
+[docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
 
 Hide, Escape, or closing the Studio window parks the editor as an icon on the
 Omarchy top bar and leaves virtual monitors and any running viewer up. Hide is
@@ -202,11 +220,18 @@ omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm pango 
 make                 # optimized build with debug symbols and warnings
 make run             # synthetic preview without creating monitors
 make check           # pixel conversion, lifecycle and CLI tests
-make check-workspace-focus # workspace-to-camera integration; hidden offscreen window
+make check-workspace-focus # workspace-to-camera integration, canvas focus and the live mode switch (test-mode-switch); hidden offscreen window
+make check-scene-seam # renderer scene seam (geometry, surfaces, stats mode); hidden offscreen window
 make smoke           # ten rendered frames; requires a graphical session
+make check-preview   # pixel-exact renderer regression against tests/baselines; same GPU driver
+make check-canvas    # alias: just the window canvas tests (check and check-workspace-focus run them too)
+make check-canvas-preview # canvas overlay stills (palette, switcher, radar, help, Fill, pin) as PNGs; GL session
+make smoke-canvas    # opt-in, Hyprland session: canvas smoke against a temporary SPIKE-canvas output
+make check-canvas-live # opt-in, Hyprland session: capture ladder acceptance (ladder-2/4/6 all in view, ladder-6 default view) on SPIKE-canvas
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first
 python3 tests/live_dedicated.py # opt-in stereo/DRM handoff/restoration test
+python3 tests/live_canvas.py profile zoomed-in-near-parked # opt-in window canvas capture rates
 ```
 
 For UI review without changing a running XR session, use a native preview with
@@ -222,6 +247,46 @@ python3 scripts/preview-ui.py capture /tmp/xr-monitors.png
 quickshell kill -p /tmp/omarchy-xr-ui-preview
 ```
 
+Window canvas renders every window as its own quad on a 360° ring instead of monitor panels.
+Studio starts it with `--canvas <state>/canvas.tsv --pose-socket …` and the Lua adapter's
+`.windows` mailbox; a developer run without Studio can pass a windows file instead:
+`./build/omarchy-xr --canvas DIR/canvas.tsv --canvas-windows-file DIR/windows.tsv --pose-socket DIR/pose.sock`.
+`--canvas` names the settings file `canvas.tsv` (it may not exist yet; defaults apply; reloaded every
+250 ms), and `environment.tsv`, `tracking.tsv` and `gaze.tsv` are read from its directory. It cannot
+be combined with `--layout`, `--capture` or `--list-outputs`, and it needs Hyprland's
+`hyprland_toplevel_export_v1` v2. `O` toggles Overview and the staged window, `F` fills; `R` recenters.
+`pose.sock.stats` reports `"mode":"canvas"`, `canvasWindows`, the capture tiers and per-window
+rate and fps. A `mode:canvas` / `mode:monitors` datagram switches a running renderer between the two
+scenes (`canvas.tsv` and `viewer.tsv` are both taken from the state directory of `--layout` or
+`--canvas`); it is refused in smoke runs, with `--canvas-windows-file`, and for canvas with controls
+older than v6. The viewer log says `Scene: switched to …` or `Scene: switch to … refused: …`.
+
+The windows file uses the `.windows` mailbox format from `docs/infinite-canvas-plan.md` §3.1 and
+is re-read whenever its mtime changes. The first line is `v1 <owner> <seq> <stamp>`. Each further
+row is `<0xaddress> <class-hex> <title-hex> <w> <h> <atX> <atY> <focus_history_id> <stage|sliver|park|off> <floating 0/1> <pid> <xwayland 0/1> <canvas 0/1>`,
+with class and title in lowercase hex and `-` for an empty field. The `stage` row is the staged
+window; without one, the row with `focus_history_id` 0 is. The staged window is captured at 60 Hz
+and the camera lands on it. A malformed file, or one with a lower `seq`, is ignored and the
+previous list stays.
+
+`tests/live_canvas.py` (needs a Hyprland session; built on `tools/spike_canvas.py`, so run
+`make spike-canvas` first) writes such a file from `hyprctl clients -j`:
+`python3 tests/live_canvas.py write FILE [--stage 0xADDRESS] [--all]` writes it once, `watch`
+rewrites it every 500 ms (without `--all` only the spike test clients are listed). `profile
+[NAME] [--seconds 40] [--stereo] [--size WxH] [--fov DEG] [--churn]` is the capture acceptance run:
+it creates the headless `SPIKE-canvas` output, spawns the profile's test clients (the default
+`zoomed-in-near-parked`: one staged 1920x1080 window, 4 + 6 parked 1280x720 and 39 parked 960x600;
+`ladder-2/4/6/11` and `ladder-video` are the M5 1080p sets), starts the renderer windowed on that
+output, moves the renderer's slivers (`pose.sock.controls.tiers`) to the right edge of the canvas
+workspace like the controls adapter does, feeds a steady pose, enters Overview after about 20 s and
+returns to Work two reports later. It prints the tier and budget table and checks every settled
+report against the ladder model `tests/canvas_ladder.py` (each window's rate, tier, captures in
+flight and place; focused ≥ 58 fps, the others within 1 fps of their rate; used ≤ effective budget),
+at most 4 steady-state `screencast` events, no renderer GPU-memory growth and Hyprland CPU ≤ 20 %;
+`--churn` opens and closes a window during Work and fails when a ladder tier rises twice within 2 s.
+`make smoke-canvas` (`--smoke`) runs `--smoke-test --stereo --canvas` against one staged and
+four parked clients. Both remove the output and the clients afterwards and give focus back.
+
 Ubuntu renderer dependencies: `g++ make pkg-config libsdl2-dev libgl1-mesa-dev
 libwayland-dev libwayland-bin libegl1-mesa-dev libgbm-dev libdrm-dev libpango1.0-dev
 libcairo2-dev libjson-c-dev python3`. The Studio UI requires Omarchy itself.
@@ -236,7 +301,10 @@ of Omarchy's installed notification service. Native desktop cards, actions,
 expiry, Do Not Disturb and history remain available. No packaged files are edited.
 
 In stereo, desktop notifications become separate, theme-colored 3D cards with
-shallow rims. Up to three cards form a staggered floating stack; flicking down
+shallow rims. The cards also show in the flat glasses view and the windowed
+preview whenever the XR controls are set up (the renderer has a pose socket);
+in Window canvas mode they float inside the ring, in the lower part of the view,
+drawn over the windows. Up to three cards form a staggered floating stack; flicking down
 brings the next notification to the front. The bridge mirrors up to 32 active
 alerts, with bounded text and textures. The stack uses the same perspective and
 eye separation as the monitors. It chooses the nearest clear position beside or above the workspace,
@@ -278,6 +346,11 @@ make build/notification-preview
 SDL_VIDEODRIVER=offscreen build/notification-preview /tmp/xr-notifications --video
 # Seven screenshots, a motion trace, and a 30 fps PNG sequence in frames/.
 ```
+
+`make check-preview` diffs the seven stills against
+`tests/baselines/notification-preview/`, and `make check-preview PREVIEW_UPDATE=1`
+regenerates them after an intentional visual change (the harness pins the sky
+clock and the stock accent so the pixels are reproducible).
 
 - Right-drag: look around; middle-drag: pan across the panel plane.
 - Mouse wheel: zoom; **F**: fit every panel; **R**: recenter; **Esc**: exit.
@@ -454,7 +527,11 @@ use supports `--direct DP-1 --stereo`, `--list-leases`, and `--pose-socket PATH`
 The SDK publisher sends `euler-nwu-v1 TIMESTAMP ROLL PITCH YAW` packets in degrees
 over a private local socket. Publishing runs independently of blocking USB
 control commands. Samples older than 250 ms are rejected; stale tracking holds
-the previous view. The same socket accepts recenter/fit/zoom controls from Studio.
+the previous view. The same socket accepts recenter/fit/zoom controls from Studio, the
+canvas verbs (`overview`, `search`, `fill`, `arrange`, `undo`, `redo`, `pin`, `help`,
+`focus:0x…`) and `mode:monitors` / `mode:canvas`, which switches the running renderer's
+scene in place (Studio sends it after preparing the outputs and waits for `pose.sock.stats`
+to report the new `mode`).
 
 Verified on the attached Pro 2: direct mono at 120 Hz, stereo at 60 Hz, three live
 1080p captures, live tracking, no renderer window or desktop VITURE output while
@@ -530,6 +607,9 @@ running (including dedicated stereo with Studio hidden):
 - **Ctrl+Down** fits the height of the monitor you are looking at, with a 4%
   margin. Selection follows headset direction, not eye movements. Looking into a
   gap or losing tracking leaves the view unchanged.
+  In window canvas mode it instead focuses the window you look at (staged,
+  raised, keyboard and pointer at the gaze point), as does a three-finger single
+  tap; see [`docs/window-canvas.md`](docs/window-canvas.md).
 
 Zoom uses exponential, frame-rate-independent easing, with no momentum after
 release beyond the short smoothing tail. Existing spacing safety limits still

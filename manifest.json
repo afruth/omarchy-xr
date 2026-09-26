@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "afruth.omarchy-xr",
   "name": "XR Monitor Studio",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": "Andreas Fruth",
   "license": "LicenseRef-Omarchy-XR",
   "description": "Create and arrange virtual monitors for a live spatial desktop. Currently supports VITURE XR glasses only.",

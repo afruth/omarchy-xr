@@ -42,6 +42,22 @@ corresponding source or relinkable objects.
 The renderer compiles code generated from the protocol definitions in
 `protocols/`. Their copyright notices and permission terms are retained in
 `WAYLAND-PROTOCOLS.txt`. They remain under their original permissive licences.
+This includes `hyprland-toplevel-export-v1.xml` (Copyright 2022 Vaxry,
+BSD-3-Clause) and `wlr-foreign-toplevel-management-unstable-v1.xml`
+(Copyright 2018 Ilia Bozhinov), which the window canvas links only because the
+first references it.
+
+## Ported algorithms
+
+The window canvas ports pure logic from
+[phantomat](https://github.com/kaolti/phantomat) (`kaolti/phantomat`),
+Copyright (c) 2023, Hypr Development and Copyright (c) 2026, Zsolt Kacso,
+BSD-3-Clause: the canvas camera (zoom about a point, fit to bounds, pan steps),
+auto-placement, arrange, the directional neighbour and nudge rules, and the
+window memory format with its claim rules (`src/canvas_model.hpp`,
+`src/canvas_placement.hpp`, `src/canvas_memory.hpp`). The code was adapted to
+a periodic, cylindrical canvas; no phantomat rendering, input or compositor code
+is included. The upstream licence text is in `PHANTOMAT-BSD.txt`.
 
 ## System dependencies
 

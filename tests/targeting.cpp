@@ -1,9 +1,41 @@
 #include "targeting.hpp"
 #include "camera_controls.hpp"
+#include "canvas_model.hpp"
+#include <numeric>
+#include <random>
 #include <cassert>
 #include <iostream>
 using namespace targeting;
 bool close(float a,float b){return std::abs(a-b)<1e-4f;}
+bool sameHit(const std::optional<Hit>& a,const std::optional<Hit>& b){
+    if(!a || !b)return !a && !b;
+    return a->output==b->output && a->distance==b->distance && a->u==b->u && a->v==b->v;
+}
+// The canvas culls by heading before ray tests: on a 60-window ring the culled query must
+// find exactly what the brute-force query finds.
+void culledCanvas(){
+    const canvas::Ring ring{};const auto cyl=canvas::cylinder(ring,60);
+    std::vector<PanelLayout> ring60;
+    for(int i=0;i<60;++i){
+        const int row=i%3-1;const float x=float(i/3)*ring.period()/20;
+        ring60.push_back({"0x"+std::to_string(100+i),x,row*850.f-350,400+float(i%4)*60,700});
+    }
+    std::vector<size_t> all(ring60.size());std::iota(all.begin(),all.end(),0);
+    std::mt19937 rng(11);std::uniform_real_distribution<float> heading(-180,180),pitch(-25,25),pan(-.2f,.2f);
+    int hits=0;
+    for(int n=0;n<200;++n){
+        const float h=heading(rng),p=pitch(rng);
+        const Vec direction={std::sin(h*spatial::pi/180)*std::cos(p*spatial::pi/180),std::sin(p*spatial::pi/180),-std::cos(h*spatial::pi/180)*std::cos(p*spatial::pi/180)};
+        const Ray ray{{pan(rng),pan(rng),pan(rng)},direction};
+        const auto candidates=canvas::visibleIndices(ring60,h,24+10,ring);
+        const auto brute=query(ray,ring60,cyl.cx,cyl.cy,cyl.span,cyl.distance,cyl.workspace);
+        assert(sameHit(query(ray,ring60,cyl.cx,cyl.cy,cyl.span,cyl.distance,cyl.workspace,&candidates),brute));
+        assert(sameHit(query(ray,ring60,cyl.cx,cyl.cy,cyl.span,cyl.distance,cyl.workspace,&all),brute));
+        assert(candidates.size()<ring60.size());
+        hits+=brute.has_value();
+    }
+    assert(hits>20);
+}
 int main(){
     PanelLayout panel{"one",0,0,1800,900};
     spatial::Pose flat{{0,0,-4},0,0};
@@ -75,5 +107,6 @@ int main(){
     selection.validate({{"two",0,0,1920,1080},{"other",2000,0,1920,1080}});
     assert(selection.output=="two"); // stable identity, not array position
     selection.validate({{"other",0,0,1920,1080}});assert(selection.output.empty());
-    std::cout<<"Targeting: flat/curved surfaces, UV/pixels, nearest hit, gaps, view transforms and freshness passed\n";
+    culledCanvas();
+    std::cout<<"Targeting: canvas candidate culling, flat/curved surfaces, UV/pixels, nearest hit, gaps, view transforms and freshness passed\n";
 }

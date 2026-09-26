@@ -64,10 +64,14 @@ inline std::optional<Hit> intersect(Ray ray,const PanelLayout& panel,const spati
     }
     return best;
 }
-inline std::optional<Hit> query(Ray ray,const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace){
+// candidates, when given, limits the test to those indices (the canvas's angular cull).
+inline std::optional<Hit> query(Ray ray,const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace,
+                                const std::vector<size_t>* candidates=nullptr){
     ray.direction=normalize(ray.direction);
     std::optional<Hit> best;
-    for(const auto& p:panels){
+    const size_t count=candidates?candidates->size():panels.size();
+    for(size_t i=0;i<count;++i){
+        const auto& p=panels[candidates?(*candidates)[i]:i];
         const auto pose=spatial::pose((p.x+p.width/2-cx)/900,-(p.y+p.height/2-cy)/900,p.width/900,span,distance,workspace,p.curvature);
         auto hit=intersect(ray,p,pose);
         if(hit && (!best || hit->distance<best->distance-1e-5f))best=hit;

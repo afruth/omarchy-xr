@@ -1,2 +1,4 @@
 module Quickshell
 FloatingWindow 1.0 FloatingWindow.qml
+singleton Quickshell 1.0 Quickshell.qml
+singleton ExclusionMode 1.0 ExclusionMode.qml

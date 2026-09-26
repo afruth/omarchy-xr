@@ -10,15 +10,19 @@ LDLIBS += $(shell pkg-config --libs sdl2 gl wayland-client egl gbm libdrm pangoc
 
 APP_OBJS = $(BUILD)/main.o $(BUILD)/capture.o $(BUILD)/direct_output.o \
 	$(BUILD)/xdg-shell-protocol.o $(BUILD)/linux-dmabuf-protocol.o \
-	$(BUILD)/drm-lease-protocol.o $(BUILD)/wlr-screencopy-protocol.o
+	$(BUILD)/drm-lease-protocol.o $(BUILD)/wlr-screencopy-protocol.o \
+	$(BUILD)/window_capture.o $(BUILD)/hyprland-toplevel-export-protocol.o $(BUILD)/wlr-foreign-toplevel-protocol.o
 GEN_HEADERS = $(BUILD)/xdg-shell-client.h $(BUILD)/linux-dmabuf-client.h \
-	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h
+	$(BUILD)/drm-lease-client.h $(BUILD)/wlr-screencopy-client.h $(BUILD)/hyprland-toplevel-export-client.h
 UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking \
 	$(BUILD)/test-camera-controls $(BUILD)/test-targeting $(BUILD)/test-hover \
-	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell
+	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
+	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
+	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns \
+	$(BUILD)/test-canvas-search
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
-.PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json
+.PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
 all: $(BUILD)/omarchy-xr compile_commands.json
 
 # $(1) source, $(2) object, $(3) extra compiler flags. Sidecar JSON feeds compile_commands.json.
@@ -45,6 +49,8 @@ $(BUILD)/capture.o: src/capture.cpp $(GEN_HEADERS) | $(BUILD)
 	$(call compile_cxx,src/capture.cpp,$(BUILD)/capture.o,)
 $(BUILD)/direct_output.o: src/direct_output.cpp $(GEN_HEADERS) | $(BUILD)
 	$(call compile_cxx,src/direct_output.cpp,$(BUILD)/direct_output.o,)
+$(BUILD)/window_capture.o: src/window_capture.cpp $(GEN_HEADERS) | $(BUILD)
+	$(call compile_cxx,src/window_capture.cpp,$(BUILD)/window_capture.o,)
 
 $(BUILD)/wlr-screencopy-client.h: protocols/wlr-screencopy-unstable-v1.xml | $(BUILD)
 	wayland-scanner client-header $< $@
@@ -52,6 +58,26 @@ $(BUILD)/wlr-screencopy-protocol.c: protocols/wlr-screencopy-unstable-v1.xml | $
 	wayland-scanner private-code $< $@
 $(BUILD)/wlr-screencopy-protocol.o: $(BUILD)/wlr-screencopy-protocol.c | $(BUILD)
 	$(call compile_c,$(BUILD)/wlr-screencopy-protocol.c,$(BUILD)/wlr-screencopy-protocol.o)
+
+$(BUILD)/hyprland-toplevel-export-client.h: protocols/hyprland-toplevel-export-v1.xml | $(BUILD)
+	wayland-scanner client-header $< $@
+$(BUILD)/hyprland-toplevel-export-protocol.c: protocols/hyprland-toplevel-export-v1.xml | $(BUILD)
+	wayland-scanner private-code $< $@
+$(BUILD)/hyprland-toplevel-export-protocol.o: $(BUILD)/hyprland-toplevel-export-protocol.c | $(BUILD)
+	$(call compile_c,$(BUILD)/hyprland-toplevel-export-protocol.c,$(BUILD)/hyprland-toplevel-export-protocol.o)
+
+$(BUILD)/wlr-foreign-toplevel-protocol.c: protocols/wlr-foreign-toplevel-management-unstable-v1.xml | $(BUILD)
+	wayland-scanner private-code $< $@
+$(BUILD)/wlr-foreign-toplevel-protocol.o: $(BUILD)/wlr-foreign-toplevel-protocol.c | $(BUILD)
+	$(call compile_c,$(BUILD)/wlr-foreign-toplevel-protocol.c,$(BUILD)/wlr-foreign-toplevel-protocol.o)
+
+# Window canvas M0 spike (docs/infinite-canvas-plan.md §3.6); not part of all/check.
+spike-canvas: $(BUILD)/spike-window-capture
+$(BUILD)/spike-window-capture.o: tools/spike_window_capture.cpp $(BUILD)/hyprland-toplevel-export-client.h $(BUILD)/linux-dmabuf-client.h | $(BUILD)
+	$(call compile_cxx,tools/spike_window_capture.cpp,$(BUILD)/spike-window-capture.o,-Isrc)
+$(BUILD)/spike-window-capture: $(BUILD)/spike-window-capture.o $(BUILD)/hyprland-toplevel-export-protocol.o \
+	$(BUILD)/wlr-foreign-toplevel-protocol.o $(BUILD)/linux-dmabuf-protocol.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(BUILD)/drm-lease-client.h: protocols/drm-lease-v1.xml | $(BUILD)
 	wayland-scanner client-header $< $@
@@ -96,9 +122,28 @@ $(BUILD)/test-sky-cull.o: tests/sky_cull.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-dwell.o: tests/dwell.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-frame-source.o: tests/frame_source.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-model.o: tests/canvas_model.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-window-list.o: tests/window_list.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-placement.o: tests/canvas_placement.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-memory.o: tests/canvas_memory.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-capture-cadence.o: tests/capture_cadence.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-capture-governor.o: tests/capture_governor.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-region-turns.o: tests/region_turns.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-canvas-search.o: tests/canvas_search.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(UNIT_LIBS)
+$(BUILD)/test-canvas-search: UNIT_LIBS = $(shell pkg-config --libs glib-2.0)
 
 compile_commands.json: $(APP_OBJS) $(UNIT_OBJS)
 	@python3 -c 'import json,pathlib,sys; root=pathlib.Path(sys.argv[1]); items=[json.loads(p.read_text()) for p in sorted(root.glob("*.json"))]; pathlib.Path(sys.argv[2]).write_text(json.dumps(items, indent=2)+"\n")' $(BUILD)/cc $@
@@ -118,6 +163,15 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-load-governor
 	./$(BUILD)/test-sky-cull
 	./$(BUILD)/test-dwell
+	./$(BUILD)/test-frame-source
+	./$(BUILD)/test-canvas-model
+	./$(BUILD)/test-window-list
+	./$(BUILD)/test-canvas-placement
+	./$(BUILD)/test-canvas-memory
+	./$(BUILD)/test-capture-cadence
+	./$(BUILD)/test-capture-governor
+	./$(BUILD)/test-region-turns
+	./$(BUILD)/test-canvas-search
 
 check: all run-units
 	lua tests/controls.lua
@@ -126,6 +180,10 @@ check: all run-units
 	./$(BUILD)/omarchy-xr --version
 	! ./$(BUILD)/omarchy-xr --invalid-option
 	! ./$(BUILD)/omarchy-xr --capture
+	! ./$(BUILD)/omarchy-xr --canvas x --layout y
+	! ./$(BUILD)/omarchy-xr --list-leases --layout x --capture y
+	! ./$(BUILD)/omarchy-xr --canvas-windows-file x
+	! ./$(BUILD)/omarchy-xr --canvas $(BUILD)/no-such/canvas.tsv --pose-socket $(BUILD)/no-such/pose.sock
 
 # Address and undefined-behavior sanitizers on the unit binaries only.
 check-san:
@@ -134,6 +192,33 @@ check-san:
 # Requires a graphical session, or xvfb-run on CI.
 smoke: all
 	./$(BUILD)/omarchy-xr --smoke-test
+
+# Opt-in Window Canvas smoke (Hyprland session): SPIKE-canvas output, 1 staged + 4 parked test clients,
+# --smoke-test --stereo --canvas windowed; removes the output and the clients again. Not part of check.
+smoke-canvas: all $(BUILD)/spike-window-capture
+	python3 tests/live_canvas.py --smoke
+.PHONY: smoke-canvas
+
+# Opt-in M5 ladder acceptance (Hyprland session, ~4 min): SPIKE-canvas with 2, 4 and 6 1080p test clients,
+# the renderer windowed with a view that holds them all (S1c rows 60/40, 60 + 24 x 3, 60 + 15 x 4 + 10), every
+# settled report checked against tests/canvas_ladder.py, then the default view with slivers. Not part of check.
+CANVAS_LIVE_VIEW = --fov 100 --size 1600x1200 --all-in-view
+check-canvas-live: all $(BUILD)/spike-window-capture
+	python3 tests/live_canvas.py profile ladder-2 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-4 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-6 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-6
+.PHONY: check-canvas-live
+
+# Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
+# the offscreen canvas focus and live mode switch invariants (also in check-workspace-focus). Adds no
+# coverage of its own.
+CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns %canvas-search,$(UNIT_BINS))
+check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus $(BUILD)/test-mode-switch
+	for t in $(CANVAS_UNITS); do ./$$t || exit 1; done
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-mode-switch
+.PHONY: check-canvas
 
 clean:
 	rm -rf $(BUILD) compile_commands.json
@@ -166,6 +251,11 @@ install-notifications:
 $(BUILD)/capture-timing: tests/capture_timing.cpp src/capture.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc tests/capture_timing.cpp $(BUILD)/capture.o $(BUILD)/linux-dmabuf-protocol.o $(BUILD)/wlr-screencopy-protocol.o -o $@ $(LDFLAGS) $(LDLIBS)
 
+# Opt-in window capture probe (Hyprland session): per-window distinct fps, request->ready p50, transport.
+$(BUILD)/window-capture-probe: tests/window_capture_probe.cpp $(BUILD)/window_capture.o $(BUILD)/linux-dmabuf-protocol.o \
+	$(BUILD)/hyprland-toplevel-export-protocol.o $(BUILD)/wlr-foreign-toplevel-protocol.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
 # Optional Qt UI regression suite (requires Qt 6.6+ declarative development tools).
 QMLTESTRUNNER ?= /usr/lib/qt6/bin/qmltestrunner
 check-ui:
@@ -181,7 +271,8 @@ check-lint:
 	$(RUFF) check studio scripts tests
 	$(MYPY)
 	$(LUACHECK) config/xr-controls.lua tests/controls.lua
-	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml
+	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml \
+		studio/SearchPrompt.qml studio/SearchPromptWindow.qml
 	python3 scripts/function_length.py
 .PHONY: check-lint
 
@@ -199,12 +290,29 @@ check-environment: $(BUILD)/test-environment $(BUILD)/test-tron-environment
 $(BUILD)/test-workspace-focus: tests/workspace_focus.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Hidden SDL window; exercises the actual renderer without capturing the desktop.
-check-workspace-focus: $(BUILD)/test-workspace-focus
+$(BUILD)/test-canvas-focus: tests/canvas_focus.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+$(BUILD)/test-mode-switch: tests/mode_switch.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Hidden SDL window; exercises the actual renderer without capturing the desktop (monitor and canvas
+# mode, and the live switch between them).
+check-workspace-focus: $(BUILD)/test-workspace-focus $(BUILD)/test-canvas-focus $(BUILD)/test-mode-switch
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-mode-switch
 .PHONY: check-workspace-focus
 
-$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
+$(BUILD)/test-scene-seam: tests/scene_seam.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# The View scene seam (geometry, cylinder, surface views, shared GBM device, routing) on a hidden offscreen window; part of check-notifications.
+check-scene-seam: $(BUILD)/test-scene-seam
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-scene-seam
+.PHONY: check-scene-seam
+
+$(BUILD)/test-notifications: tests/notifications.cpp src/notification_hud.hpp src/gl_texture.hpp src/notification_content.hpp src/notification_space.hpp src/notification_draw.hpp | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDLIBS)
 
 $(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_space.hpp src/targeting.hpp src/curvature.hpp | $(BUILD)
@@ -213,7 +321,7 @@ $(BUILD)/test-notification-space: tests/notification_space.cpp src/notification_
 $(BUILD)/test-notification-controls: tests/notification_controls.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
-check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space $(BUILD)/test-notification-controls
+check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-space $(BUILD)/test-notification-controls check-scene-seam
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notifications
 	./$(BUILD)/test-notification-space
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-notification-controls
@@ -221,6 +329,31 @@ check-notifications: $(BUILD)/test-notifications $(BUILD)/test-notification-spac
 
 $(BUILD)/notification-preview: tests/notification_preview.cpp src/notification_space.hpp src/notification_draw.hpp src/notification_hud.hpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+PREVIEW_BASELINE = tests/baselines/notification-preview
+PREVIEW_STILLS = overview turn behind settled zoomed reading cycled
+$(BUILD)/image-diff: tests/image_diff.cpp | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(shell pkg-config --libs cairo)
+# Pixel-exact renderer regression against a committed baseline (same machine and GL driver).
+# PREVIEW_UPDATE=1 rewrites the baseline after an intentional visual change.
+check-preview: $(BUILD)/notification-preview $(BUILD)/image-diff
+	rm -rf $(BUILD)/preview && mkdir -p $(BUILD)/preview
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/notification-preview $(BUILD)/preview
+	if [ -n "$(PREVIEW_UPDATE)" ]; then for s in $(PREVIEW_STILLS); do cp $(BUILD)/preview/$$s.png $(PREVIEW_BASELINE)/; done; fi
+	./$(BUILD)/image-diff $(PREVIEW_BASELINE) $(BUILD)/preview $(PREVIEW_STILLS)
+.PHONY: check-preview
+
+# Canvas overlays (palette, switcher, radar, help, pinned window) in the real renderer: six stereo stills in
+# $(BUILD)/canvas-preview-out. A content smoke (lit overlay regions, distinct eyes, no GL error), not a
+# pixel baseline, so fonts and drivers never break it; check-preview stays the monitor-mode pixel gate.
+CANVAS_PREVIEW_STILLS = overview search switcher help fill pinned
+$(BUILD)/canvas-preview: tests/canvas_preview.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+check-canvas-preview: $(BUILD)/canvas-preview
+	rm -rf $(BUILD)/canvas-preview-out && mkdir -p $(BUILD)/canvas-preview-out
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/canvas-preview $(BUILD)/canvas-preview-out
+	for s in $(CANVAS_PREVIEW_STILLS); do test -s $(BUILD)/canvas-preview-out/$$s.png || exit 1; done
+.PHONY: check-canvas-preview
 
 -include $(wildcard $(BUILD)/*.d)
 

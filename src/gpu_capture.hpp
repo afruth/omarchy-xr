@@ -25,13 +25,18 @@ struct GpuCapture {
     };
     int deviceFd=-1;
     gbm_device* device=nullptr;
+    // A shared device (window captures on one GPU) belongs to the caller.
+    bool ownsDevice=true;
     EGLDisplay display=EGL_NO_DISPLAY;
     Slot slots[2]{};
     int shownSlot=-1,captureSlot=-1;
     bool invertY=false;
     GLuint texture=0,scratch[2]{},scratchFbo[2]{},writeFbo=0;
     unsigned scaledWidth=0,scaledHeight=0,scratchWidth[2]{},scratchHeight[2]{};
-    ~GpuCapture(){clear();if(device)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
+    explicit GpuCapture(gbm_device* shared=nullptr):device(shared),ownsDevice(!shared){}
+    GpuCapture(const GpuCapture&)=delete;
+    GpuCapture& operator=(const GpuCapture&)=delete;
+    ~GpuCapture(){clear();if(device && ownsDevice)gbm_device_destroy(device);if(deviceFd>=0)close(deviceFd);}
     void destroySlot(Slot& slot){
         if(slot.buffer)wl_buffer_destroy(slot.buffer);
         slot.buffer=nullptr;
@@ -70,15 +75,20 @@ struct GpuCapture {
         for(auto& slot:slots) if(slot.buffer==released) slot.busy=false;
     }
     bool init(){
+        // An injected device still needs the EGL display for makeSlot.
+        if(display==EGL_NO_DISPLAY){display=eglGetCurrentDisplay();if(display==EGL_NO_DISPLAY)return false;}
         if(device)return true;
-        display=eglGetCurrentDisplay();if(display==EGL_NO_DISPLAY)return false;
+        device=openRenderDevice(display,deviceFd);return device;
+    }
+    // GBM on the EGL display's render node, so imports land on the GPU that renders them.
+    static gbm_device* openRenderDevice(EGLDisplay display,int& fd){
         auto query=(PFNEGLQUERYDISPLAYATTRIBEXTPROC)eglGetProcAddress("eglQueryDisplayAttribEXT");
         auto name=(PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
-        EGLAttrib id=0;if(!query || !name || !query(display,EGL_DEVICE_EXT,&id))return false;
+        EGLAttrib id=0;if(!query || !name || !query(display,EGL_DEVICE_EXT,&id))return nullptr;
         const char* node=name((EGLDeviceEXT)id,EGL_DRM_RENDER_NODE_FILE_EXT);
-        if(!node)return false;
-        deviceFd=open(node,O_RDWR|O_CLOEXEC);if(deviceFd<0)return false;
-        device=gbm_create_device(deviceFd);return device;
+        if(!node)return nullptr;
+        fd=open(node,O_RDWR|O_CLOEXEC);if(fd<0)return nullptr;
+        return gbm_create_device(fd);
     }
     bool makeSlot(Slot& slot,zwp_linux_dmabuf_v1* manager,unsigned w,unsigned h,unsigned fmt){
         auto create=(PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");

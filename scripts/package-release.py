@@ -58,7 +58,7 @@ def install_tree(stage, renderer, sdk_archive):
         copy(ROOT / name, stage / "usr/share/licenses/omarchy-xr-bin" / name)
     for source in (ROOT / "packaging/licenses").iterdir():
         copy(source, stage / "usr/share/licenses/omarchy-xr-bin" / source.name)
-    for name in ("distribution.md", "sdk-redistribution.md", "marketplace-submission.md"):
+    for name in ("distribution.md", "sdk-redistribution.md", "marketplace-submission.md", "window-canvas.md"):
         copy(ROOT / "docs" / name, stage / "usr/share/doc/omarchy-xr" / name)
     # Extract one known member, never SDK headers, source, demo, or standalone archive.
     runtime = stage / "usr/lib/omarchy-xr/sdk/libglasses.so"

@@ -28,6 +28,12 @@ from input_settings import DEFAULTS, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
 from atomic_file import atomic_write
 from clock import boot_time
+from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
+
+CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
+CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out")
+# Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
+CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
 
 def default_layout():
@@ -100,6 +106,9 @@ def _layout_monitors(layout):
 def _validate_monitor(monitor, seen):
     if not isinstance(monitor, dict) or not isinstance(monitor.get("id"), str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", monitor["id"]):
         raise ValueError("Invalid monitor identity")
+    # Output names are prefix + id; "<prefix>canvas" is the window canvas output (studio/canvas.py).
+    if monitor["id"] == "canvas" or monitor["id"].endswith("-canvas"):
+        raise ValueError("The monitor identity \"canvas\" is reserved for the window canvas")
     if monitor["id"] in seen:
         raise ValueError("Duplicate monitor identity")
     seen.add(monitor["id"])
@@ -189,6 +198,8 @@ def run_hypr(*args):
 
 
 class Manager:
+    SWITCH_TIMEOUT = 3.0
+
     def __init__(self, directory, renderer, runner=run_hypr, runtime=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -205,9 +216,11 @@ class Manager:
             presentation = json.loads(self.presentation_profile.read_text())
             self.spectator_enabled = presentation.get("spectator", False) is True
             self.laptop_off_enabled = presentation.get("laptopOff", False) is True
+            self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
         except (OSError, ValueError, AttributeError):
             self.spectator_enabled = False
             self.laptop_off_enabled = False
+            self.render_mode = "monitors"
         self.environment = Environment(self.directory)
         self.graphics_limits = None
         self.profile = self.directory / "layout.json"
@@ -225,6 +238,7 @@ class Manager:
         self.stereo_active = False
         self.original_output = None
         self.restoration_error = ""
+        self.spectator_skipped = ""
         self.viewer = None
         self.viewer_exit = ""
         self.presenting = False
@@ -232,19 +246,21 @@ class Manager:
         self.laptop = LaptopDisplay(self.directory, self.runner)
         try: self.laptop.recover()
         except Exception as exc: self.laptop.error = str(exc)
+        self.canvas = CanvasSession(self)
         self.recover_journal()
         self.recover_stranded_stereo()
 
     def recover_journal(self):
-        if not self.journal.exists():
-            return
-        try:
-            names = json.loads(self.journal.read_text())
-            if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", n) for n in names):
-                raise ValueError("The previous XR session did not close cleanly. Studio will recover its virtual monitors.")
-            self.owned = set(names)
-        except (OSError, ValueError) as exc:
-            self.adopt_visible_outputs(exc)
+        if self.journal.exists():
+            try:
+                names = json.loads(self.journal.read_text())
+                if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"OMXR-[0-9a-f]{8}-[a-zA-Z0-9_-]{1,40}", n) for n in names):
+                    raise ValueError("The previous XR session did not close cleanly. Studio will recover its virtual monitors.")
+                self.owned = set(names)
+            except (OSError, ValueError) as exc:
+                self.adopt_visible_outputs(exc)
+        # Windows leave a crashed canvas before its output is removed.
+        self.canvas.recover()
         if self.owned:
             self.finish_recovered_outputs()
 
@@ -305,6 +321,10 @@ class Manager:
 
     def monitors(self):
         return json.loads(self.runner("-j", "monitors"))
+
+    @property
+    def canvas_mode(self):
+        return self.render_mode == "canvas"
 
     def record(self):
         atomic_json(self.journal, sorted(self.owned))
@@ -443,6 +463,7 @@ class Manager:
         self.presenting = False
         if release_outputs:
             try:
+                self.canvas.remove()
                 self.remove(set(self.owned))
                 self.applied = None
                 self.output_geometry = {}
@@ -493,7 +514,8 @@ class Manager:
 
     def relocate_workspaces(self, names, removing, monitors):
         glasses = set(detect(monitors)["displays"])
-        targets = [m for m in monitors if m["name"] not in names
+        # Never a hidden workspace on the window canvas output.
+        targets = [m for m in monitors if m["name"] not in names and not m["name"].endswith("-canvas")
                    and not m.get("disabled", False) and m.get("dpmsStatus", True)
                    and m.get("width", 0) > 0]
         # During layout edits keep workspaces in XR. On exit prefer the
@@ -508,6 +530,9 @@ class Manager:
         workspaces = json.loads(self.runner("-j", "workspaces"))
         for workspace in workspaces:
             if workspace.get("monitor") not in removing:
+                continue
+            # Empty canvas workspaces go with their output rather than showing on the laptop.
+            if workspace.get("name") in (CANVAS_WORKSPACE, PARK_WORKSPACE) and not workspace.get("windows", 0):
                 continue
             # Numeric IDs also preserve named and special workspace identity.
             identity = int(workspace["id"])
@@ -605,8 +630,11 @@ class Manager:
         actual = {monitor["name"]: monitor for monitor in self.monitors()}
         return all(self.output_matches(actual.get(self.prefix + monitor["id"], {}), monitor, rate) for monitor in layout["monitors"])
 
-    def desktop_origin(self, existing):
-        other = [monitor for monitor in existing if monitor["name"] not in self.owned]
+    def desktop_origin(self, existing, clear_owned=False):
+        # A live canvas output is an obstacle too (monitor outputs applied during a canvas->monitors switch);
+        # clear_owned also clears live monitor outputs (canvas created during a monitors->canvas switch).
+        other = [monitor for monitor in existing if clear_owned or monitor["name"] not in self.owned
+                 or monitor["name"] == self.canvas.name]
         # Preserve the desktop origin while its built-in panel is temporarily off.
         other += [monitor for monitor in self.laptop.saved() if monitor["name"] not in {item["name"] for item in other}]
         if other:
@@ -666,7 +694,8 @@ class Manager:
                 time.sleep(.1)
             else:
                 raise RuntimeError("The desktop could not apply the monitor size or position. Try Apply again.")
-            self.remove(self.owned - desired)
+            # A live canvas output leaves only through CanvasSession.remove (window restore first).
+            self.remove(self.owned - desired - {self.canvas.name})
             self.output_geometry = {name:{k:actual[name][k] for k in ("x","y")} for name in desired}
             self.persist_applied(layout)
         except Exception:
@@ -683,6 +712,7 @@ class Manager:
 
     def reconcile_outputs(self, monitors):
         """Repair runtime rules lost on compositor reload without restarting capture."""
+        if self.canvas.active: self.canvas.reconcile(monitors)
         if not self.applied: return
         actual = {m["name"]:m for m in monitors}
         rate = max(60, self.applied["fps"])
@@ -702,6 +732,12 @@ class Manager:
             raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
 
     def redistribute_laptop_windows(self, workspace_ids, monitors):
+        if self.canvas.active:
+            if workspace_ids:
+                # Journaled like the start migration, so Stop returns them to their workspaces.
+                clients = json.loads(self.runner("-j", "clients"))
+                self.canvas.adopt([c for c in clients if c.get("workspace", {}).get("id") in workspace_ids])
+            return
         targets = [m["activeWorkspace"]["id"] for m in monitors if m["name"] in self.owned
                    and m.get("activeWorkspace",{}).get("id",0)>0]
         if not workspace_ids: return
@@ -724,7 +760,7 @@ class Manager:
         self.redistribute_laptop_windows(lost, monitors)
         self.internal_workspaces = {} if disabling else current
 
-    def viewer_command(self, present, direct):
+    def _monitor_args(self):
         applied = self.applied
         if not isinstance(applied, dict):
             raise RuntimeError("Apply your layout first")
@@ -735,6 +771,17 @@ class Manager:
             args += ["--workspace-follow"]
         if applied.get("workspaceDegrees", -1) >= 0:
             args += ["--workspace-degrees", str(applied["workspaceDegrees"])]
+        return args
+
+    def _canvas_args(self):
+        # Never needs applied monitors: the window canvas has its own output.
+        if not self.canvas.active:
+            raise RuntimeError("Start the window canvas first")
+        return [self.renderer, "--canvas", str(self.canvas.tsv), "--fps", str(self.canvas.settings()["fps"]),
+                "--pose-socket", str(self.pose_socket)]
+
+    def viewer_command(self, present, direct):
+        args = self._canvas_args() if self.canvas_mode else self._monitor_args()
         if direct:
             return args + self.direct_arguments()
         if present:
@@ -749,13 +796,20 @@ class Manager:
         if not isinstance(headset, str):
             raise RuntimeError("The glasses are not ready for stereo. Stop XR, then try again.")
         args = ["--direct", headset, "--stereo"]
+        self.spectator_skipped = ""
         if self.spectator_enabled:
-            self.place_spectator()
+            # A missing computer display costs the recording window, never the stereo start.
+            try:
+                self.place_spectator()
+            except RuntimeError as exc:
+                self.display_event("spectator-skipped", str(exc))
+                self.spectator_skipped = str(exc)
+                return args
             args += ["--spectator"]
         return args
 
     def start(self, present=False, direct=False):
-        if not self.applied:
+        if not (self.applied or self.canvas.active):
             raise RuntimeError("Apply your layout first")
         if not Path(self.renderer).is_file():
             raise RuntimeError("XR runtime not installed. Open Setup & integrations and choose Install XR runtime")
@@ -858,6 +912,12 @@ class Manager:
             raise RuntimeError(message) from exc
 
     def place_spectator(self):
+        """Pin the recording window to the active workspace of an enabled computer display.
+
+        OMXR- outputs (the virtual monitors and the window canvas) and the glasses are never
+        candidates, so canvas mode cannot cause the "no computer display" failure; that only
+        happens when every real display is off or disconnected.
+        """
         monitors = self.monitors()
         glasses = detect(monitors)["displays"]
         candidates = [m for m in monitors if not m["name"].startswith("OMXR-")
@@ -884,7 +944,80 @@ class Manager:
         self.save_presentation()
 
     def save_presentation(self):
-        atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled})
+        atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
+                                                "renderMode":self.render_mode})
+
+    def set_render_mode(self, mode, layout=None):
+        if mode not in ("monitors", "canvas"):
+            raise ValueError("Choose Virtual monitors or Window canvas")
+        if mode == "canvas" and self.controls_version() < 6:
+            raise RuntimeError(CONTROLS_HINT)
+        if mode == self.render_mode:
+            return
+        if self.viewer and self.viewer.poll() is None:
+            self.switch_live(mode, layout)
+            return
+        # Outputs of the other mode (Apply without a preview) never outlive the switch.
+        if self.owned:
+            self.stop_viewer()
+        self.render_mode = mode
+        self.save_presentation()
+
+    def switch_live(self, mode, layout):
+        """Hyprland side first, then the renderer's scene; the old mode's outputs go last."""
+        # Leaving the canvas returns its windows, which needs a computer display.
+        if self.laptop.status()["off"]:
+            raise RuntimeError("Turn the laptop display back on before switching the render mode.")
+        if mode == "canvas":
+            self.canvas.ensure(self.monitors())
+        else:
+            self.apply(layout or self.load())
+        previous, self.render_mode = self.render_mode, mode
+        self.save_presentation()
+        if self.request_mode(mode):
+            self.release_other_mode(previous)
+            return
+        self.append_backend_log("live mode switch not acknowledged; restarting the XR view")
+        self.restart_viewer(layout)
+
+    def request_mode(self, mode):
+        """Send mode:<mode> and wait for the renderer's .stats to report it (forced right after the switch)."""
+        sent = time.monotonic()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+                connection.sendto(f"mode:{mode}".encode(), str(self.pose_socket))
+        except OSError:
+            return False
+        while time.monotonic() - sent < self.SWITCH_TIMEOUT:
+            sample = self.performance_sample()
+            if sample.get("mode") == mode and sample.get("time", 0) >= sent - .5:
+                return True
+            time.sleep(.05)
+        return False
+
+    def release_other_mode(self, previous):
+        if previous == "monitors":
+            # relocate_workspaces never targets the canvas output, so nothing lands hidden there.
+            self.remove(set(self.owned) - {self.canvas.name})
+            self.applied = None
+            self.output_geometry = {}
+            self.internal_workspaces = {}
+        else:
+            self.canvas.remove()
+
+    def restart_viewer(self, layout):
+        """Stop-first fallback (D10): the mode is already persisted, so a failed restart leaves it selected."""
+        direct, present = self.direct, self.presenting
+        self.stop_viewer()
+        if self.canvas_mode:
+            self.canvas.ensure(self.monitors())
+        else:
+            self.apply(layout or self.load())
+        if direct:
+            self.start_dedicated()
+        else:
+            self.connect_tracking()
+            self.start(present=present)
 
     def disable_laptop_display(self):
         if not self.direct or not self.stereo_active or not self.viewer or self.viewer.poll() is not None:
@@ -895,7 +1028,7 @@ class Manager:
             try:
                 stats=json.loads(Path(str(self.pose_socket)+".stats").read_text())
                 if stats.get("pid")==self.viewer.pid and stats.get("fps",0)>0 and 0<=time.monotonic()-stats["time"]<8:
-                    if self.applied:
+                    if self.applied or self.canvas.active:
                         monitors = self.monitors()
                         self.reconcile_outputs(monitors)
                         self.reconcile_laptop_workspaces(monitors, disabling=True)
@@ -915,32 +1048,52 @@ class Manager:
         self.save_presentation()
 
     def camera_control(self, action):
-        if action not in ("recenter", "fit", "fit_target", "zoom_in", "zoom_out"):
+        if action not in CAMERA_ACTIONS and action not in CANVAS_ACTIONS:
             raise ValueError("Unknown camera action")
+        if action in CANVAS_ACTIONS and not self.canvas_mode:
+            raise ValueError("Only available in Window canvas mode")
         if not self.viewer or self.viewer.poll() is not None:
             raise RuntimeError("Start stereo or a preview before using view controls.")
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
             connection.sendto(action.encode(), str(self.pose_socket))
+
+    def connect_tracking(self):
+        if self.sdk.process and self.sdk.process.poll() is None:
+            return "Head tracking is starting. Press R to recenter."
+        try:
+            self.sdk.connect()
+        except RuntimeError as exc:
+            return "Head tracking is unavailable, but mouse look still works. " + str(exc)
+        return "Head tracking is starting. Press R to recenter."
 
     def present(self, layout):
         if len(detect(self.monitors())["displays"]) != 1:
             raise RuntimeError("Connect one pair of VITURE glasses before opening the preview.")
         # Start is one action: apply the current draft, then present every panel.
         self.stop_viewer()
+        if self.canvas_mode:
+            return self._present_canvas()
         self.apply(layout)
-        tracking_message = "Head tracking is starting. Press R to recenter."
-        if not self.sdk.process or self.sdk.process.poll() is not None:
-            try:
-                self.sdk.connect()
-            except RuntimeError as exc:
-                tracking_message = "Head tracking is unavailable, but mouse look still works. " + str(exc)
+        tracking_message = self.connect_tracking()
         applied = self.applied
         self.start(present=True)
         if not applied:
             raise RuntimeError("Apply your layout first")
         return f"{len(applied['monitors'])} virtual monitors are open on the glasses. {tracking_message} Press Esc to close the preview."
 
+    def _present_canvas(self):
+        self.canvas.ensure(self.monitors())
+        tracking_message = self.connect_tracking()
+        self.start(present=True)
+        return f"Window canvas is open on the glasses. {tracking_message} Press Esc to close the preview."
+
     def terminal(self, identity):
+        if self.canvas_mode:
+            if not self.canvas.active:
+                raise RuntimeError("Start the window canvas first")
+            # The window.open handler adopts it; silent keeps focus where it is.
+            self.runner("eval", f'hl.exec_cmd("foot", {{workspace="name:{CANVAS_WORKSPACE} silent"}})')
+            return
         if not self.applied or identity not in [m["id"] for m in self.applied["monitors"]]:
             raise RuntimeError("Apply this monitor before opening an app on it.")
         name = self.prefix + identity
@@ -950,29 +1103,30 @@ class Manager:
         workspace = int(monitor["activeWorkspace"]["id"])
         self.runner("eval", f'hl.exec_cmd("foot", {{workspace="{workspace} silent"}})')
 
-    def controls_hint(self):
-        if not self.viewer or self.viewer.poll() is not None:
-            return ""
+    @staticmethod
+    def controls_version():
         base = os.environ.get("OMARCHY_XR_RUNTIME")
         if not base:
             base = str(Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omarchy-xr")
         try:
-            version = int((Path(base) / "controls.version").read_text().strip())
+            return int((Path(base) / "controls.version").read_text().strip())
         except (OSError, ValueError):
-            version = 0
-        if version != 5:
-            return "XR controls need setup — open Utilities → Setup & integrations"
-        return ""
+            return 0
+
+    def controls_hint(self):
+        if not self.viewer or self.viewer.poll() is not None:
+            return ""
+        return CONTROLS_HINT if self.controls_version() < 6 else ""
 
     def reconcile_status(self, monitors):
-        if self.applied and monitors is not None:
+        if (self.applied or self.canvas.active) and monitors is not None:
             try:
                 self.reconcile_outputs(monitors)
                 self.reconcile_laptop_workspaces(monitors)
                 self.output_error = ""
             except Exception as exc:
                 self.output_error = str(exc)
-        elif self.applied:
+        elif self.applied or self.canvas.active:
             self.output_error = self.output_error or "Display status unavailable"
 
     def note_exited_viewer(self):
@@ -1029,8 +1183,13 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+                "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
+                "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
+                "canvasWindows": performance.get("canvasWindows", 0) if self.canvas_mode else 0,
+                "canvasState": performance.get("canvasState", "") if self.canvas_mode else "",
+                "canvasBudget": performance.get("budget", {}) if self.canvas_mode else {},
                 "restorationError": "; ".join(filter(None, (self.restoration_error, self.output_error, self.viewer_exit))), "glasses": glasses}
 
     def append_backend_log(self, text):
@@ -1079,7 +1238,8 @@ def action_load(manager, _request):
     layout = read_saved(manager, warnings, (manager.load, manager.profile, default_layout(), "Layout file was invalid and was set aside", "layout load"))
     controls = read_saved(manager, warnings, (lambda: load_controls(manager.directory), manager.directory / "controls-settings.json", dict(DEFAULTS), "Control settings were invalid and were set aside", "controls load"))
     setups = read_saved(manager, warnings, (manager.setups, manager.directory / "setups.json", {"version": 1, "selected": "", "items": []}, "Saved setups were invalid and were set aside", "setups load"))
-    response = {"layout": layout, "controls": controls, "setups": setups, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
+    canvas = read_saved(manager, warnings, (manager.canvas.load, manager.canvas.profile, dict(CANVAS_DEFAULTS), "Canvas settings were invalid and were set aside", "canvas load"))
+    response = {"layout": layout, "controls": controls, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
     if warnings:
         response["message"] = " ".join(warnings)
     return response
@@ -1125,20 +1285,48 @@ def action_save(manager, request):
 
 
 def action_apply(manager, request):
+    if manager.canvas_mode:
+        return {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Window canvas ready."}
     manager.apply(request["layout"])
     return {"layout": manager.applied, "message": "Virtual monitors ready."}
 
 
 def action_present_direct(manager, request):
     already_direct = manager.direct and manager.viewer is not None and manager.viewer.poll() is None
-    manager.apply(request["layout"])
+    if manager.canvas_mode:
+        response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Stereo active."}
+    else:
+        manager.apply(request["layout"])
+        response = {"layout": manager.applied, "message": "Stereo active."}
     if not already_direct:
         manager.start_dedicated()
-    return {"layout": manager.applied, "message": "Stereo active."}
+        if manager.spectator_skipped:
+            response["message"] += " Recording window skipped: no computer display."
+    return response
+
+
+def action_render_mode(manager, request):
+    # Re-selecting the active mode switches nothing, even while XR runs.
+    changed = request.get("renderMode") != manager.render_mode
+    live = changed and manager.viewer is not None and manager.viewer.poll() is None
+    manager.set_render_mode(request.get("renderMode"), request.get("layout"))
+    if live:
+        return {"message": "Switched to Window canvas." if manager.canvas_mode else "Switched to Virtual monitors."}
+    return {"message": "Window canvas selected." if manager.canvas_mode else "Virtual monitors selected."}
+
+
+def action_canvas_settings(manager, request):
+    settings = manager.canvas.save(request.get("canvas"))
+    # canvas.tsv is hot-reloaded; refresh and scale changes reach the live output.
+    if manager.canvas.active:
+        manager.canvas.reconcile(manager.monitors())
+    return {"canvas": settings, "message": "Window canvas settings saved."}
 
 
 def action_camera(manager, request):
-    messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out."}
+    messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out.",
+                "overview": "Overview toggled.", "search": "Search opened.", "fill": "Fill toggled.", "arrange": "Windows arranged.",
+                "undo": "Undone.", "redo": "Redone.", "pin": "Pin toggled.", "help": "Help toggled."}
     manager.camera_control(request["action"])
     return {"message": messages[request["action"]]}
 
@@ -1219,7 +1407,7 @@ def action_status(_manager, _request):
 
 def perform(manager, request):
     action = request["action"]
-    if action in ("recenter", "fit", "fit_target", "zoom_in", "zoom_out"):
+    if action in CAMERA_ACTIONS or action in CANVAS_ACTIONS:
         return action_camera(manager, request)
     handler = {
         "load": action_load,
@@ -1236,6 +1424,8 @@ def perform(manager, request):
         "set_laptop_off": action_laptop_off,
         "restore_laptop": action_restore_laptop,
         "set_spectator": action_spectator,
+        "set_render_mode": action_render_mode,
+        "set_canvas_settings": action_canvas_settings,
         "stop_viewer": action_stop_viewer,
         "start": action_start,
         "stop": action_stop,

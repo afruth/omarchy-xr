@@ -22,6 +22,9 @@ PLUGIN_FILES = (
     "studio/MonitorPresets.js",
     "studio/CurvatureAngles.js",
     "studio/AngleField.qml",
+    "studio/ModeSelector.qml",
+    "studio/SearchPrompt.qml",
+    "studio/SearchPromptWindow.qml",
     "studio/atomic_file.py",
     "studio/backend.py",
     "studio/clock.py",
@@ -36,6 +39,7 @@ PLUGIN_FILES = (
     "studio/install_runtime.py",
     "studio/setup_actions.py",
     "studio/dedicated.py",
+    "studio/canvas.py",
     "studio/dedicated_helper.py",
 )
 BAR_SECTION_ANCHORS = {"left": "omarchy.workspaces", "center": "omarchy.weather", "right": "omarchy.tray"}

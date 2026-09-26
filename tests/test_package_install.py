@@ -70,7 +70,7 @@ class InstalledPackageTests(unittest.TestCase):
         self.assertEqual(set(state['enabled']), {PLUGIN, NOTIFICATIONS})
         self.assertEqual(state['bar'], [PLUGIN])
         launcher = '/home/package-user/.config/omarchy/plugins/' + PLUGIN + '/bin/omarchy-xr'
-        self.assertEqual(self.successful(launcher, '--version'), 'omarchy-xr 0.3.1')
+        self.assertEqual(self.successful(launcher, '--version'), 'omarchy-xr 0.4.0')
         saved = self.home / '.local/state/omarchy-xr/layout.json'
         saved.write_text('{"personal": true}')
         self.install()
@@ -84,6 +84,11 @@ class InstalledPackageTests(unittest.TestCase):
         self.assertEqual(json.loads(saved.read_text()), {'personal': True})
         self.assertTrue((self.config / 'hypr/xr-controls.lua').is_file())
         self.assertNotIn('require("hypr.xr-controls")', (self.config / 'hypr/bindings.lua').read_text())
+
+    def test_user_guides_ship(self):
+        docs = Path(PACKAGE) / 'usr/share/doc/omarchy-xr'
+        for name in ('distribution.md', 'sdk-redistribution.md', 'marketplace-submission.md', 'window-canvas.md'):
+            self.assertEqual((docs / name).read_text(), (ROOT / 'docs' / name).read_text())
 
     def test_renderer_upgrade_is_used_without_rerunning_setup(self):
         self.install()
