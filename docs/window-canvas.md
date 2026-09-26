@@ -90,16 +90,25 @@ to the canvas at start, and a canvas you switch to, show neither.
 
 ## Moving windows
 
-In the glasses, **SUPER+SHIFT+arrows** nudges the window you work in by 100 px, **Shift+Enter** in the
-search summons a window next to you, and **Ctrl+A** arranges the ring (see **Keys**).
+In the glasses, **SUPER+left-drag** moves the window you work in along the ring: it follows the
+pointer's travel (also past the edge of the window), snaps to 20 px, may overlap other windows (like a
+nudge), stays within the three rows (a drop outside them puts the window back), and the new place is
+remembered for the next start. Letting go of SUPER before the button also drops it, and a drag that
+holds still for 3 s ends there. **Ctrl+Z** undoes it. Only the panel moves: the real window stays where
+the canvas keeps it, so the pointer, menus and the native cursor stay right. When the window leaves your
+view, the camera follows it after the drop.
 
-In the windowed preview (and a flat `--display` run) you can also drag with the mouse: in Overview or
-the search, a left-drag moves the window under the pointer along the ring. It snaps to 20 px, may
-overlap other windows (like a nudge), stays within the three rows (a drop outside them puts the window
-back), and the new place is remembered for the next start. **Ctrl+Z** undoes it. A press that moves
-less than 4 px is an ordinary click: it selects the window and puts the pointer there. In Work a press
-never drags. The spectator and the glasses have no mouse drag: the real pointer is inside the window
-you work in.
+**SUPER+right-drag** resizes the window you work in, from any corner; the panel follows. Half a second
+after you let go, the window is put back at the stage origin and trimmed to the canvas output, so a
+top-left corner drag cannot leave it misplaced. **SUPER+CTRL+arrows** resize it in 100 px steps.
+**SUPER+SHIFT+arrows** nudges it by 100 px, **Shift+Enter** in the search summons a window next to
+you, and **Ctrl+A** arranges the ring (see **Keys**).
+
+In the windowed preview (and a flat `--display` run) you can also drag with the mouse, without SUPER:
+in Overview or the search, a left-drag moves the window under the pointer along the ring, with the same
+snapping, row band, memory and undo. A press that moves less than 4 px is an ordinary click: it selects
+the window and puts the pointer there. In Work a plain press never drags. The spectator has no mouse
+drag.
 
 ## Notifications
 
@@ -186,10 +195,14 @@ These are the canvas keys; **F1** shows the same table in the glasses (and in th
 | **Ctrl+1…8** | Land on that row of the results. |
 | **Esc** | Clears the text; a second Esc closes the search and puts the camera and focus back where they were. An open help closes first. |
 | **ALT+TAB** / **ALT+SHIFT+TAB** | Recent-window switcher: a quick tap flips to the previous window, holding shows the list (after 0.2 s), releasing Alt lands. |
-| **SUPER+F** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. |
-| **SUPER+TAB** | Overview on and off. |
+| **SUPER+F** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, SUPER+F focuses the window you look at first and then fills it. |
+| **SUPER+TAB** | Overview on and off. Leaving the Overview lands on and focuses the window you look at. |
+| **Ctrl+Down** (your `fit_target` key) or a **three-finger tap** | Focus the window you look at: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
 | **SUPER+arrows** | Land on the neighbouring window in that direction. |
 | **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px (it may overlap others). |
+| **SUPER+left-drag** | Move the window you work in along the ring (20 px steps, **Ctrl+Z** undoes it, the place is remembered). |
+| **SUPER+right-drag** | Resize it; the panel follows. When the drag ends the window is put back at the stage origin. |
+| **SUPER+CTRL+arrows** | Resize it by 100 px: Left/Right narrower/wider, Up/Down shorter/taller. |
 | **Ctrl+A**, **Ctrl+Z**, **Ctrl+Shift+Z** (in the search field) | Arrange: group windows by kind, then application, along the ring from where you look, without overlap, and show the Overview; undo and redo arrange, nudge and summon. Studio's **Arrange** and **Undo** work from any view. |
 | **SUPER+ALT+P** | Pin the window you work in to your view (body-locked), or unpin it. |
 | **F1** (in the search field) | This help. It lists the takeover keys only while the takeover switch is on. |
@@ -197,10 +210,17 @@ These are the canvas keys; **F1** shows the same table in the glasses (and in th
 **Take over Omarchy window keys in canvas mode** (Studio, **Canvas** tab, on by default) governs
 SUPER+TAB, ALT+TAB, ALT+SHIFT+TAB, SUPER+arrows and SUPER+SHIFT+arrows. Turned off, those keep
 Omarchy's meaning (next workspace, window cycling, focus and swap) and the canvas uses only
-SUPER+F, SUPER+CTRL+G and SUPER+ALT+P, which are always taken while the canvas runs. When the
+SUPER+F, SUPER+CTRL+G, SUPER+ALT+P, SUPER+left-drag and SUPER+CTRL+arrows, which are always taken while
+the canvas runs. When the
 canvas stops, every taken chord gets Omarchy's default binding back; a chord you customised in
 your Hyprland config returns with the next `hyprctl reload`. Studio's XR hotkeys (Input tab) cannot
 use these canvas chords, in either mode.
+
+Two of these shadow Omarchy chords while the canvas runs. **SUPER+CTRL+Left/Right** are Omarchy's
+*Move grouped window focus* keys; they come back when the canvas stops. **SUPER+left-drag** is caught
+everywhere, so windows on the laptop screen cannot be dragged with it during a canvas session (use
+SUPER+right-drag or the keyboard there, or stop the canvas). The F1 help always says Ctrl+Down; the
+first-dwell hint in the glasses shows the key you actually configured.
 
 The **radar strip** under the view in Overview and search shows the whole ring around you: three
 row lanes, the window you work in in the accent colour and the part of the ring you are looking at.
@@ -215,11 +235,30 @@ and **Undo** in canvas mode.
 typing goes to a small search field that Studio keeps loaded on the canvas output; it holds the
 keyboard only while the search is open.
 
+## Gaze, dwell and focus
+
+Looking at a window **selects** it: after a short dwell (500 ms of steady gaze) it gets the halo, and
+the search, Fill and nudges act on it. Looking never moves the keyboard or the pointer by itself, so a
+glance at another window does not steal your typing. To work in the window you look at, **confirm**:
+press **Ctrl+Down** (the `fit_target` key from Studio's Input tab) or tap the touchpad once with three
+fingers. The window is staged, raised and gets the keyboard, and the pointer goes to the point you are
+looking at. Leaving the Overview with a flick in or SUPER+TAB confirms the window you land on the same
+way.
+
+For the first three windows you dwell on in a session, a small hint under the window's label says
+which key confirms ("Ctrl+Down or a three-finger tap to focus", with your configured key). It stops
+after your first confirm.
+
 ## The pointer and other keys
 
-- **SUPER+F** is taken over while the canvas runs: it is *Fill* (see Keys below) and never makes a
+- **A window is always staged** while the canvas has windows: at start, and when the staged window
+  closes or leaves the canvas, the most recently used one is staged and the camera lands on it. This
+  staging is quiet: it never takes the keyboard or moves the pointer. Only a confirm, a click or the
+  pointer crossing into a window does.
+- **SUPER+F** is taken over while the canvas runs: it is *Fill* (see Keys) and never makes a
   window fullscreen. A window that asks for fullscreen itself, such as a browser after F11, is put
-  back at once and filled instead, because a fullscreen window would cover the canvas output.
+  back at once and filled instead, because a fullscreen window would cover the canvas output. With
+  no window on the stage, SUPER+F confirms the window you look at first and fills it once it is staged.
 - SUPER+number, SUPER+SHIFT+number and the scratchpad work as usual. A foreign workspace or the
   scratchpad that lands on the canvas output is sent to the laptop so the canvas never freezes.
   SUPER+SHIFT+number takes a window off the canvas and gives it back its borders and its tiled
@@ -229,13 +268,34 @@ keyboard only while the search is open.
   front and puts the pointer on it. In the glasses the pointer you see is the real one, drawn into
   the window image with its menus. When that image is unavailable, the renderer draws an arrow
   instead. The spectator and the windowed preview show the same.
-- **Releasing the pointer**: a three-finger double tap moves the pointer back to the centre of your
-  laptop screen (the first display that is not an XR output), for example to use Studio.
+- **Three-finger taps**: a single tap confirms 0.4 s after it (when no second tap follows); a
+  **double tap** still recenters and moves the pointer back to the centre of your laptop screen (the
+  first display that is not an XR output), for example to use Studio. A swipe cancels a pending tap.
 - A click in the windowed preview or the spectator selects the window under it and puts the
-  pointer there. Looking at a window and using **Fit** does the same in the glasses.
+  pointer there. Studio's **Land on window** confirms like Ctrl+Down.
 
 ## Troubleshooting
 
+- **I can look at windows but not type or click**: looking only selects; press your `fit_target` key
+  (Ctrl+Down by default) or tap once with three fingers. After it, `pose.sock.controls.hover` in the
+  runtime directory shows `v4 … 1 0x…` (the window address) and `viewer.log` shows `Canvas: confirm 0x…`
+  and `Canvas: land on …`. When the confirm is logged but the pointer does not move, the controls are
+  older than this release: reinstall them.
+- **`viewer.log` says `Canvas: N windows, staged none`**: the adapter stages the most recent canvas
+  window within half a second of the canvas start. If it never does, the installed controls predate
+  M7: reinstall them (`make install-controls`, or Studio's setup). A confirm still stages a window with
+  older controls.
+- **"Could not start stereo … Connect or turn on a computer display"**, or stereo starts with
+  "Recording window skipped: no computer display": the laptop display is off, usually after a Stop that
+  failed to leave side-by-side. Studio now starts without the recording window and says so in the
+  Recording card and in `display-events.jsonl` (`spectator-skipped`). Turn the laptop display on
+  (Controls) to get the recording window back; turning it on by hand still refuses without a display.
+- **SUPER+left-drag moves the real window** (the panel stays, the window slides off the stage and the
+  pointer confinement looks wrong): the controls were not reinstalled after the update, so Omarchy's
+  *Move window* drag is still bound. Reinstall them and restart the canvas.
+- **SUPER+left-drag does nothing on the laptop screen** during a canvas session: expected, the canvas
+  takes the chord everywhere. SUPER+CTRL+Left/Right (Omarchy's group focus keys) are resize keys during
+  the session too; both come back when the canvas stops.
 - **Typing in Overview or SUPER+CTRL+G does nothing in the glasses**: the search field lives in the
   Studio plugin, so Studio must have been started once in this Quickshell session (it stays loaded
   when hidden). Check that `pose.sock.controls.prompt` in the runtime directory says `v1 <pid> <seq> 1 …`
@@ -287,7 +347,7 @@ keyboard only while the search is open.
 ## End-to-end manual test checklist
 
 This is the consolidated manual test for a release. It collects the glasses checks of milestones
-M2–M6 into one pass; the automated gates (`make check`, `check-san`, `check-notifications`,
+M2–M7 into one pass; the automated gates (`make check`, `check-san`, `check-notifications`,
 `check-workspace-focus`, `check-environment`, `check-preview`, `smoke`, `smoke-canvas`, `check-ui`,
 `check-lint`) run first. The runtime directory is `$XDG_RUNTIME_DIR/omarchy-xr/` (`pose.sock.stats`,
 the `pose.sock.controls.*` mailboxes), the state directory `~/.local/state/omarchy-xr/`
@@ -362,6 +422,13 @@ Run in direct stereo and once in the windowed preview.
   focus never moves, a live sliver is never focused, the staged window never covers the strip.
 - [ ] SUPER+F and browser F11 never make a window fullscreen (F11 fills instead).
 - [ ] The three-finger double tap releases the pointer to the laptop screen centre.
+- [ ] (M7) Canvas start: `viewer.log` shows `staged 0x…` with the first list; the keyboard stays where it
+  was until a confirm.
+- [ ] (M7) Ctrl+Down and a three-finger single tap on a gazed window: staged, raised, focused, pointer at
+  the gaze point, typing arrives; `viewer.log` `Canvas: confirm 0x…`; the double tap still releases.
+- [ ] (M7) The confirm hint shows under the label on the first dwells, is readable with a visible accent
+  tint, and never shows after the first confirm.
+- [ ] (M7) Stereo start with the laptop display off starts without the recording window and says so.
 
 ### Navigation
 
@@ -382,6 +449,16 @@ Run in direct stereo and once in the windowed preview.
 - [ ] In the windowed preview, a left-drag in Overview moves the window under the pointer along the
   ring in 20 px steps; a drop outside the rows reverts; the place survives a restart; Ctrl+Z undoes;
   a still click selects instead.
+- [ ] (M7) SUPER+F with nothing staged fills the gazed window; SUPER+F again restores.
+- [ ] (M7) SUPER+left-drag moves the staged window along the ring (20 px snap), Ctrl+Z undoes, the place
+  survives a restart; the real window stays at the stage origin (`hyprctl clients -j`).
+- [ ] (M7) Let go of SUPER before the mouse button: the drag ends on the button release (plain release bind).
+- [ ] (M7) SUPER+right-drag from any corner resizes, the panel follows, the window is back at the origin
+  within a second; SUPER+CTRL+arrows step 100 px.
+- [ ] (M7) Closing the staged window stages and lands on the next most recent one.
+- [ ] (M7) Stop: SUPER+mouse:272 is Omarchy's *Move window* again and SUPER+CTRL+Left/Right its group
+  focus keys (`hyprctl binds -j`), SUPER+CTRL+Up/Down unbound.
+- [ ] (M7) Studio's Input tab: the title "Fit selected monitor / focus window" fits its column.
 
 ### Capture rates
 
@@ -421,3 +498,18 @@ Run in direct stereo and once in the windowed preview.
 
 - [ ] Direct-mode lease loss (unplug and replug the glasses) regenerates textures in both modes.
 - [ ] `kill -9` the renderer: Studio cleans up (canvas windows restored, outputs removed) in both modes.
+
+### M7 glasses PR checklist
+
+Copied from the plan (§7 M7); the items above cover the same ground inside the full pass.
+
+- [ ] Start stereo in canvas mode: `viewer.log` shows `staged 0x…` with the first list; the staged window shows menus and the native cursor; the keyboard stays where it was until a confirm.
+- [ ] Ctrl+Down on a gazed window: staged, raised, focused, pointer at the gaze point, typing arrives; the same with a three-finger single tap; a double tap still recenters and releases the pointer.
+- [ ] The hint appears under the halo on the first dwells and disappears after the first confirm.
+- [ ] SUPER+F with nothing staged fills the gazed window; SUPER+F again restores.
+- [ ] SUPER+left-drag moves the staged window along the ring (snapped), Ctrl+Z undoes, the place survives a restart; the real window stays at the stage origin (`hyprctl clients -j`).
+- [ ] SUPER+right-drag from any corner resizes; the panel follows; the window is back at the origin within a second. SUPER+CTRL+arrows step 100 px.
+- [ ] Close the staged window: the next MRU is staged and landed.
+- [ ] Stop: SUPER+mouse:272 is Omarchy's *Move window* again (`hyprctl binds -j`), SUPER+CTRL+Up/Down unbound, SUPER+CTRL+Left/Right Omarchy's group focus keys again.
+- [ ] Stereo start with the laptop display off: starts without the recording window; the message says so.
+- [ ] A `{release=true}` bind on `SUPER + mouse:272` fires on real Hyprland (the drag ends), and `hl.unbind` removes the mouse bind.

@@ -18,6 +18,10 @@ class InputSettingsTests(unittest.TestCase):
         for text in ('SUPER + F','super + ctrl + g','ALT + SUPER + P','SUPER + TAB','ALT + Tab','SHIFT + ALT + Tab','SUPER + Left','SUPER + SHIFT + Down'):
             with self.subTest(chord=text),self.assertRaisesRegex(ValueError,'reserved for the window canvas'):
                 validate_controls(dict(DEFAULTS,recenter=text))
+        # The resize keys (M7): SUPER+CTRL+Up/Down are free in Omarchy, so only the reservation stops them.
+        for text in ('SUPER + CTRL + Down','SUPER + CTRL + Up','SUPER + CTRL + Left','SUPER + CTRL + Right'):
+            with self.subTest(chord=text),self.assertRaisesRegex(ValueError,'reserved for the window canvas'):
+                validate_controls(dict(DEFAULTS,fit_target=text))
         self.assertEqual(validate_controls(dict(DEFAULTS,recenter='SUPER + CTRL + P'))['recenter'],'CTRL + SUPER + P')
         self.assertEqual(validate_controls(dict(DEFAULTS,recenter='SUPER + ALT + P'),reserve=False)['recenter'],'ALT + SUPER + P')
     def test_invalid_duplicate_and_injection(self):

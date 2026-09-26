@@ -606,6 +606,9 @@ running (including dedicated stereo with Studio hidden):
 - **Ctrl+Down** fits the height of the monitor you are looking at, with a 4%
   margin. Selection follows headset direction, not eye movements. Looking into a
   gap or losing tracking leaves the view unchanged.
+  In window canvas mode it instead focuses the window you look at (staged,
+  raised, keyboard and pointer at the gaze point), as does a three-finger single
+  tap; see [`docs/window-canvas.md`](docs/window-canvas.md).
 
 Zoom uses exponential, frame-rate-independent easing, with no momentum after
 release beyond the short smoothing tail. Existing spacing safety limits still

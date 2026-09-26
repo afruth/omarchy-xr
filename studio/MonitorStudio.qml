@@ -90,6 +90,7 @@ Item {
     property bool laptopOffEnabled: false
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
+    property string spectatorSkipped: ""
     property var performance: ({})
     property var captureRows: []
     property string viewerExit: ""
@@ -425,6 +426,7 @@ Item {
                     root.controlsHint = response.controlsHint || "";
                     if (root.performance.geometryDistance > 0) root.geometryDistance=root.performance.geometryDistance;
                     root.spectatorEnabled = !!response.spectatorEnabled;
+                    root.spectatorSkipped = response.spectatorSkipped || "";
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
                     if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
                         root.laptopDisplay = response.laptopDisplay;
@@ -1017,7 +1019,7 @@ Item {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: root.renderMode === "canvas" ? "Land on window" : "Fit monitor"
-                                        helpText: (root.renderMode === "canvas" ? "Land on the window you are looking at" : "Fit the monitor selected by your head direction by height") + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
+                                        helpText: (root.renderMode === "canvas" ? "Land on and focus the window you are looking at (stage, keyboard, pointer)" : "Fit the monitor selected by your head direction by height") + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
                                         onClicked: root.send("fit_target")
                                     }
                                     Action {
@@ -1082,7 +1084,7 @@ Item {
                                     onChanged: function(picked) {root.setControl("fingers",Number(picked));}
                                 }
                                 Repeater {
-                                    model: [{key:"recenter",title:"Recenter camera"},{key:"fit_all",title:"Fit workspace"},{key:"fit_target",title:"Fit selected monitor"},{key:"zoom_in",title:"Zoom in"},{key:"zoom_out",title:"Zoom out"}]
+                                    model: [{key:"recenter",title:"Recenter camera"},{key:"fit_all",title:"Fit workspace"},{key:"fit_target",title:"Fit selected monitor / focus window"},{key:"zoom_in",title:"Zoom in"},{key:"zoom_out",title:"Zoom out"}]
                                     delegate: RowLayout {
                                         required property var modelData
                                         Layout.fillWidth: true
@@ -2165,8 +2167,8 @@ Item {
                                 }
                                 Hint {
                                     visible: root.spectatorEnabled || !!root.performance.spectatorError
-                                    text: root.performance.spectatorError ? root.performance.spectatorError : root.performance.spectator ? "Recording window active" : root.directOutput ? "Window closed or opening" : "Ready for the next stereo session"
-                                    color: root.performance.spectatorError ? Color.urgent : Qt.alpha(Color.foreground, .68)
+                                    text: root.performance.spectatorError ? root.performance.spectatorError : root.performance.spectator ? "Recording window active" : root.directOutput && root.spectatorSkipped ? "Recording window skipped: no computer display. " + root.spectatorSkipped : root.directOutput ? "Window closed or opening" : "Ready for the next stereo session"
+                                    color: root.performance.spectatorError || (root.directOutput && root.spectatorSkipped) ? Color.urgent : Qt.alpha(Color.foreground, .68)
                                 }
                                 Action {
                                     visible: root.directOutput && root.spectatorEnabled && !root.performance.spectator

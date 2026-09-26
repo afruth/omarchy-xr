@@ -36,7 +36,7 @@ canvas mode branches per verb. Sources implement `FrameSource`
 surface views, the stats mode, navigate equivalence, an empty scene and
 tolerance of appended live-settings fields.
 
-**Canvas mode** (M2–M6; `docs/infinite-canvas-plan.md`, user guide `docs/window-canvas.md`) puts every window on
+**Canvas mode** (M2–M7; `docs/infinite-canvas-plan.md`, user guide `docs/window-canvas.md`) puts every window on
 a 360° ring of radius R around the eye (`Cylinder{0,0, 2πR − gap, R}`, 900 px per world
 unit, three rows of 850 px). `canvas::Scene` (`src/canvas_scene.hpp`) owns the windows:
 it adopts the window list by address, places new windows (session memory, then the
@@ -86,6 +86,17 @@ takes SUPER+F over; the renderer writes the `.mode` heartbeat (`v1 <pid> canvas|
 tooltips and the native cursor show. `studio/canvas.py` (`CanvasSession`) creates the
 canvas output, journals every window's origin to `canvas-session.json` before moving it,
 and restores window by window before the output is removed.
+
+M7 made gaze focus *dwell + confirm*: dwell only selects; a confirm (mode 18 from the
+`fit_target` hotkey or a three-finger single tap, the pose verb `fit_target`, or a landing from
+Overview) stages, raises and focuses the window and warps the pointer to the gaze point through
+`.hover` v4. The adapter keeps a window staged whenever the canvas has members (`ensureStaged`,
+the most recent member, quietly: no keyboard focus, no pointer move), and the renderer lands on it.
+SUPER+left-drag is taken over by the adapter, which publishes the pointer travel in the `.drag`
+mailbox (the `.pan` codec, `v2 owner seq id dx dy active stamp`); the renderer moves the staged
+window's panel with M6's `dragBegin`/`dragBy`/`dragEnd`, while the real window stays at the stage
+origin. SUPER+right-drag resizes the real window and the adapter re-clamps it 0.5 s after it settles;
+SUPER+CTRL+arrows resize by 100 px in Lua.
 
 M5 replaced the fixed profile with the pixel-budget ladder (`governor::Ladder`, plan
 §4.4): rates from `60 › 40 › 30 › 24 › 20 › 15 › 10 › 6` Hz filled tier by tier
@@ -327,6 +338,10 @@ and fits that monitor's projected vertical bounds in the current viewing frame.
 It does not recenter head tracking or switch targets while animating. Ctrl+Down
 and Studio's Fit looked-at monitor use this same action (`fit_target`); the old
 renderer socket command `fit_center` is retained as an alias for compatibility.
+In canvas mode the adapter publishes canvas mode 18 (*confirm*) for the Ctrl+Down
+hotkey instead of 2, and for a three-finger single tap (resolved 400 ms after the tap
+when no second tap followed); the renderer maps it to the same `fit_target` verb,
+which lands on and focuses the gazed window (`.hover` v4) instead of fitting a monitor.
 
 
 ### Gaze selection and independent pointer
@@ -526,6 +541,7 @@ monitor face-on -> the active window on that monitor, fitted to the eye (`fitPan
 Flick out: pane -> monitor -> overview. A flick in on a different monitor than the current level's
 restarts at the monitor level. The socket commands `fit` and `fit_target` (Studio buttons, Ctrl+Up
 and Ctrl+Down) stay direct: overview and monitor.
+In canvas mode Ctrl+Down arrives as mode 18 (see above), so the flick gesture keeps mode 2.
 
 Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
 The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the

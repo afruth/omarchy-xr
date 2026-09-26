@@ -194,36 +194,48 @@ inline int paintRadar(cairo_t* cr, const Radar& r, const Style& s) {
 }
 // F1 help: the canvas chords in one table, so the user guide and this card stay in sync. Takeover rows
 // (canvas.tsv takeoverKeys) show only while the takeover switch is on; off, those chords stay Omarchy's.
+// The confirm row names the default fit_target chord; the dwell hint shows the configured one.
 struct HelpRow { const char* section; const char* keys; const char* action; bool takeover=false; };
 inline constexpr HelpRow helpRows[]={
     {"Find", "type", "search windows"}, {"Find", "Up/Down / Tab", "move the selection"}, {"Find", "Ctrl+1-8", "land on that row"},
     {"Find", "Enter", "land on the selection"}, {"Find", "Shift+Enter", "summon it here"}, {"Find", "Esc", "clear, then go back"},
     {"View", "SUPER+TAB", "overview", true}, {"View", "SUPER+CTRL+G", "search"}, {"View", "SUPER+F", "fill"},
     {"View", "SUPER+arrows", "neighbour", true}, {"View", "flick in / out", "land / zoom out"},
+    {"View", "Ctrl+Down / 3-finger tap", "focus the gazed window"},
     {"Arrange", "SUPER+SHIFT+arrows", "nudge", true}, {"Arrange", "Ctrl+A", "arrange"}, {"Arrange", "Ctrl+Z / Ctrl+Shift+Z", "undo / redo"},
-    {"Arrange", "SUPER+ALT+P", "pin"},
+    {"Arrange", "SUPER+left-drag", "move along the ring"}, {"Arrange", "SUPER+right-drag", "resize"},
+    {"Arrange", "SUPER+CTRL+arrows", "resize 100 px"}, {"Arrange", "SUPER+ALT+P", "pin"},
     {"Anywhere", "ALT+TAB", "switcher", true}, {"Anywhere", "three-finger double tap", "release pointer"}, {"Anywhere", "F1", "this help"},
 };
 constexpr int helpWidth=960, helpHeight=560;
 inline std::string helpKey(bool takeover, const Style& s) { return std::string("help ")+(takeover ? "1 " : "0 ")+colorKey(s.accent); }
+// Walks the rows as the card lays them out: header(section, x, y) and row(keys, action, x, y); returns
+// the bottom of the lowest row, so the preview smoke can check the card still holds every row.
+template<class Header, class Row> int layoutHelp(bool takeover, Header&& header, Row&& row) {
+    int column=0, y=76, bottom=0; std::string section;
+    for(const auto& r:helpRows) {
+        if(r.takeover && !takeover) continue;
+        if(r.section!=section) {
+            section=r.section;
+            // Find and View on the left, Arrange and Anywhere on the right.
+            if(section=="Arrange") { column=1; y=76; }
+            header(section, 32+column*464, y+6); y+=38;
+        }
+        row(r, 32+column*464, y);
+        y+=32; bottom=std::max(bottom, y-8);
+    }
+    return bottom;
+}
+inline int helpBottom(bool takeover) { return layoutHelp(takeover, [](const std::string&, int, int) {}, [](const HelpRow&, int, int) {}); }
 inline int paintHelp(cairo_t* cr, const Style& s, bool takeover=true) {
     card(cr, helpWidth, helpHeight, s);
     notifications::text(cr, "Window canvas keys", s.text, 32, 22, 500, 26, 1, true);
     notifications::text(cr, "F1 or Esc closes", s.dim, helpWidth-272, 28, 240, 17, 1, false, true);
-    int column=0, y=76; std::string section;
-    for(const auto& row:helpRows) {
-        if(row.takeover && !takeover) continue;
-        if(row.section!=section) {
-            section=row.section;
-            // Find and View on the left, Arrange and Anywhere on the right.
-            if(section=="Arrange") { column=1; y=76; }
-            notifications::text(cr, section, s.accent, 32+column*464, y+6, 400, 19, 1, true); y+=38;
-        }
-        const int x=32+column*464;
-        notifications::text(cr, row.keys, s.text, x, y, 200, 17, 1, true);
-        notifications::text(cr, row.action, s.dim, x+210, y, 220, 17, 1);
-        y+=32;
-    }
+    layoutHelp(takeover, [&](const std::string& section, int x, int y) { notifications::text(cr, section, s.accent, x, y, 400, 19, 1, true); },
+               [&](const HelpRow& row, int x, int y) {
+                   notifications::text(cr, row.keys, s.text, x, y, 200, 17, 1, true);
+                   notifications::text(cr, row.action, s.dim, x+210, y, 220, 17, 1);
+               });
     if(!takeover) notifications::text(cr, "SUPER+TAB, SUPER+arrows and ALT+TAB keep Omarchy's keys (takeover off in Studio)", s.dim, 32, helpHeight-44, helpWidth-64, 15, 1);
     return helpHeight;
 }

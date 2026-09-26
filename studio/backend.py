@@ -238,6 +238,7 @@ class Manager:
         self.stereo_active = False
         self.original_output = None
         self.restoration_error = ""
+        self.spectator_skipped = ""
         self.viewer = None
         self.viewer_exit = ""
         self.presenting = False
@@ -795,8 +796,15 @@ class Manager:
         if not isinstance(headset, str):
             raise RuntimeError("The glasses are not ready for stereo. Stop XR, then try again.")
         args = ["--direct", headset, "--stereo"]
+        self.spectator_skipped = ""
         if self.spectator_enabled:
-            self.place_spectator()
+            # A missing computer display costs the recording window, never the stereo start.
+            try:
+                self.place_spectator()
+            except RuntimeError as exc:
+                self.display_event("spectator-skipped", str(exc))
+                self.spectator_skipped = str(exc)
+                return args
             args += ["--spectator"]
         return args
 
@@ -904,6 +912,12 @@ class Manager:
             raise RuntimeError(message) from exc
 
     def place_spectator(self):
+        """Pin the recording window to the active workspace of an enabled computer display.
+
+        OMXR- outputs (the virtual monitors and the window canvas) and the glasses are never
+        candidates, so canvas mode cannot cause the "no computer display" failure; that only
+        happens when every real display is off or disconnected.
+        """
         monitors = self.monitors()
         glasses = detect(monitors)["displays"]
         candidates = [m for m in monitors if not m["name"].startswith("OMXR-")
@@ -1169,7 +1183,8 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+                "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
                 "canvasWindows": performance.get("canvasWindows", 0) if self.canvas_mode else 0,
@@ -1285,6 +1300,8 @@ def action_present_direct(manager, request):
         response = {"layout": manager.applied, "message": "Stereo active."}
     if not already_direct:
         manager.start_dedicated()
+        if manager.spectator_skipped:
+            response["message"] += " Recording window skipped: no computer display."
     return response
 
 

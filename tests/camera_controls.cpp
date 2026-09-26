@@ -22,6 +22,7 @@ void workspaceInput();
 void canvasMailboxes();
 void canvasModes();
 void canvasFocusAndHover();
+void canvasDrag();
 int main() {
     easeZoom();
     cylinderFit();
@@ -31,8 +32,9 @@ int main() {
     workspaceInput();
     canvasMailboxes();
     canvasModes();
+    canvasDrag();
     canvasFocusAndHover();
-    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup, canvas mailboxes, modes, address focus and hover v4 passed\n";
+    std::cout<<"Smooth zoom, gaze-origin zoom, curved fit, center selection, mailbox coalescing and cleanup, canvas mailboxes, modes, the .drag mailbox, address focus and hover v4 passed\n";
 }
 
 void workspaceInput() {
@@ -400,7 +402,7 @@ void canvasMailboxes() {
     std::filesystem::remove_all(dir);
 }
 
-// Modes 8..17 are canvas verbs: canvas mode only, v3 with a fresh stamp, a target only for 14/15.
+// Modes 8..18 are canvas verbs (18 the M7 confirm): canvas mode only, v3 with a fresh stamp, a target only for 14/15.
 void canvasModes() {
     const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls";
     const auto owner=std::to_string(getpid());
@@ -410,7 +412,8 @@ void canvasModes() {
     {
         LiveControls monitors(pose);
         writeFile(path,line(1,10,"-",bootNow()));monitors.update();assert(monitors.fit==0);
-        writeFile(path,line(2,3,"-",bootNow()));monitors.update();assert(monitors.fit==3);
+        writeFile(path,line(2,18,"-",bootNow()));monitors.update();assert(monitors.fit==0);
+        writeFile(path,line(3,3,"-",bootNow()));monitors.update();assert(monitors.fit==3);
     }
     {
         LiveControls input(pose);input.setCanvasMode(true);
@@ -419,7 +422,8 @@ void canvasModes() {
             if(mode==14 || mode==15)continue;
             writeFile(path,line(++serial,mode,"-",bootNow()));input.update();assert(input.fit==mode && input.notificationTarget.empty());
         }
-        writeFile(path,line(++serial,18,"-",bootNow()));input.update();assert(input.fit==0);
+        writeFile(path,line(++serial,18,"-",bootNow()));input.update();assert(input.fit==18 && input.notificationTarget.empty());
+        writeFile(path,line(++serial,19,"-",bootNow()));input.update();assert(input.fit==0);
         writeFile(path,line(++serial,14,"-",bootNow()));input.update();assert(input.fit==0);
         writeFile(path,line(++serial,14,windows::encodeHex("left"),bootNow()));input.update();assert(input.fit==14 && input.notificationTarget=="left");
         writeFile(path,line(++serial,15,windows::encodeHex("down"),bootNow()));input.update();assert(input.fit==15 && input.notificationTarget=="down");
@@ -431,6 +435,36 @@ void canvasModes() {
     std::filesystem::remove_all(dir);
 }
 
+// .drag (M7, the .pan codec): canvas mode only; deltas of the cumulative travel, a new id starts a drag,
+// another owner or a stale stamp is ignored; a mode switch forgets it and the file goes with the controls.
+void canvasDrag() {
+    const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls";
+    const auto owner=std::to_string(getpid());
+    const auto line=[&](const std::string& who,int seq,int id,double x,double y,int active,long stamp){
+        return "v2 "+who+" "+std::to_string(seq)+" "+std::to_string(id)+" "+std::to_string(x)+" "+std::to_string(y)+" "+std::to_string(active)+" "+std::to_string(stamp)+"\n";
+    };
+    {
+        LiveControls input(pose);
+        writeFile(path+".drag",line(owner,1,1,5,0,1,bootNow()));input.update();
+        assert(!input.dragStarted && !input.dragActive && input.dragX==0);
+        input.setCanvasMode(true);
+        writeFile(path+".drag",line(owner,2,2,0,0,1,bootNow()));input.update();
+        assert(input.dragStarted && input.dragActive && input.dragX==0 && input.dragY==0);
+        writeFile(path+".drag",line(owner,3,2,30,-12,1,bootNow()));input.update();
+        assert(!input.dragStarted && input.dragActive && input.dragX==30 && input.dragY==-12);
+        input.update();assert(input.dragX==0 && input.dragActive);
+        writeFile(path+".drag",line(owner,4,2,5000,-12,1,bootNow()));input.update();assert(input.dragX==1000);
+        writeFile(path+".drag",line("1",5,2,6000,0,1,bootNow()));input.update();assert(input.dragX==0 && !input.dragActive);
+        writeFile(path+".drag",line(owner,6,2,6000,0,1,bootNow()-10));input.update();assert(input.dragX==0 && !input.dragActive);
+        writeFile(path+".drag",line(owner,7,2,5010,-12,0,bootNow()));input.update();assert(input.dragX==10 && !input.dragActive && !input.dragStarted);
+        writeFile(path+".drag",line(owner,8,3,4,4,1,bootNow()));input.update();assert(input.dragStarted && input.dragX==4 && input.dragY==4);
+        assert(input.panX==0 && !input.panActive);
+        input.setCanvasMode(false);assert(!input.dragActive && input.dragX==0);
+        input.update();assert(!input.dragActive);
+    }
+    assert(!std::filesystem::exists(path+".drag"));
+    std::filesystem::remove_all(dir);
+}
 // Canvas .focus names a window address (canonical lower case); .hover is v4 in both files.
 void canvasFocusAndHover() {
     const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls",mirror=dir+"/mirror";

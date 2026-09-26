@@ -25,10 +25,9 @@
 // list and the cursor, `.hover` is v4 and `.focus` names window addresses.
 class LiveControls {
     std::string path, mirror, session;
-    std::string controlsSeen, panSeen;
-    timespec controlsStamp{}, panStamp{};
-    double previousZoom=0, previousPanX=0, previousPanY=0;
-    unsigned long long panSerial=0, panId=0;
+    std::string controlsSeen;
+    timespec controlsStamp{};
+    double previousZoom=0;
     bool hoverEnabled=false;
     std::string hoverOutput;
     long hoverStamp=0;
@@ -61,30 +60,34 @@ class LiveControls {
     static void writeFile(const std::string& target, const std::string& body) {
         AsyncFile::instance().write(target, body);
     }
-    void updatePan() {
-        panX = panY = 0; panStarted = false;
-        const auto filePath = existing(".pan");
-        if (filePath != panSeen) { panSeen = filePath; panStamp = {}; }
+    // Cumulative pointer travel (.pan, and .drag in canvas mode): v2 owner seq id x y active stamp; a new
+    // id starts a gesture, and each update yields the delta since the last line, clamped to +-1000.
+    struct Cumulative { std::string seen; timespec stamp{}; double prevX=0, prevY=0; unsigned long long serial=0, id=0; };
+    Cumulative pan, drag;
+    void updateCumulative(const char* suffix, Cumulative& c, double& x, double& y, bool& started, bool& active) {
+        x = y = 0; started = false;
+        const auto filePath = existing(suffix);
+        if (filePath != c.seen) { c.seen = filePath; c.stamp = {}; }
         struct stat st{};
-        if (stat(filePath.c_str(), &st) != 0) { panActive = false; panStamp = {}; return; }
-        if (st.st_mtim.tv_sec == panStamp.tv_sec && st.st_mtim.tv_nsec == panStamp.tv_nsec) return;
-        panStamp = st.st_mtim;
-        panActive = false;
+        if (stat(filePath.c_str(), &st) != 0) { active = false; c.stamp = {}; return; }
+        if (st.st_mtim.tv_sec == c.stamp.tv_sec && st.st_mtim.tv_nsec == c.stamp.tv_nsec) return;
+        c.stamp = st.st_mtim;
+        active = false;
         std::ifstream file(filePath); std::string first, owner, extra;
-        unsigned long long seq, id; double x, y; int active; long stamp;
+        unsigned long long seq, id; double totalX, totalY; int on; long stamp;
         if (!(file >> first)) return;
         if (first == "v2") { if (!(file >> owner)) return; }
         else owner = first;
-        if (!(file >> seq >> id >> x >> y >> active >> stamp) || file >> extra || owner != session ||
-            !std::isfinite(x) || !std::isfinite(y) || std::abs(x) > 1e9 || std::abs(y) > 1e9 ||
-            (active != 0 && active != 1) || !stampFresh(stamp)) return;
-        panActive = active;
-        if (seq == panSerial) return;
-        panStarted = id != panId;
-        if (panStarted) { previousPanX = previousPanY = 0; panId = id; }
-        panX = std::clamp(x - previousPanX, -1000., 1000.);
-        panY = std::clamp(y - previousPanY, -1000., 1000.);
-        previousPanX = x; previousPanY = y; panSerial = seq;
+        if (!(file >> seq >> id >> totalX >> totalY >> on >> stamp) || file >> extra || owner != session ||
+            !std::isfinite(totalX) || !std::isfinite(totalY) || std::abs(totalX) > 1e9 || std::abs(totalY) > 1e9 ||
+            (on != 0 && on != 1) || !stampFresh(stamp)) return;
+        active = on;
+        if (seq == c.serial) return;
+        started = id != c.id;
+        if (started) { c.prevX = c.prevY = 0; c.id = id; }
+        x = std::clamp(totalX - c.prevX, -1000., 1000.);
+        y = std::clamp(totalY - c.prevY, -1000., 1000.);
+        c.prevX = totalX; c.prevY = totalY; c.serial = seq;
     }
     unsigned long long serial = 0, fitSerial = 0, hoverSerial = 0, hoverPointerSerial = 0;
     long heartbeat = 0, notificationStamp = 0;
@@ -184,6 +187,9 @@ public:
     bool paneValid = false;
     double zoom = 0, panX = 0, panY = 0;
     bool panStarted = false, panActive = false;
+    // SUPER+left-drag on the staged window (canvas mode, M7): the same codec as .pan.
+    double dragX = 0, dragY = 0;
+    bool dragStarted = false, dragActive = false;
     int fit = 0;
     bool canvasMode = false;
     std::optional<::windows::List> windows;    // a new list this update, else nullopt
@@ -196,11 +202,12 @@ public:
         canvasMode = m;
         windows.reset(); cursor.reset(); search.reset(); tiersSet.clear(); tiersAt = -1e9;
         windowsSeq = cursorSeq = 0; windowsStamp = cursorStamp = searchStamp = {};
+        drag = {}; dragX = dragY = 0; dragStarted = dragActive = false;
     }
     explicit LiveControls(const std::string& pose) : path(pose.empty() ? "" : pose + ".controls"), session(std::to_string(getpid())) {
         if (const char* mirrored = std::getenv("OMARCHY_XR_MIRROR_STATE")) mirror = mirrored;
         if (mirror == path) mirror.clear();
-        if (!path.empty()) { unlink(path.c_str()); unlink((path + ".pan").c_str()); unlink((path + ".focus").c_str()); update(); }
+        if (!path.empty()) { unlink(path.c_str()); unlink((path + ".pan").c_str()); unlink((path + ".drag").c_str()); unlink((path + ".focus").c_str()); update(); }
     }
     ~LiveControls() {
         AsyncFile::instance().flush();
@@ -212,7 +219,7 @@ public:
             unlink((base + ".focus").c_str());unlink((base + ".notification").c_str());
             unlink((base + ".mode").c_str()); unlink((base + ".windows").c_str()); unlink((base + ".cursor").c_str());
             unlink((base + ".prompt").c_str()); unlink((base + ".fill").c_str()); unlink((base + ".search").c_str());
-            unlink((base + ".tiers").c_str());
+            unlink((base + ".tiers").c_str()); unlink((base + ".drag").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
@@ -266,7 +273,8 @@ public:
     void setTakeover(bool on) { if (on != takeover) { takeover = on; heartbeat = 0; } }
     void update() {
         zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
-        updatePan();
+        updateCumulative(".pan", pan, panX, panY, panStarted, panActive);
+        if (canvasMode) updateCumulative(".drag", drag, dragX, dragY, dragStarted, dragActive);
         updatePane();
         updateFocus();
         updateWindows();
@@ -288,7 +296,7 @@ public:
         if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
         heartbeat = now;
     }
-    // Modes 0..7 everywhere, 8..17 (canvas verbs, §5.5) in canvas mode only; modes >= 6 need v3 and a
+    // Modes 0..7 everywhere, 8..18 (canvas verbs, §5.5; 18 confirm, M7) in canvas mode only; modes >= 6 need v3 and a
     // fresh stamp, and a target only for 6, 7 (notifications) and 14, 15 (direction tokens). 11 and 12
     // may carry the token "release" (the Alt-Tab release bind).
     void updateControls() {
@@ -301,7 +309,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > (canvasMode ? 17 : 7) || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > (canvasMode ? 18 : 7) || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;

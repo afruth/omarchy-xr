@@ -203,8 +203,13 @@ void focusFollow(View& v) {
     refocus(v, 0x5007);
     assert(v.canvas->focusedName=="0x5007" && sameRotation(rotation, v.targetRotation) && focus==v.canvas->camera.targetFocusX);
     work(v); rotation=v.targetRotation;
-    partlyVisible(v, "0x5002"); refocus(v, 0x5002);
-    assert(!sameRotation(rotation, v.targetRotation) && v.canvas->state==canvas::Scene::State::Work && v.canvas->landed=="0x5002");
+    // A window whose centre is off the landed one's heading (placement depends on the landings before).
+    std::string other;
+    for (const char* n:{"0x5002", "0x5001", "0x5000", "0x5003", "0x5004"})
+        if (std::abs(v.canvas->ring.wrap(v.canvas->find(n)->rect.cx()-v.canvas->find(v.canvas->landed)->rect.cx()))>100) { other=n; break; }
+    assert(!other.empty());
+    partlyVisible(v, other); refocus(v, std::stoull(other, nullptr, 16));
+    assert(!sameRotation(rotation, v.targetRotation) && v.canvas->state==canvas::Scene::State::Work && v.canvas->landed==other);
     ease(v, 120);
     v.gaze.current=hitOn(v, "0x5005"); v.navigate({View::Verb::FitTarget}); v.gaze.current.reset();
     v.interactionUntil=monotonicSeconds()+.2; rotation=v.targetRotation;
@@ -1123,6 +1128,186 @@ void notificationInsideRing(View& v) {
     hud.release(); v.notificationHud.reset();
     std::filesystem::remove(folder+"/notifications.json");
 }
+// M7 interaction follow-up. Helpers: a controls line (the Lua adapter's .controls, v3 with a mode and
+// no target), a .drag line (the .pan codec) and a mailbox list without a stage row.
+void controlsMode(View& v, int mode) {
+    static unsigned long long serial=0;
+    ++serial;
+    std::ostringstream line; line << "v3 " << getpid() << ' ' << serial << " 0 " << serial << ' ' << mode << " - " << bootNow() << '\n';
+    write(mailbox(v), line.str()); v.steer();
+}
+void dragLine(View& v, unsigned long long seq, unsigned long long id, double dx, double dy, bool active) {
+    std::ostringstream line; line << "v2 " << getpid() << ' ' << seq << ' ' << id << ' ' << dx << ' ' << dy << ' ' << (active ? 1 : 0) << ' ' << bootNow() << '\n';
+    write(mailbox(v)+".drag", line.str()); v.steer();
+}
+// Overlap is allowed by now (nudge, drag): the eye inside the ring and no monitor math.
+void inRing(const View& v) { panInsideRing(v); assert(v.monitorMathCalls==0); }
+// No `stage` row and focus_history_id 0 on a window that is no member (Studio on the laptop).
+std::string unstagedList(const View& v, std::uint64_t without=0) {
+    auto rows=twelve(); rows.push_back({0x8000, 900, 600, 50, "park"});
+    std::erase_if(rows, [&](const Row& r) { return r.address==without; });
+    for (size_t i=0;i<rows.size();++i) { rows[i].place="park"; rows[i].focus=int(i)+1; }
+    return mailboxFile(v.windowsSeq+1, rows)+"0x9200 "+windows::encodeHex("studio")+' '+windows::encodeHex("Studio")+" 1200 800 0 0 0 off 0 4343 0 0\n";
+}
+std::string stagedList(const View& v, std::uint64_t staged, std::uint64_t without=0) {
+    auto rows=twelve(); rows.push_back({0x8000, 900, 600, 50, "park"});
+    std::erase_if(rows, [&](const Row& r) { return r.address==without; });
+    for (auto& r:rows) { r.place=r.address==staged ? "stage" : "park"; r.focus=r.address==staged ? 0 : r.focus==0 ? 40 : r.focus; }
+    return mailboxFile(v.windowsSeq+1, rows);
+}
+// (z1) The glasses report's "staged none": a confirm (mode 18) on the looked-at window publishes v4 with a
+// restage; the next list with its stage row clears it and the window stays landed. Nothing looked at or
+// selected: the confirm lands on the landing target (MRU).
+void stagedNoneAtStart(View& v) {
+    work(v);
+    write(mailbox(v)+".windows", unstagedList(v)); v.steer();
+    assert(v.canvas->stagedName.empty() && !v.canvas->staged());
+    v.selection.output.clear(); v.canvas->lastDwellAt=-1e9;
+    auto serial=v.pointerSerial;
+    controlsMode(v, 18);
+    assert(v.pointerSerial==serial+1 && v.hoverOutput=="0x5000" && v.restageRequested=="0x5000" && v.canvas->landed=="0x5000");
+    ease(v, 60); v.interactionUntil=0;
+    // steer() samples the (stale) head ray, so the look point is the selection a dwell left.
+    v.selection.output="0x5003"; serial=v.pointerSerial;
+    controlsMode(v, 18);
+    assert(v.pointerSerial==serial+1 && v.hoverOutput=="0x5003" && v.restageRequested=="0x5003" && v.canvas->landed=="0x5003");
+    const auto* w=v.canvas->find("0x5003"); assert(w);
+    assert(std::abs(v.pointerX-w->pixelW/2.f)<1 && std::abs(v.pointerY-w->pixelH/2.f)<1);
+    assert(v.tick());
+    const auto f=hoverFields(v);
+    assert(f[3]=="1" && f[4]=="0x5003" && f[7]==std::to_string(serial+1));
+    write(mailbox(v)+".windows", stagedList(v, 0x5003)); v.steer();
+    assert(v.canvas->stagedName=="0x5003" && v.restageRequested.empty() && v.canvas->landed=="0x5003" && v.canvas->state==State::Work);
+    ease(v, 120); v.interactionUntil=0; inRing(v);
+}
+// (z2) Flick in and SUPER+TAB from Overview land on the dwell and focus it: gaze point when it is looked at.
+void flickInFocuses(View& v) {
+    using V=View::Verb;
+    for (const auto verb:{V::FlickIn, V::Fit}) {
+        v.navigate({V::FlickOut}); ease(v, 120); v.interactionUntil=0; assert(v.canvas->zoomedOut());
+        v.canvas->noteDwell("0x5004", monotonicSeconds());
+        const auto serial=v.pointerSerial;
+        v.navigate({verb});
+        assert(v.canvas->state==State::Work && v.canvas->landed=="0x5004" && v.hoverOutput=="0x5004" && v.pointerSerial==serial+1);
+        assert(v.restageRequested=="0x5004" && v.canvas->stagedName=="0x5003");
+        ease(v, 120); v.interactionUntil=0;
+    }
+    v.navigate({V::FlickOut}); ease(v, 120);
+    v.canvas->noteDwell("0x5001", monotonicSeconds()); v.gaze.current=hitOn(v, "0x5001", .25f, .5f);
+    v.navigate({V::Fit}); v.gaze.current.reset();
+    const auto* w=v.canvas->find("0x5001");
+    assert(v.canvas->landed=="0x5001" && v.hoverOutput=="0x5001" && std::abs(v.pointerX-.25f*w->pixelW)<1);
+    ease(v, 120); inRing(v);
+    restagedByXr(v, "0x5003");
+    landOn(v, "0x5003");
+}
+// (z3) SUPER+F with nothing on the stage confirms first (v4, no .fill) and fills once the list stages it.
+void fillLandsFirst(View& v) {
+    work(v);
+    write(mailbox(v)+".windows", unstagedList(v)); v.steer();
+    assert(!v.canvas->staged());
+    const auto before=fieldsOf(mailbox(v)+".fill"); const auto serial=v.pointerSerial;
+    v.gaze.current=hitOn(v, "0x5006"); v.navigate({View::Verb::Fill}); v.gaze.current.reset();
+    assert(fieldsOf(mailbox(v)+".fill")==before && v.canvas->state==State::Work && v.fillAfterStage>0);
+    assert(v.hoverOutput=="0x5006" && v.pointerSerial==serial+1 && v.restageRequested=="0x5006" && v.canvas->landed=="0x5006");
+    write(mailbox(v)+".windows", stagedList(v, 0x5006)); v.steer();
+    const auto line=fillFields(v);
+    assert(line[3]=="0x5006" && (before.empty() || std::stoull(line[2])>std::stoull(before[2])));
+    assert(v.canvas->state==State::Fill && v.canvas->filled=="0x5006" && v.fillAfterStage==0);
+    ease(v, 120); panInsideRing(v);
+    v.navigate({View::Verb::Fill}); assert(v.canvas->state==State::Work);
+    // Expired: a stage row after 2 s fills nothing.
+    write(mailbox(v)+".windows", unstagedList(v)); v.steer();
+    v.gaze.current=hitOn(v, "0x5006"); v.navigate({View::Verb::Fill}); v.gaze.current.reset();
+    v.fillAfterStage=monotonicSeconds()-.1;
+    write(mailbox(v)+".windows", stagedList(v, 0x5006)); v.steer();
+    assert(v.canvas->state==State::Work && v.fillAfterStage==0);
+    ease(v, 120); inRing(v);
+}
+// (z4) The staged window closes: Lua stages the next MRU quietly; the camera lands on it, no focus.
+void stagedCloseLandsNext(View& v) {
+    work(v); landOn(v, "0x5006"); assert(v.canvas->stagedName=="0x5006");
+    const auto serial=v.pointerSerial; const auto hover=v.hoverOutput;
+    write(mailbox(v)+".windows", stagedList(v, 0x5007, 0x5006)); v.steer();
+    assert(!v.canvas->find("0x5006") && v.canvas->stagedName=="0x5007" && v.canvas->landed=="0x5007" && v.canvas->state==State::Work);
+    assert(v.pointerSerial==serial && v.hoverOutput==hover && v.restageRequested.empty());
+    ease(v, 120); inRing(v);
+}
+// (z5) SUPER+left-drag (.drag) moves the staged window in Work: snapped, one checkpoint, remembered,
+// undoable; a drop outside the rows reverts; in Overview nothing moves.
+void stageDrag(View& v) {
+    auto& s=*v.canvas;
+    work(v); restagedByXr(v, "0x5005"); landOn(v, "0x5005");
+    const auto* w=s.find("0x5005"); assert(w && canvas::Scene::onStage(*w));
+    const auto start=w->rect; const auto undos=s.history.undo.size();
+    const float k=s.settings.outputScale/std::max(s.camera.zoom, .05f);
+    dragLine(v, 1, 1, 0, 0, true); assert(v.dragHeld && s.dragName=="0x5005");
+    dragLine(v, 2, 1, 120, 0, true);
+    assert(std::abs(s.ring.wrap(w->rect.x-(start.x+120*k)))<.5f && v.interactionUntil>monotonicSeconds());
+    dragLine(v, 3, 1, 120, 0, false);
+    assert(!v.dragHeld && s.dragName.empty() && s.history.undo.size()==undos+1);
+    assert(std::abs(s.ring.wrap(w->rect.x-(start.x+120*k)))<=10 && std::fmod(w->rect.x, 20.f)==0 && w->rect.y==start.y);
+    assert(std::any_of(s.memory.entries.begin(), s.memory.entries.end(), [&](const auto& e) { return e.title==w->record.title && sameRect(e.rect, w->rect); }));
+    ease(v, 60); panInsideRing(v);
+    v.navigate({View::Verb::Undo}); assert(sameRect(w->rect, start));
+    dragLine(v, 4, 2, 0, 0, true); dragLine(v, 5, 2, 0, 5000, true); dragLine(v, 6, 2, 0, 5000, false);
+    assert(sameRect(w->rect, start) && s.history.undo.size()==undos && !v.dragHeld);
+    ease(v, 60); v.navigate({View::Verb::FlickOut}); ease(v, 60);
+    dragLine(v, 7, 3, 0, 0, true); dragLine(v, 8, 3, 200, 0, false);
+    assert(sameRect(w->rect, start) && !v.dragHeld && s.dragName.empty());
+    work(v); inRing(v);
+}
+// (z6) The confirm hint: under the first three dwells (one per settled rest, 2.5 s each), never after a
+// confirm; its text names the fit_target chord from controls-settings.tsv beside canvas.tsv.
+bool hintDrawn(View& v, double now, const std::string& name="0x5004") {
+    const auto quads=v.canvas->labelQuads(48, now);
+    return std::any_of(quads.begin(), quads.end(), [&](const auto& q) { return q.accent && q.layout.output==name && q.texture; });
+}
+void confirmHint(View& v, const std::string& temp) {
+    work(v); ease(v, 60); v.interactionUntil=0;
+    auto& s=*v.canvas;
+    s.confirmed=false; s.hintsShown=0; s.hintFor.clear(); s.labels.release();
+    assert(!s.stagedName.empty() && s.stagedName!="0x5004");
+    const auto hit=hitOn(v, "0x5004", .4f, .4f);
+    double t=monotonicSeconds()+1;
+    const auto staged=s.stagedName;   // the staged window already has the keys: no hint
+    for (double end=t+1;t<end;t+=.05) v.dwellOn(hitOn(v, staged, .4f, .4f), t);
+    assert(s.lastDwell==staged && s.hintsShown==0 && s.hintFor.empty() && !hintDrawn(v, t, staged));
+    v.dwellOn(std::nullopt, t); t+=3;
+    for (unsigned round=1;round<=4;++round, t+=3) {
+        for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
+        assert(s.lastDwell=="0x5004" && s.hintsShown==std::min(round, 3u));
+        assert(hintDrawn(v, t)==(round<=3) && !hintDrawn(v, t+3));
+        v.dwellOn(std::nullopt, t);   // looking away ends the rest, so the next one settles again
+    }
+    assert(s.labels.atlas.count("hint"));
+    s.hintsShown=0; for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
+    assert(s.hintFor=="0x5004" && hintDrawn(v, t));
+    v.selection.output="0x5004"; v.navigate({View::Verb::FitTarget});
+    assert(s.confirmed && s.hintFor.empty() && !hintDrawn(v, t) && v.hoverOutput=="0x5004");
+    v.dwellOn(std::nullopt, t); t+=3; for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
+    assert(s.hintFor.empty());
+    // The chord: the configured one, none, or the default for a missing or malformed file.
+    const auto settings=temp+"/controls-settings.tsv";
+    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n");
+    assert(canvas::readConfirmKey(settings)=="CTRL + Down");
+    write(settings, "4\nSUPER + Up\nSUPER + F5\n\n\n\n");
+    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + F5 or a three-finger tap to focus");
+    write(settings, "3\nCTRL + Up\n\n\n\n\n");
+    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="Three-finger tap to focus");
+    write(settings, "3\nCTRL + Up\nCTRL;Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + Down");
+    std::filesystem::remove(settings); s.setConfirmKey(canvas::readConfirmKey(settings));
+    assert(s.hintText().find("CTRL + Down")==0 && !s.labels.atlas.count("hint"));
+    // A fit_target change in Studio mid-session: the renderer's poll picks up the rewritten file.
+    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
+    write(settings, "3\nCTRL + Up\nSUPER + F7\n\n\n\n"); v.pollConfirmKey();
+    assert(s.hintText()=="SUPER + F7 or a three-finger tap to focus");
+    write(settings, "3\nCTRL + Up\n\n\n\n\n");   // a later mtime even on a coarse clock
+    std::filesystem::last_write_time(settings, std::filesystem::last_write_time(settings)+std::chrono::seconds(2));
+    v.pollConfirmKey(); assert(s.hintText()=="Three-finger tap to focus");
+    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
+    ease(v, 120); v.interactionUntil=0; inRing(v);
+}
 // M5: the ladder in the renderer. A fresh View (its own mailboxes), times passed in, every window visible.
 struct Ladder {
     View& v;
@@ -1300,6 +1485,7 @@ int main() {
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
         bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
         newWindowCues(v); overviewDrag(v); notificationInsideRing(v);
+        stagedNoneAtStart(v); flickInFocuses(v); fillLandsFirst(v); stagedCloseLandsNext(v); stageDrag(v); confirmHint(v, temp);
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
@@ -1307,5 +1493,5 @@ int main() {
     sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag and notifications inside the ring passed\n";
+    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag and the confirm hint passed\n";
 }
