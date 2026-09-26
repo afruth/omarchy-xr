@@ -13,7 +13,7 @@ local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 local SLIVER_PX, SLIVER_STEP, SLIVER_FLOOR = 8, 24, 64
 local CANVAS_MONITOR_PATTERN = "^OMXR%-%x%x%x%x%x%x%x%x%-canvas$"
 local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=true}
-local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18}
+local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19}
 local setHoverTimer, updateCanvas, releasePointer
 local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
@@ -85,6 +85,8 @@ end
 -- bindings/tiling.lua and rebind them on exit, like SUPER+F. The ALT release binds end the switcher.
 -- Arrange (13) and help (17) arrive as keys of the search prompt, which holds the keyboard in Overview.
 -- SUPER+CTRL+arrows resize the staged window in Lua (M7); Left/Right are Omarchy's group focus keys, given back on exit.
+-- SUPER+CTRL+Page_Up/Down scroll the cylinder (M8, mode 19) and are free, so always bound; SUPER+wheel is a takeover
+-- (Omarchy's workspace scroll). A notch counts within its run (wheelToken), so none is lost between renderer polls.
 local CANVAS_KEYS={{chord="SUPER + CTRL + G",mode=CANVAS_MODES.search,desc="search window (canvas)"},
     {chord="SUPER + ALT + P",mode=CANVAS_MODES.pin,desc="pin window (canvas)"},
     {chord="SUPER + CTRL + LEFT",resize={dw=-100},desc="narrower window (canvas)",
@@ -92,7 +94,9 @@ local CANVAS_KEYS={{chord="SUPER + CTRL + G",mode=CANVAS_MODES.search,desc="sear
     {chord="SUPER + CTRL + RIGHT",resize={dw=100},desc="wider window (canvas)",
         restore={{desc="Move grouped window focus right",dsp=function() return hl.dsp.group.next() end}}},
     {chord="SUPER + CTRL + UP",resize={dh=-100},desc="shorter window (canvas)"},
-    {chord="SUPER + CTRL + DOWN",resize={dh=100},desc="taller window (canvas)"}}
+    {chord="SUPER + CTRL + DOWN",resize={dh=100},desc="taller window (canvas)"},
+    {chord="SUPER + CTRL + Page_Up",mode=CANVAS_MODES.scroll,token="pageup",desc="scroll canvas up (canvas)"},
+    {chord="SUPER + CTRL + Page_Down",mode=CANVAS_MODES.scroll,token="pagedown",desc="scroll canvas down (canvas)"}}
 local ON_TOP={desc="Reveal active window on top",dsp=function() return hl.dsp.window.bring_to_top() end}
 local TAKEOVER_KEYS={
     {chord="SUPER + TAB",mode=CANVAS_MODES.overview,desc="overview (canvas)",
@@ -103,6 +107,10 @@ local TAKEOVER_KEYS={
         restore={{desc="Focus on previous window",dsp=function() return hl.dsp.window.cycle_next({next=false}) end},ON_TOP}},
     {chord="ALT + ALT_L",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
     {chord="ALT + ALT_R",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
+    {chord="SUPER + mouse_up",mode=CANVAS_MODES.scroll,token="up",wheel=-1,desc="scroll canvas up (canvas)",
+        restore={{desc="Scroll active workspace backward",dsp=function() return hl.dsp.focus({workspace="e-1"}) end}}},
+    {chord="SUPER + mouse_down",mode=CANVAS_MODES.scroll,token="down",wheel=1,desc="scroll canvas down (canvas)",
+        restore={{desc="Scroll active workspace forward",dsp=function() return hl.dsp.focus({workspace="e+1"}) end}}},
 }
 local function directionKeys(key,token,direction,focus,swap)
     TAKEOVER_KEYS[#TAKEOVER_KEYS+1]={chord="SUPER + "..key,mode=CANVAS_MODES.neighbour,token=token,desc="neighbour "..token.." (canvas)",
@@ -957,10 +965,20 @@ local function readMode()
     local owner,mode,takeover,stamp=line:match("^v1 (%d+) (%a+) ([01]) (%d+)")
     return owner==session and mode=="canvas" and fresh(tonumber(stamp)),takeover=="1"
 end
+-- .controls is last-writer, so a wheel notch is "up:<run>:<count>": a run starts with a turn or after any
+-- other mode press, and the renderer scrolls every notch of the run since the line it last read.
+local wheelRun={id=0,count=0,dir=0,at=-1}
+local function publishWheel(entry)
+    if wheelRun.at~=fit_serial or wheelRun.dir~=entry.wheel then wheelRun.id=serial+1;wheelRun.count=0;wheelRun.dir=entry.wheel end
+    wheelRun.count=wheelRun.count+1
+    publish(0,entry.mode,hexToken(entry.token..":"..wheelRun.id..":"..wheelRun.count))
+    wheelRun.at=fit_serial
+end
 local function bindCanvasKey(entry)
     if entry.restore then hl.unbind(entry.chord) end
     local mode,token,step=entry.mode,entry.token and hexToken(entry.token) or nil,entry.resize
     local callback=step and function() resizeStaged(step) end or function() publish(0,mode,token) end
+    if entry.wheel then callback=function() publishWheel(entry) end end
     local binding=hl.bind(entry.chord,callback,{description="XR: "..entry.desc,release=entry.release})
     return {chord=entry.chord,restore=entry.restore,binding=binding}
 end

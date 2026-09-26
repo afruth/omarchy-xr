@@ -167,26 +167,34 @@ inline int paintSwitcher(cairo_t* cr, const List& l, const Style& s) {
     rows(cr, l, switcherWidth, 54, rowHeight, s);
     return height;
 }
-// Radar (§5.8): the full 360° around the heading, 2 px per degree, one mark per live window on its
-// row's lane (upper, middle, lower), the staged window in the accent, the view span as a lighter band.
-struct Mark { float offsetDeg=0, widthDeg=0; int row=0; bool staged=false; };
+// Radar (§5.8): the full 360° around the heading and the height around eye level, 2 px per degree
+// across; one mark per live window at its projected top and bottom (view heights, eye level 0), the
+// staged window in the accent, the view (±½ view height) as a lighter rectangle. The vertical scale
+// follows the occupied extent, clamped to 0.5..4 view heights either side.
+struct Mark { float offsetDeg=0, widthDeg=0, top=0, bottom=0; bool staged=false; };
 struct Radar { std::vector<Mark> marks; float viewDeg=0; };
-constexpr int radarWidth=720, radarHeight=72;
+constexpr int radarWidth=720, radarHeight=96;
 inline std::string radarKey(const Radar& r, const Style& s) {
+    const auto twentieth=[](float v) { return std::to_string(std::lround(v*20)); };
     std::string key=std::to_string(std::lround(r.viewDeg*2))+' '+colorKey(s.accent);
-    for(const auto& m:r.marks) key+=' '+std::to_string(std::lround(m.offsetDeg*2))+':'+std::to_string(std::lround(m.widthDeg*2))+':'+std::to_string(m.row)+(m.staged ? "s" : "");
+    for(const auto& m:r.marks) {
+        key+=' '+std::to_string(std::lround(m.offsetDeg*2))+':'+std::to_string(std::lround(m.widthDeg*2))+':'+twentieth(m.top)+':'+twentieth(m.bottom)+(m.staged ? "s" : "");
+    }
     return key;
 }
 inline int paintRadar(cairo_t* cr, const Radar& r, const Style& s) {
     card(cr, radarWidth, radarHeight, s);
-    const double mid=radarWidth/2., perDeg=(radarWidth-24)/360.;
+    const double mid=radarWidth/2., perDeg=(radarWidth-24)/360., centre=radarHeight/2.;
+    double extent=.5;
+    for(const auto& m:r.marks) extent=std::max({extent, std::abs(double(m.top)), std::abs(double(m.bottom))});
+    const double scale=(radarHeight/2.-10)/std::clamp(extent, .5, 4.);
     const double band=std::min<double>(r.viewDeg, 360)*perDeg;
-    roundedRect(cr, mid-band/2, 8, band, radarHeight-16, 6); notifications::source(cr, s.text, .12); cairo_fill(cr);
+    roundedRect(cr, mid-band/2, centre-scale/2, band, scale, 6); notifications::source(cr, s.text, .12); cairo_fill(cr);
     cairo_save(cr); roundedRect(cr, 12, 4, radarWidth-24, radarHeight-8, 12); cairo_clip(cr);
     for(const auto& m:r.marks) {
-        const double w=std::max(3., m.widthDeg*perDeg), y=radarHeight/2.+std::clamp(m.row, -1, 1)*18-6;
+        const double w=std::max(3., m.widthDeg*perDeg), y=centre+m.top*scale, h=std::max(4., (m.bottom-m.top)*scale);
         notifications::source(cr, m.staged ? s.accent : s.dim, m.staged ? 1 : .8);
-        for(const double wrap:{-360., 0., 360.}) { roundedRect(cr, mid+(m.offsetDeg+wrap)*perDeg-w/2, y, w, 12, 3); cairo_fill(cr); }
+        for(const double wrap:{-360., 0., 360.}) { roundedRect(cr, mid+(m.offsetDeg+wrap)*perDeg-w/2, y, w, h, 3); cairo_fill(cr); }
     }
     cairo_restore(cr);
     notifications::source(cr, s.text, .9); cairo_rectangle(cr, mid-1, 4, 2, radarHeight-8); cairo_fill(cr);
@@ -202,12 +210,13 @@ inline constexpr HelpRow helpRows[]={
     {"View", "SUPER+TAB", "overview", true}, {"View", "SUPER+CTRL+G", "search"}, {"View", "SUPER+F", "fill"},
     {"View", "SUPER+arrows", "neighbour", true}, {"View", "flick in / out", "land / zoom out"},
     {"View", "Ctrl+Down / 3-finger tap", "focus the gazed window"},
+    {"View", "SUPER+wheel / SUPER+CTRL+PgUp/PgDn", "scroll up / down"}, {"View", "4-finger pan", "pan / scroll"},
     {"Arrange", "SUPER+SHIFT+arrows", "nudge", true}, {"Arrange", "Ctrl+A", "arrange"}, {"Arrange", "Ctrl+Z / Ctrl+Shift+Z", "undo / redo"},
-    {"Arrange", "SUPER+left-drag", "move along the ring"}, {"Arrange", "SUPER+right-drag", "resize"},
+    {"Arrange", "SUPER+left-drag", "move (also up / down)"}, {"Arrange", "SUPER+right-drag", "resize"},
     {"Arrange", "SUPER+CTRL+arrows", "resize 100 px"}, {"Arrange", "SUPER+ALT+P", "pin"},
     {"Anywhere", "ALT+TAB", "switcher", true}, {"Anywhere", "three-finger double tap", "release pointer"}, {"Anywhere", "F1", "this help"},
 };
-constexpr int helpWidth=960, helpHeight=560;
+constexpr int helpWidth=1120, helpHeight=640;
 inline std::string helpKey(bool takeover, const Style& s) { return std::string("help ")+(takeover ? "1 " : "0 ")+colorKey(s.accent); }
 // Walks the rows as the card lays them out: header(section, x, y) and row(keys, action, x, y); returns
 // the bottom of the lowest row, so the preview smoke can check the card still holds every row.
@@ -219,9 +228,9 @@ template<class Header, class Row> int layoutHelp(bool takeover, Header&& header,
             section=r.section;
             // Find and View on the left, Arrange and Anywhere on the right.
             if(section=="Arrange") { column=1; y=76; }
-            header(section, 32+column*464, y+6); y+=38;
+            header(section, 32+column*544, y+6); y+=38;
         }
-        row(r, 32+column*464, y);
+        row(r, 32+column*544, y);
         y+=32; bottom=std::max(bottom, y-8);
     }
     return bottom;
@@ -233,10 +242,10 @@ inline int paintHelp(cairo_t* cr, const Style& s, bool takeover=true) {
     notifications::text(cr, "F1 or Esc closes", s.dim, helpWidth-272, 28, 240, 17, 1, false, true);
     layoutHelp(takeover, [&](const std::string& section, int x, int y) { notifications::text(cr, section, s.accent, x, y, 400, 19, 1, true); },
                [&](const HelpRow& row, int x, int y) {
-                   notifications::text(cr, row.keys, s.text, x, y, 200, 17, 1, true);
-                   notifications::text(cr, row.action, s.dim, x+210, y, 220, 17, 1);
+                   notifications::text(cr, row.keys, s.text, x, y, 340, 17, 1, true);
+                   notifications::text(cr, row.action, s.dim, x+350, y, 180, 17, 1);
                });
-    if(!takeover) notifications::text(cr, "SUPER+TAB, SUPER+arrows and ALT+TAB keep Omarchy's keys (takeover off in Studio)", s.dim, 32, helpHeight-44, helpWidth-64, 15, 1);
+    if(!takeover) notifications::text(cr, "SUPER+TAB, SUPER+arrows, SUPER+wheel and ALT+TAB keep Omarchy's keys (takeover off in Studio)", s.dim, 32, helpHeight-44, helpWidth-64, 15, 1);
     return helpHeight;
 }
 // A textured quad facing the eye, depth test off, premultiplied blend (the label state block). An

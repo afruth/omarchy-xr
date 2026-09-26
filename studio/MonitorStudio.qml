@@ -1724,7 +1724,7 @@ Item {
                                     Label {
                                         Layout.fillWidth: true
                                         text: "Take over Omarchy window keys in canvas mode"
-                                        helpText: "SUPER + TAB, ALT + TAB, SUPER + arrows and SUPER + SHIFT + arrows drive the canvas while this is on; SUPER + F, SUPER + CTRL + G and SUPER + ALT + P are always taken"
+                                        helpText: "SUPER + TAB, ALT + TAB, SUPER + arrows, SUPER + SHIFT + arrows and SUPER + wheel drive the canvas while this is on; SUPER + F, SUPER + CTRL + G, SUPER + ALT + P and SUPER + CTRL + Page_Up/Down are always taken"
                                     }
                                     Ui.ToggleSwitch {
                                         checked: root.canvasDraft.takeoverKeys !== false

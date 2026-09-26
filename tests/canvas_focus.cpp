@@ -50,7 +50,7 @@ void placedAndLanded(View& v) {
     assert(v.canvas->live()==12 && v.canvas->stagedName=="0x5005" && v.canvas->state==canvas::Scene::State::Work);
     std::set<int> rows;
     for (const auto& w:v.canvas->windows) rows.insert(canvas::rowFor(w.rect.cy(), v.canvas->metrics));
-    assert(rows.size()==3);
+    assert(rows.size()>=3 && rows.count(0));   // the 2D spiral spreads above and below eye height (M8)
     noOverlap(v); panInsideRing(v);
     assert(stagedOffset(v)<1);
     v.navigate({View::Verb::Fit}); assert(v.canvas->state==canvas::Scene::State::Overview);
@@ -149,6 +149,7 @@ void workAndOverview(View& v) {
     const auto& ring=v.canvas->ring; const auto& m=v.canvas->metrics;
     for (const auto& l:v.sceneGeometry()) {
         assert(angle(ring.heading(l.x)-heading)<=half+.5f && angle(ring.heading(l.x+l.width)-heading)<=half+.5f);
+        if (!v.canvas->find(l.output)) continue;   // a closed window fading out is not part of the fit
         assert(l.y>=v.canvas->aimY-m.viewH/2-1 && l.y+l.height<=v.canvas->aimY+m.viewH/2+1);
     }
     const double now=monotonicSeconds();
@@ -184,15 +185,18 @@ void zoomAnchor(View& v) {
     assert(v.canvas->state==canvas::Scene::State::Overview && c.targetZoom<.9f*full);
     ease(v, 60);
 }
-// Point the view so the window shows about 60 % of itself.
+// Point the view so the window shows about 60 % of itself: pitched to its height (M8: the share is the
+// smaller of the horizontal and the vertical one), then turned along the ring.
 void partlyVisible(View& v, const std::string& name) {
     const auto* w=v.canvas->find(name); assert(w);
+    const float eye=v.canvas->working() ? v.canvas->depth : v.canvas->ring.radius;
+    const float pitch=std::atan(-v.canvas->targetView(w->rect).cy()/(900*eye))*180/pi;
     float best=0, bestShare=-1;
     for (float h=-180;h<180;h+=.25f) {
-        v.canvas->cull(h, 20); const float share=v.canvas->visibleShare(*w);
+        v.canvas->cull(h, 20, pitch); const float share=v.canvas->visibleShare(*w);
         if (share<.9f && std::abs(share-.6f)<std::abs(bestShare-.6f)) { best=h; bestShare=share; }
     }
-    v.canvas->cull(best, 20);
+    v.canvas->cull(best, 20, pitch);
     assert(std::abs(v.canvas->visibleShare(*w)-.6f)<.1f);
 }
 // (d) Focus follow moves the camera only for a mostly hidden window, and an explicit verb wins.
@@ -407,7 +411,7 @@ void sceneMemory(const std::string& temp) {
         AsyncFile::instance().flush();
         const auto text=readFile(path);
         assert(text.find("window\tfoot\tnotes\t")!=std::string::npos && text.find("window\tfoot\tmail\t")!=std::string::npos);
-        assert(text.find("camera\t500\t0\t0.5\n")!=std::string::npos && !s.memory.dirty);
+        assert(text.find("camera\t500\t0\t0.5\t0\n")!=std::string::npos && !s.memory.dirty);
     }
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, path, true);
     assert(s.memory.camera && s.restoreCamera({}));
@@ -431,15 +435,16 @@ void sizeAndParent() {
     assert(std::abs(s.ring.wrap(dialog.cx()-parent.cx()))<=parent.w/2+dialog.w+2*s.settings.gapPx);
     assert(std::abs(s.ring.wrap(other.cx()))<std::abs(s.ring.wrap(other.cx()-parent.cx())));
 }
-// A full ring stacks the rest at the focus: snapped, unwrapped, logged.
+// A full search area stacks the rest at the focus: snapped, unwrapped, logged. M8: the spiral reaches 16
+// rows up and down; windows almost half a ring wide fit two per row, so 80 of them overflow its 66 places.
 void noFreePlace() {
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
     std::vector<windows::Record> many;
-    for (int i=0;i<40;++i) many.push_back(record(0xb000u+unsigned(i), "full "+std::to_string(i), 1600, 700, i, 100+i));
+    for (int i=0;i<80;++i) many.push_back(record(0xb000u+unsigned(i), "full "+std::to_string(i), 6700, 700, i, 100+i));
     s.adopt(listOf(many), 1);
-    canvas::Rect fallback=canvas::snap({-800, -350, 1600, 700}); fallback.x=s.ring.unwrap(fallback.x);
+    canvas::Rect fallback=canvas::snap({-3350, -350, 6700, 700}); fallback.x=s.ring.unwrap(fallback.x);
     const auto stacked=std::count_if(s.windows.begin(), s.windows.end(), [&](const auto& w) { return sameRect(w.rect, fallback); });
-    assert(s.live()==40 && stacked>=2);
+    assert(s.live()==80 && stacked>=2);
     for (const auto& w:s.windows) assert(w.rect.x>=0 && w.rect.x<s.ring.period());
 }
 // deliver: every update is a new w x h CPU frame; demanded: the last setDemand visibility.
@@ -553,14 +558,15 @@ void firstMailboxLands(SDL_Window* window, const std::string& temp) {
     assert(stagedOffset(v)<1);
     v.finishCanvas();
 }
-// Windows grouped by category are contiguous in packing order: rows 0, +1, -1, then along the ring from the heading.
-void groupsContiguous(const canvas::Scene& s, float headingX) {
+// Windows grouped by category are contiguous in packing order: the gaze row, then +1, -1, +2 ..., then
+// along the ring from the arc's left edge (M8's block, at most half a ring wide here).
+void groupsContiguous(const canvas::Scene& s, float headingX, float headingY) {
     std::vector<std::tuple<int,float,std::string>> order;
-    const int rank[3]={2, 0, 1};
+    const int base=canvas::rowFor(headingY, s.metrics);
     for (const auto& w:s.windows) {
         if (w.gone || w.pinned) continue;
-        const int row=std::clamp(canvas::rowFor(w.rect.cy(), s.metrics), -1, 1);
-        order.emplace_back(rank[row+1], s.ring.unwrap(w.rect.x-headingX), canvas::categoryName(canvas::category(w.record.cls, w.record.title)));
+        const int d=canvas::rowFor(w.rect.cy(), s.metrics)-base;
+        order.emplace_back(d>0 ? 2*d-1 : -2*d, s.ring.unwrap(w.rect.x-headingX+s.ring.period()/4), canvas::categoryName(canvas::category(w.record.cls, w.record.title)));
     }
     std::sort(order.begin(), order.end());
     std::set<std::string> closed; std::string last;
@@ -571,7 +577,7 @@ void groupsContiguous(const canvas::Scene& s, float headingX) {
         last=group;
     }
 }
-// Arrange on a canvas that fits: no overlap, categories contiguous, inside the band, pinned windows stay.
+// Arrange on a canvas that fits: no overlap, categories contiguous, pinned windows stay.
 void arrangeFits() {
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
     // Two terminal classes on either side of code in MRU order (foot 1, code 2, alacritty 4): Terminal stays one run.
@@ -581,14 +587,69 @@ void arrangeFits() {
     s.adopt(listOf(records), 1);
     s.findMutable("0xd003")->pinned=true; const auto pinnedAt=s.find("0xd003")->rect;
     s.overview({});
-    const float headingX=s.headingPoint().first;
+    const auto [headingX, headingY]=s.headingPoint();
     assert(s.arrange({}) && s.history.undo.size()==1);
     for (const auto& a:s.windows) {
-        assert(canvas::inBand(a.rect, s.metrics));
         for (const auto& b:s.windows) if (&a!=&b && !a.pinned && !b.pinned) assert(!canvas::overlaps(a.rect, b.rect, 0, s.ring.period()));
     }
     assert(sameRect(s.find("0xd003")->rect, pinnedAt));
-    groupsContiguous(s, headingX);
+    groupsContiguous(s, headingX, headingY);
+}
+// M8: the pitched view. A view whose forward points up has a positive pitch; looking up puts the look
+// point above eye level (canvas y negative) and down below it, from the ring centre in Overview and from
+// the eye's depth in Work. New windows and the Arrange block start at that height.
+void pitchedLook() {
+    for (float a:{10.f, -10.f}) {
+        const auto view=targeting::viewRotation({}, a, 0);
+        const float up=targeting::rotate(tracking::conjugate(view), {0, 0, -1}).y;
+        assert(std::abs(std::abs(View::pitchDeg(view))-10)<.01f && (View::pitchDeg(view)>0)==(up>0));
+    }
+    canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
+    s.adopt(listOf({record(0xe001, "a", 1280, 720, 0, 90), record(0xe002, "b", 1280, 720, 1, 91)}), 1);
+    s.overview({}); s.snap();
+    const auto& c=s.camera; const float perTan=900*s.ring.radius, heading=s.ring.heading(s.aimX), t15=std::tan(15*spatial::pi/180);
+    for (float pitch:{15.f, -15.f}) {
+        s.cull(heading, 180, pitch);
+        const auto [x, y]=s.lookPoint();
+        assert(std::abs(y-canvas::unprojectY(c, s.aimY-(pitch>0 ? t15 : -t15)*perTan))<1 && (pitch>0 ? y<c.focusY-500 : y>c.focusY+500));
+        assert(std::abs(s.ring.wrap(x-canvas::unprojectX(c, s.ring, s.aimX)))<1);
+    }
+    s.cull(heading, 180, 30);   // clear of both windows
+    const auto [lookX, lookY]=s.lookPoint();
+    s.adopt(listOf({record(0xe001, "a", 1280, 720, 0, 90), record(0xe002, "b", 1280, 720, 1, 91), record(0xe003, "c", 600, 400, 2, 92)}), 2);
+    const auto added=s.find("0xe003")->rect;
+    assert(std::abs(added.cy()-lookY)<=20 && std::abs(s.ring.wrap(added.cx()-lookX))<=20);
+    s.snap(); s.cull(heading, 180, 30);
+    const auto arrangeY=s.lookPoint().second;
+    assert(s.arrange({}));
+    std::set<int> rows;   // the gaze row first, then one above or below
+    for (const auto& w:s.windows) rows.insert(canvas::rowFor(w.rect.cy(), s.metrics)-canvas::rowFor(arrangeY, s.metrics));
+    assert(rows.count(0) && *rows.begin()>=-1 && *rows.rbegin()<=1);
+    s.land("0xe001", {}); s.snap();
+    assert(s.working() && s.depth<s.ring.radius-.1f);
+    const float head=s.ring.heading(s.aimX), t10=std::tan(10*spatial::pi/180);
+    s.cull(head, 180, 10);   // from the eye's depth, not the ring centre
+    assert(std::abs(s.lookPoint().second-canvas::unprojectY(c, s.aimY-t10*900*s.depth))<1);
+    s.cull(head+10, 180, 0);   // a turned head meets the wall nearer than the ring-centre heading
+    const float turned=s.ring.wrap(s.viewRay().x-s.aimX);
+    assert(turned>0 && turned<10*s.ring.pxPerDeg()-50 && std::abs(s.viewRay().y-s.aimY)<1e-3f);
+}
+// M8: the radar's heights are projected view heights (scroll included) and a vertical move redraws it.
+void radarHeights() {
+    canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
+    s.adopt(listOf({record(0xe101, "a", 800, 600, 0, 90)}), 1);
+    s.land("0xe101", {}); s.snap();
+    auto* w=s.findMutable("0xe101"); const float H=s.metrics.viewH, z=s.camera.zoom;
+    w->rect.y=s.camera.focusY-3*H/z; w->rect.h=.5f*H/z; s.refresh(1);   // three view heights above the focus
+    const float eye=s.camera.focusY-s.camera.scrollY;   // projected y of the focus
+    auto mark=s.radarView().marks.at(0);
+    assert(std::abs(mark.top-(eye/H-3))<1e-3f && std::abs(mark.bottom-(eye/H-2.5f))<1e-3f);
+    const auto key=canvas::overlay::radarKey(s.radarView(), {});
+    s.camera.scrollY-=H;   // one view height up
+    mark=s.radarView().marks.at(0);
+    assert(std::abs(mark.top-(eye/H-2))<1e-3f && std::abs(mark.bottom-(eye/H-1.5f))<1e-3f);
+    s.camera.scrollY+=H; assert(canvas::overlay::radarKey(s.radarView(), {})==key);
+    w->rect.y+=.06f*H/z; assert(canvas::overlay::radarKey(s.radarView(), {})!=key);
 }
 // The palette never covers the selection: its bottom edge clears the palette top by 1.5°, its top stays in
 // view; a selection too tall for that band lowers the Search zoom, one that fits keeps it.
@@ -596,8 +657,8 @@ void paletteClear() {
     canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
     s.adopt(listOf({record(0xe001, "tall editor", 1200, 1000, 1, 300), record(0xe002, "small note", 700, 400, 0, 301)}), 1);
     const auto edges=[&](const std::string& name) {
-        const auto* w=s.find(name); const float perTan=900*s.ring.radius, h=w->rect.h*s.camera.targetZoom, c=s.aimY-s.camera.targetFocusY;
-        assert(std::abs(s.camera.targetFocusY-w->rect.cy())<1e-3f);
+        const auto* w=s.find(name); const float perTan=900*s.ring.radius, h=w->rect.h*s.camera.targetZoom, c=s.aimY-s.targetView(w->rect).cy();
+        assert(std::abs(s.camera.targetFocusY-w->rect.cy())<1e-3f && std::abs(s.targetView(w->rect).cy())<1e-3f);   // at eye level (M8)
         return std::pair{std::atan((c-h/2)/perTan)*180/float(pi), std::atan((c+h/2)/perTan)*180/float(pi)};
     };
     s.overview({}); s.camera.targetZoom=1;   // one window at zoom 1 is about 26° tall
@@ -694,7 +755,7 @@ void searchLandingBeatsGaze(View& v) {
     const auto& s=v.canvas->search; const auto* w=v.canvas->find("0x5007");
     assert(s.query=="term 20487" && !s.results.empty() && s.results.front().name=="0x5007" && v.canvas->selectedResult()=="0x5007");
     assert(std::abs(v.canvas->ring.wrap(v.canvas->camera.targetFocusX-w->rect.cx()))<1 && std::abs(v.canvas->camera.targetFocusY-w->rect.cy())<1);
-    assert(v.canvas->aimY>w->rect.cy()+.2f*v.canvas->metrics.viewH);
+    assert(v.canvas->aimY>v.canvas->targetView(w->rect).cy()+.2f*v.canvas->metrics.viewH);
     assert(v.canvas->haloTarget("0x5007")==1 && v.canvas->haloTarget("0x5003")==0 && v.canvas->brightness(*v.canvas->find("0x5003"), 0)<50);
     const auto hit=hitOn(v, "0x5003"); const double start=monotonicSeconds()+1;
     for (double t=start;t<start+3;t+=.05) v.dwellOn(hit, t);
@@ -852,10 +913,8 @@ void arrangeUndo(View& v) {
     v.navigate({View::Verb::Arrange});
     const auto arranged=v.canvas->snapshot();
     assert(!sameLayout(before, arranged) && v.canvas->zoomedOut());
-    // This set overflows the ring (900 px tall windows fit row 0 only), so the rest keep their places;
-    // arrangeFits checks overlap and grouping on a set that fits.
-    ease(v, 120); panInsideRing(v);
-    for (const auto& w:v.canvas->windows) assert(w.gone || canvas::inBand(w.rect, v.canvas->metrics));
+    // M8: the block takes every window (rows above and below as needed); arrangeFits checks the grouping.
+    ease(v, 120); panInsideRing(v); noOverlap(v);
     v.navigate({View::Verb::Undo}); assert(sameLayout(before, v.canvas->snapshot()));
     ease(v, 60); panInsideRing(v);
     v.navigate({View::Verb::Redo}); assert(sameLayout(arranged, v.canvas->snapshot()));
@@ -864,7 +923,7 @@ void arrangeUndo(View& v) {
     for (const auto& [name, cls]:classes) v.canvas->findMutable(name)->record.cls="foot";
     ease(v, 60); assert(v.monitorMathCalls==0);
 }
-// (r2) Arrange from Work (Studio, the pose verb, SDL Ctrl+A) packs from the view heading, ends in Overview
+// (r2) Arrange from Work (Studio, the pose verb, SDL Ctrl+A) packs around the view heading, ends in Overview
 // over the new layout and undoes exactly.
 void arrangeFromWork(View& v) {
     work(v); landOn(v, "0x5005");
@@ -872,9 +931,11 @@ void arrangeFromWork(View& v) {
     const float headingX=v.canvas->headingPoint().first;
     v.navigate({View::Verb::Arrange});
     assert(v.canvas->state==State::Overview && v.canvas->history.undo.size()==undos+1 && !sameLayout(before, v.canvas->snapshot()));
+    // M8: the block is centred on the heading; its first column starts at the arc's left edge.
+    const float left=std::round(headingX-canvas::arrangeArc(v.canvas->arrangeable(), v.canvas->metrics, v.canvas->ring, v.canvas->settings.gapPx)/2);
     float nearest=INFINITY;
-    for (const auto& w:v.canvas->windows) if (!w.gone && !w.pinned) nearest=std::min(nearest, std::abs(v.canvas->ring.wrap(w.rect.x-headingX)));
-    assert(nearest<=v.canvas->settings.gapPx+1);
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.pinned) nearest=std::min(nearest, std::abs(v.canvas->ring.wrap(w.rect.x-left)));
+    assert(nearest<=1);
     ease(v, 120); panInsideRing(v);
     v.navigate({View::Verb::Undo}); assert(sameLayout(before, v.canvas->snapshot()));
     ease(v, 60); assert(v.monitorMathCalls==0);
@@ -912,6 +973,13 @@ void neighbourNudgeSummonPin(View& v) {
     v.navigate({.verb=View::Verb::Nudge, .output="right"});
     assert(sameRect(w.rect, step) && std::abs(v.canvas->ring.wrap(w.rect.x-r0.x)-canvas::nudgeStep)<=10);
     v.navigate({View::Verb::Undo}); assert(sameRect(w.rect, r0));
+    const auto undos=v.canvas->history.undo.size();   // M8: nudged up past the old three rows
+    const int ups=int(std::ceil((r0.cy()+1.5f*v.canvas->metrics.rowHeight)/canvas::nudgeStep))+1;
+    for (int i=1;i<=ups;++i) { v.navigate({.verb=View::Verb::Nudge, .output="up"}); assert(v.canvas->history.undo.size()==undos+size_t(i)); }
+    assert(w.rect.cy()< -1.5f*v.canvas->metrics.rowHeight && std::abs(w.rect.y-(r0.y-ups*canvas::nudgeStep))<=10);
+    for (int i=0;i<ups;++i) v.navigate({View::Verb::Undo});
+    assert(sameRect(w.rect, r0) && v.canvas->history.undo.size()==undos);
+    ease(v, 60);
     v.navigate({View::Verb::FlickOut}); ease(v, 60);
     const auto* mover=v.canvas->find("0x5003"); auto others=v.canvas->taken();
     std::erase_if(others, [](const auto& p) { return p.name=="0x5003"; });
@@ -954,6 +1022,8 @@ void bringToCanvas(View& v) {
     assert(f[3]=="1" && f[4]=="0x9100" && f[7]==std::to_string(serial+1));
     write(mailbox(v)+".windows", listWithChrome(v.windowsSeq+1, true)); v.steer();
     assert(v.canvas->find("0x9100") && v.canvas->landed=="0x9100" && v.canvas->state==State::Work && v.canvas->bringRequested.empty());
+    // M8: the 2D spiral may place it rows above or below; the landing scrolls it to eye level.
+    assert(std::abs(v.canvas->targetView(v.canvas->find("0x9100")->rect).cy())<1);
     ease(v, 120); panInsideRing(v);
 }
 void sendPose(View& v, const std::string& packet) {
@@ -993,11 +1063,13 @@ void takeoverFlag(View& v) {
     heartbeat("0"); assert(!v.canvas->settings.takeoverKeys);
     heartbeat("1"); assert(v.canvas->settings.takeoverKeys);
 }
-// M6 new-window cues. A remembered rect claimed by the next window of that title, found free near x.
+// M6 new-window cues. A remembered rect claimed by the next window of that title, found free near x at
+// the height of the heading point (M8: the landing scrolled it to eye level).
 canvas::Rect freeNear(const canvas::Scene& s, float x, float w, float h) {
-    for (float dx=0;dx<4000;dx+=100) for (float sign:{1.f, -1.f}) for (float row:{0.f, -s.metrics.rowHeight, s.metrics.rowHeight}) {
+    const float y=s.headingPoint().second;
+    for (float row:{y, y-s.metrics.rowHeight, y+s.metrics.rowHeight}) for (float dx=0;dx<4000;dx+=100) for (float sign:{1.f, -1.f}) {
         canvas::Rect r=canvas::snap({x+sign*dx-w/2, row-h/2, w, h}); r.x=s.ring.unwrap(r.x);
-        if (canvas::inBand(r, s.metrics) && canvas::freeAt(r, s.taken(), s.settings.gapPx, s.ring.period())) return r;
+        if (canvas::freeAt(r, s.taken(), s.settings.gapPx, s.ring.period())) return r;
     }
     assert(false); return {};
 }
@@ -1062,7 +1134,7 @@ void newWindowCues(View& v) {
     assert(fresh.primed && fresh.live()==2);
     for (const auto& w:fresh.windows) assert(w.pulseUntil==0 && w.cueUntil==0);
 }
-// (x) The Overview mouse drag: snapped, overlap allowed, clamped to the band, remembered and undoable; a
+// (x) The Overview mouse drag: snapped, overlap allowed, free in y (M8), remembered and undoable; a
 // press without motion is a click, and in Work a press never drags.
 void overviewDrag(View& v) {
     using V=View::Verb;
@@ -1077,7 +1149,11 @@ void overviewDrag(View& v) {
     v.navigate({V::Undo}); assert(sameRect(w->rect, start));
     ease(v, 60); panInsideRing(v);
     s.dragBegin("0x5003"); s.dragBy(0, 5000);
-    assert(!s.dragEnd() && sameRect(w->rect, start) && s.history.undo.size()==undos);
+    assert(s.dragEnd() && w->rect.y==start.y+5000 && w->rect.x==start.x && s.history.undo.size()==undos+1);
+    v.navigate({V::Undo}); assert(sameRect(w->rect, start) && s.history.undo.size()==undos);
+    s.dragBegin("0x5003"); s.dragBy(0, -3*s.metrics.rowHeight-2000);   // far above the old three rows
+    assert(s.dragEnd() && w->rect.y==canvas::snap({0, start.y-3*s.metrics.rowHeight-2000, 1, 1}).y && w->rect.x==start.x);
+    v.navigate({V::Undo}); assert(sameRect(w->rect, start) && s.history.undo.size()==undos);
     // A pinned window does not drag: no motion, no checkpoint.
     s.findMutable("0x5003")->pinned=true;
     s.dragBegin("0x5003"); s.dragBy(400, 0);
@@ -1129,11 +1205,12 @@ void notificationInsideRing(View& v) {
     std::filesystem::remove(folder+"/notifications.json");
 }
 // M7 interaction follow-up. Helpers: a controls line (the Lua adapter's .controls, v3 with a mode and
-// no target), a .drag line (the .pan codec) and a mailbox list without a stage row.
-void controlsMode(View& v, int mode) {
+// an optional target), a .drag line (the .pan codec) and a mailbox list without a stage row.
+void controlsMode(View& v, int mode, const std::string& target="") {
     static unsigned long long serial=0;
     ++serial;
-    std::ostringstream line; line << "v3 " << getpid() << ' ' << serial << " 0 " << serial << ' ' << mode << " - " << bootNow() << '\n';
+    std::ostringstream line;
+    line << "v3 " << getpid() << ' ' << serial << " 0 " << serial << ' ' << mode << ' ' << (target.empty() ? "-" : windows::encodeHex(target)) << ' ' << bootNow() << '\n';
     write(mailbox(v), line.str()); v.steer();
 }
 void dragLine(View& v, unsigned long long seq, unsigned long long id, double dx, double dy, bool active) {
@@ -1234,7 +1311,7 @@ void stagedCloseLandsNext(View& v) {
     ease(v, 120); inRing(v);
 }
 // (z5) SUPER+left-drag (.drag) moves the staged window in Work: snapped, one checkpoint, remembered,
-// undoable; a drop outside the rows reverts; in Overview nothing moves.
+// undoable; a drop far below or far above lands there too (M8: free in y); in Overview nothing moves.
 void stageDrag(View& v) {
     auto& s=*v.canvas;
     work(v); restagedByXr(v, "0x5005"); landOn(v, "0x5005");
@@ -1251,9 +1328,20 @@ void stageDrag(View& v) {
     ease(v, 60); panInsideRing(v);
     v.navigate({View::Verb::Undo}); assert(sameRect(w->rect, start));
     dragLine(v, 4, 2, 0, 0, true); dragLine(v, 5, 2, 0, 5000, true); dragLine(v, 6, 2, 0, 5000, false);
-    assert(sameRect(w->rect, start) && s.history.undo.size()==undos && !v.dragHeld);
+    // M8: the drop lands (the .drag codec clamps one update to 1000 px of travel).
+    assert(w->rect.y==canvas::snap({0, start.y+1000*k, 1, 1}).y && s.history.undo.size()==undos+1 && !v.dragHeld);
+    ease(v, 60); v.navigate({View::Verb::Undo}); assert(sameRect(w->rect, start) && s.history.undo.size()==undos);
+    ease(v, 60); landOn(v, "0x5005");
+    // M8: a drop far above the old three rows, in 1000 px updates.
+    dragLine(v, 9, 4, 0, 0, true);
+    for (int i=1;i<=3;++i) dragLine(v, 9+i, 4, 0, -1000.*i, true);
+    dragLine(v, 13, 4, 0, -3000, false);
+    const float k2=s.settings.outputScale/std::max(s.camera.zoom, .05f);
+    assert(w->rect.y==canvas::snap({0, start.y-3000*k2, 1, 1}).y && w->rect.cy()<-1.5f*s.metrics.rowHeight);
+    assert(s.history.undo.size()==undos+1 && !v.dragHeld);
+    ease(v, 60); v.navigate({View::Verb::Undo}); assert(sameRect(w->rect, start) && s.history.undo.size()==undos);
     ease(v, 60); v.navigate({View::Verb::FlickOut}); ease(v, 60);
-    dragLine(v, 7, 3, 0, 0, true); dragLine(v, 8, 3, 200, 0, false);
+    dragLine(v, 14, 5, 0, 0, true); dragLine(v, 15, 5, 200, 0, false);
     assert(sameRect(w->rect, start) && !v.dragHeld && s.dragName.empty());
     work(v); inRing(v);
 }
@@ -1307,6 +1395,117 @@ void confirmHint(View& v, const std::string& temp) {
     v.pollConfirmKey(); assert(s.hintText()=="Three-finger tap to focus");
     std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
     ease(v, 120); v.interactionUntil=0; inRing(v);
+}
+// M8 full cylinder. The landed window's projected centre under the target camera (0 = eye level).
+float eyeOffset(const View& v, const std::string& name) {
+    const auto* w=v.canvas->find(name); assert(w);
+    return v.canvas->targetView(w->rect).cy();
+}
+void panLine(View& v, unsigned long long seq, unsigned long long id, double dx, double dy, bool active) {
+    std::ostringstream line; line << "v2 " << getpid() << ' ' << seq << ' ' << id << ' ' << dx << ' ' << dy << ' ' << (active ? 1 : 0) << ' ' << bootNow() << '\n';
+    write(mailbox(v)+".pan", line.str()); v.steer();
+}
+// (m1) Verb::Scroll, page keys to the clamp, the vertical 4-finger pan (grab: content follows the finger)
+// and mode 19 through .controls, which monitor mode refuses.
+void scrollVerbs(View& v) {
+    work(v); landOn(v, "0x5005");
+    auto& s=*v.canvas; auto& c=s.camera; const float viewH=s.metrics.viewH;
+    auto [lo, hi]=s.scrollLimits();
+    assert(hi-lo>2*viewH && std::abs(eyeOffset(v, "0x5005"))<1);
+    c.targetScrollY=(lo+hi)/2; float before=c.targetScrollY;
+    v.navigate({.verb=View::Verb::Scroll, .y=-.8f}); assert(std::abs(c.targetScrollY-(before-.8f*viewH))<1e-2f);
+    v.navigate({.verb=View::Verb::Scroll, .y=.8f}); assert(std::abs(c.targetScrollY-before)<1e-2f);
+    for (int i=0;i<60;++i) v.navigate({.verb=View::Verb::Scroll, .y=.8f});
+    std::tie(lo, hi)=s.scrollLimits();
+    assert(c.targetScrollY==hi);
+    const float focusY=c.targetFocusY, aimY=s.aimY; before=c.targetScrollY;
+    panLine(v, 1, 900, 0, 400, true); panLine(v, 2, 900, 0, 400, false);
+    assert(std::abs(c.targetScrollY-(before-viewH))<1e-2f && c.targetFocusY==focusY && s.aimY==aimY);
+    before=c.targetScrollY;
+    controlsMode(v, 19, "pageup"); assert(std::abs(c.targetScrollY-(before-.8f*viewH))<1e-2f);
+    controlsMode(v, 19, "down"); assert(std::abs(c.targetScrollY-(before-.6f*viewH))<1e-2f);
+    before=c.targetScrollY;   // wheel runs: every notch since the last line read, a new run from its start
+    controlsMode(v, 19, "up:70:1"); assert(std::abs(c.targetScrollY-(before-.2f*viewH))<1e-2f);
+    controlsMode(v, 19, "up:70:4"); assert(std::abs(c.targetScrollY-(before-.8f*viewH))<1e-2f);
+    controlsMode(v, 19, "down:75:2"); assert(std::abs(c.targetScrollY-(before-.4f*viewH))<1e-2f);
+    controlsMode(v, 19, "down:80:40"); assert(std::abs(c.targetScrollY-(before+.6f*viewH))<1e-2f);   // at most 5
+    before=c.targetScrollY;
+    v.controls->canvasMode=false; controlsMode(v, 19, "pagedown"); v.controls->canvasMode=true; v.steer();
+    assert(c.targetScrollY==before);
+    ease(v, 120); inRing(v);
+}
+// (m2) Every landing brings its window to eye level: neighbour up to a window far above, focus follow of
+// one far below (the vertical share), search Enter, the switcher; Esc reverts the scroll; the camera row
+// carries the scroll into a new scene.
+void scrollLandings(View& v, const std::string& temp) {
+    using V=View::Verb;
+    work(v); landOn(v, "0x5005");
+    auto& s=*v.canvas; auto* high=s.findMutable("0x5007"); auto* low=s.findMutable("0x5009");
+    const auto highFrom=high->rect, lowFrom=low->rect, base=s.find("0x5005")->rect;
+    float top=INFINITY, bottom=-INFINITY;
+    for (const auto& r:s.liveRects()) { top=std::min(top, r.y); bottom=std::max(bottom, r.y+r.h); }
+    high->rect.x=s.ring.unwrap(base.cx()-high->rect.w/2); high->rect.y=top-3*s.metrics.rowHeight-high->rect.h;
+    low->rect.x=s.ring.unwrap(base.cx()-low->rect.w/2); low->rect.y=bottom+3000; s.refresh(s.clock);
+    for (int i=0;i<12 && s.landed!="0x5007";++i) {
+        const auto from=s.landed; v.navigate({.verb=V::Neighbour, .output="up"});
+        assert(s.landed!=from && std::abs(eyeOffset(v, s.landed))<1); ease(v, 30);
+    }
+    assert(s.landed=="0x5007"); ease(v, 120); inRing(v);
+    landOn(v, "0x5005");
+    const float scroll=s.camera.targetScrollY; assert(s.visibleShare(*low)<.9f);
+    v.interactionUntil=0; v.navigate({.verb=V::FitOutput, .output="0x5009"});
+    assert(s.landed=="0x5009" && s.camera.targetScrollY!=scroll && std::abs(s.aimY)<1 && std::abs(eyeOffset(v, "0x5009"))<1);
+    ease(v, 120); inRing(v);
+    v.navigate({V::Search}); v.searchInput("term 20487", "-"); v.searchInput("term 20487", "enter");   // 0x5007
+    assert(s.landed=="0x5007" && std::abs(eyeOffset(v, "0x5007"))<1);
+    ease(v, 120); landOn(v, "0x5005");
+    v.navigate({V::Switch, 1}); v.navigate({.verb=V::Switch, .begin=true});
+    assert(s.landed!="0x5005" && std::abs(eyeOffset(v, s.landed))<1);
+    ease(v, 120); landOn(v, "0x5005");
+    const float landedScroll=s.camera.targetScrollY;
+    v.navigate({V::Search}); v.searchInput("term 20489", "-");   // 0x5009, far below
+    assert(s.camera.targetScrollY!=landedScroll);
+    v.searchInput("term 20489", "esc"); v.searchInput("", "esc");
+    assert(!s.search.open && s.camera.targetScrollY==landedScroll);
+    high->rect=highFrom; low->rect=lowFrom; s.refresh(s.clock);
+    ease(v, 120);
+    const bool remember=s.rememberCamera; s.rememberCamera=true; s.memory.camera.reset();
+    s.camera.targetScrollY+=200; s.snap(); s.noteCamera(s.clock); s.rememberCamera=remember;
+    const auto text=s.memory.serialize(); const auto row=text.find("camera\t");
+    assert(row!=std::string::npos && std::count(text.begin()+long(row), text.begin()+long(text.find('\n', row)), '\t')==4);
+    write(temp+"/scroll-memory.tsv", text);
+    canvas::Scene fresh(canvas::Ring{}, canvas::Settings{}, temp+"/scroll-memory.tsv", true);
+    assert(fresh.restoreCamera({}) && std::abs(fresh.camera.targetScrollY-s.camera.targetScrollY)<.01f);
+    landOn(v, "0x5005"); inRing(v);
+}
+// (m3) A window far above the view is no cull candidate, invisible and idle; scrolled in, it shows. A new
+// window three view heights above gets the edge cue.
+void scrollCulling(View& v) {
+    work(v); landOn(v, "0x5005");
+    auto& s=*v.canvas; auto* w=s.findMutable("0x5009"); const auto from=w->rect, base=s.find("0x5005")->rect;
+    const float eye=s.headingPoint().second;
+    w->rect.x=s.ring.unwrap(base.cx()-w->rect.w/2); w->rect.y=eye-4000-w->rect.h/2; s.refresh(s.clock);
+    ease(v, 2); v.projectPanels(1280, 720, monotonicSeconds());
+    assert(!w->candidate && !w->visible && w->decision.rateHz==0 && w->decision.tier==governor::Tier::Idle);
+    v.navigate({.verb=View::Verb::Scroll, .y=-4000/s.metrics.viewH});
+    assert(std::abs(eyeOffset(v, "0x5009"))<1);
+    ease(v, 120); v.projectPanels(1280, 720, monotonicSeconds());
+    assert(w->candidate && w->visible);
+    w->rect=from; s.refresh(s.clock);
+    landOn(v, "0x5005");
+    const auto list=s.lastList; const double now=monotonicSeconds();
+    const auto [x, y]=s.headingPoint();
+    canvas::Rect above;
+    for (float up=3*s.metrics.viewH;up<20000;up+=400) {   // the first free place at least three view heights up
+        above=canvas::snap({x-200, y-up-150, 400, 300}); above.x=s.ring.unwrap(above.x);
+        if (canvas::freeAt(above, s.taken(), s.settings.gapPx, s.ring.period())) break;
+    }
+    assert(canvas::freeAt(above, s.taken(), s.settings.gapPx, s.ring.period()));
+    auto next=list; next.records.push_back(remembered(v, 0xc0de5, above, now));
+    s.adopt(next, now);
+    const auto* added=s.find("0xc0de5"); assert(added && sameRect(added->rect, above) && added->cueUntil>0);
+    s.adopt(list, now+.1); s.tick(now+.1+canvas::fadeSeconds+.01, 0); assert(!s.find("0xc0de5"));
+    ease(v, 60); inRing(v);
 }
 // M5: the ladder in the renderer. A fresh View (its own mailboxes), times passed in, every window visible.
 struct Ladder {
@@ -1486,12 +1685,13 @@ int main() {
         bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
         newWindowCues(v); overviewDrag(v); notificationInsideRing(v);
         stagedNoneAtStart(v); flickInFocuses(v); fillLandsFirst(v); stagedCloseLandsNext(v); stageDrag(v); confirmHint(v, temp);
+        scrollVerbs(v); scrollLandings(v, temp); scrollCulling(v);
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
     firstMailboxLands(window, temp); ladder(window, temp);
-    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear();
+    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag and the confirm hint passed\n";
+    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
 }

@@ -1,13 +1,15 @@
 # Window canvas
 
 Window canvas is the second way Omarchy XR shows your desktop. Instead of virtual monitors, each
-application window sits on its own panel on a ring around you. You look at a window to select it,
+application window sits on its own panel on a cylinder around you — beside, above and below you; the
+view scrolls up and down. You look at a window to select it,
 and the window you work in is live at 60 Hz with its menus, tooltips and mouse pointer. The design
 is in [infinite-canvas-plan.md](infinite-canvas-plan.md).
 
 It arrived with milestone M3; search, Fill, the window switcher, arranging, pinning, the radar strip
 and the F1 key help arrived with M4; the capture ladder with M5; the live mode switch, notifications
-inside the ring, new-window cues and the Overview mouse drag arrived with M6.
+inside the ring, new-window cues and the Overview mouse drag arrived with M6; focusing and moving
+windows in the glasses with M7; the full cylinder (windows at any height, vertical scroll) with M8.
 
 ## Requirements
 
@@ -83,17 +85,17 @@ Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
 
 ## New windows
 
-A window that opens while the canvas runs gets a short halo pulse (300 ms) where it lands, so you see
+A new window opens next to where you look, sideways and up or down, without overlap. A window that
+opens while the canvas runs gets a short halo pulse (300 ms) where it lands, so you see
 where it went. When it is placed outside your view, an accent-coloured chevron at the edge of the view
 points towards it for up to 3 seconds, or until you turn and its centre is in view. The windows moved
 to the canvas at start, and a canvas you switch to, show neither.
 
 ## Moving windows
 
-In the glasses, **SUPER+left-drag** moves the window you work in along the ring: it follows the
-pointer's travel (also past the edge of the window), snaps to 20 px, may overlap other windows (like a
-nudge), stays within the three rows (a drop outside them puts the window back), and the new place is
-remembered for the next start. Letting go of SUPER before the button also drops it, and a drag that
+In the glasses, **SUPER+left-drag** moves the window you work in, in any direction, snapped to 20 px:
+it follows the pointer's travel (also past the edge of the window), may overlap other windows (like a
+nudge), and the new place is remembered for the next start. Letting go of SUPER before the button also drops it, and a drag that
 holds still for 3 s ends there. **Ctrl+Z** undoes it. Only the panel moves: the real window stays where
 the canvas keeps it, so the pointer, menus and the native cursor stay right. When the window leaves your
 view, the camera follows it after the drop.
@@ -102,11 +104,11 @@ view, the camera follows it after the drop.
 after you let go, the window is put back at the stage origin and trimmed to the canvas output, so a
 top-left corner drag cannot leave it misplaced. **SUPER+CTRL+arrows** resize it in 100 px steps.
 **SUPER+SHIFT+arrows** nudges it by 100 px, **Shift+Enter** in the search summons a window next to
-you, and **Ctrl+A** arranges the ring (see **Keys**).
+you, and **Ctrl+A** arranges the windows (see **Keys**).
 
 In the windowed preview (and a flat `--display` run) you can also drag with the mouse, without SUPER:
-in Overview or the search, a left-drag moves the window under the pointer along the ring, with the same
-snapping, row band, memory and undo. A press that moves less than 4 px is an ordinary click: it selects
+in Overview or the search, a left-drag moves the window under the pointer over the cylinder, with the same
+snapping, memory and undo. A press that moves less than 4 px is an ordinary click: it selects
 the window and puts the pointer there. In Work a plain press never drags. The spectator has no mouse
 drag.
 
@@ -198,19 +200,23 @@ These are the canvas keys; **F1** shows the same table in the glasses (and in th
 | **SUPER+F** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, SUPER+F focuses the window you look at first and then fills it. |
 | **SUPER+TAB** | Overview on and off. Leaving the Overview lands on and focuses the window you look at. |
 | **Ctrl+Down** (your `fit_target` key) or a **three-finger tap** | Focus the window you look at: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
-| **SUPER+arrows** | Land on the neighbouring window in that direction. |
-| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px (it may overlap others). |
-| **SUPER+left-drag** | Move the window you work in along the ring (20 px steps, **Ctrl+Z** undoes it, the place is remembered). |
+| **SUPER+arrows** | Land on the neighbouring window in that direction; every landing brings its window to eye level. |
+| **SUPER+wheel** | Scroll the cylinder up or down, a fifth of the view per notch. A takeover of Omarchy's workspace scroll. |
+| **SUPER+CTRL+Page_Up / Page_Down** | Scroll the cylinder a page up or down. |
+| **4-finger pan** | Sideways turns the view along the ring; up and down scrolls the cylinder. |
+| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px, also up and down (it may overlap others). |
+| **SUPER+left-drag** | Move the window you work in, in any direction (20 px steps, **Ctrl+Z** undoes it, the place is remembered). |
 | **SUPER+right-drag** | Resize it; the panel follows. When the drag ends the window is put back at the stage origin. |
 | **SUPER+CTRL+arrows** | Resize it by 100 px: Left/Right narrower/wider, Up/Down shorter/taller. |
-| **Ctrl+A**, **Ctrl+Z**, **Ctrl+Shift+Z** (in the search field) | Arrange: group windows by kind, then application, along the ring from where you look, without overlap, and show the Overview; undo and redo arrange, nudge and summon. Studio's **Arrange** and **Undo** work from any view. |
+| **Ctrl+A**, **Ctrl+Z**, **Ctrl+Shift+Z** (in the search field) | Arrange: group windows by kind, then application, into a block around where you look, without overlap, and show the Overview; undo and redo arrange, nudge and summon. Studio's **Arrange** and **Undo** work from any view. |
 | **SUPER+ALT+P** | Pin the window you work in to your view (body-locked), or unpin it. |
 | **F1** (in the search field) | This help. It lists the takeover keys only while the takeover switch is on. |
 
 **Take over Omarchy window keys in canvas mode** (Studio, **Canvas** tab, on by default) governs
-SUPER+TAB, ALT+TAB, ALT+SHIFT+TAB, SUPER+arrows and SUPER+SHIFT+arrows. Turned off, those keep
-Omarchy's meaning (next workspace, window cycling, focus and swap) and the canvas uses only
-SUPER+F, SUPER+CTRL+G, SUPER+ALT+P, SUPER+left-drag and SUPER+CTRL+arrows, which are always taken while
+SUPER+TAB, ALT+TAB, ALT+SHIFT+TAB, SUPER+arrows, SUPER+SHIFT+arrows and SUPER+wheel. Turned off, those keep
+Omarchy's meaning (next workspace, window cycling, focus and swap, workspace scroll) and the canvas uses only
+SUPER+F, SUPER+CTRL+G, SUPER+ALT+P, SUPER+left-drag, SUPER+CTRL+arrows and SUPER+CTRL+Page_Up/Page_Down,
+which are always taken while
 the canvas runs. When the
 canvas stops, every taken chord gets Omarchy's default binding back; a chord you customised in
 your Hyprland config returns with the next `hyprctl reload`. Studio's XR hotkeys (Input tab) cannot
@@ -222,15 +228,16 @@ everywhere, so windows on the laptop screen cannot be dragged with it during a c
 SUPER+right-drag or the keyboard there, or stop the canvas). The F1 help always says Ctrl+Down; the
 first-dwell hint in the glasses shows the key you actually configured.
 
-The **radar strip** under the view in Overview and search shows the whole ring around you: three
-row lanes, the window you work in in the accent colour and the part of the ring you are looking at.
+The **radar strip** under the view in Overview and search shows the whole ring around you and the
+height above and below eye level: every window as a mark, the window you work in in the accent colour,
+and the rectangle you are looking at.
 
 Studio's **View controls** show **Overview**, **Land on window**, **Search**, **Fill**, **Arrange**
 and **Undo** in canvas mode.
 
 **In the windowed preview** the renderer window takes these keys itself while it has keyboard focus:
 `/` search (then type), `F` Fill, `O` Overview, `P` pin, `Tab`/`Shift+Tab` switcher (Return, or 1.5 s without a step, lands),
-`Alt+arrows` neighbour, `Alt+Shift+arrows` nudge, `Ctrl+A`, `Ctrl+Z`, `Ctrl+Shift+Z`, `F1`, and
+`Alt+arrows` neighbour, `Alt+Shift+arrows` nudge, `PageUp`/`PageDown` scroll, `Ctrl+A`, `Ctrl+Z`, `Ctrl+Shift+Z`, `F1`, and
 `Esc`, which closes overlays before it quits. Without keyboard focus (and in the glasses) search
 typing goes to a small search field that Studio keeps loaded on the canvas output; it holds the
 keyboard only while the search is open.
@@ -304,6 +311,12 @@ after your first confirm.
   none (so it never grabs the keyboard unasked): press SUPER+CTRL+G.
 - **ALT+TAB, SUPER+TAB or SUPER+arrows do Omarchy's thing during a canvas session**: the takeover
   switch is off (Canvas tab), or the controls predate M4: reinstall them.
+- **SUPER+wheel switches workspaces during a canvas session**: the takeover switch is off (Canvas tab),
+  or the controls are older than this release: reinstall the shortcuts (`make install-controls`, or
+  Studio's setup). SUPER+CTRL+Page_Up/Page_Down scroll either way once the controls are current.
+- **A window vanished above or below the view**: the cylinder has no top or bottom row. Scroll
+  (SUPER+wheel, SUPER+CTRL+Page_Up/Page_Down, a vertical 4-finger pan), land on it with SUPER+Up/Down,
+  or open the Overview, which shows the whole height (the radar strip too).
 
 - **A thin strip of windows at the right edge of the canvas output** (8 px wide, visible on the
   canvas output or in a screenshot of it): these are live slivers, windows the canvas captures above
@@ -369,9 +382,9 @@ during stereo.
 | ☐ Virtual monitors | Glasses flat | Same monitors in mono; the notification card shows (mono HUD). |
 | ☐ Virtual monitors | Windowed preview | Same in a window; card shows; **R**, **F**, wheel, **Esc** work. |
 | ☐ Virtual monitors | Spectator | Mirrors the stereo view including the card; unchanged from 0.3.1. |
-| ☐ Window canvas | Direct stereo | Windows on the ring in SBS stereo; the staged window live with menus and the native cursor; the card floats inside the ring in the lower part of the view, over the windows. |
-| ☐ Window canvas | Glasses flat | Same ring in mono; card inside the ring; XR cursor or native cursor on the staged window. |
-| ☐ Window canvas | Windowed preview | Same in a window; windowed keys (`/ F O P Tab Alt+arrows F1 Esc`); Overview drag works. |
+| ☐ Window canvas | Direct stereo | Windows on the cylinder in SBS stereo; SUPER+wheel and SUPER+CTRL+Page_Up/Down scroll it; the staged window live with menus and the native cursor; the card floats inside the ring in the lower part of the view, over the windows. |
+| ☐ Window canvas | Glasses flat | Same cylinder in mono, scrolling the same; card inside the ring; XR cursor or native cursor on the staged window. |
+| ☐ Window canvas | Windowed preview | Same in a window; windowed keys (`/ F O P Tab Alt+arrows PageUp PageDown F1 Esc`); Overview drag works, also up and down. |
 | ☐ Window canvas | Spectator | Same picture as the glasses (overlays, cues, card, cursor). |
 
 ### Start, stop, migration and restore
@@ -446,8 +459,8 @@ Run in direct stereo and once in the windowed preview.
 - [ ] Radar strip and F1 help readable; overlays follow the head lazily (no jitter within 12°).
 - [ ] A new window pulses briefly where it lands; one placed behind you shows the accent chevron at the
   view edge, which disappears when you look at it or after 3 s.
-- [ ] In the windowed preview, a left-drag in Overview moves the window under the pointer along the
-  ring in 20 px steps; a drop outside the rows reverts; the place survives a restart; Ctrl+Z undoes;
+- [ ] In the windowed preview, a left-drag in Overview moves the window under the pointer in any
+  direction in 20 px steps; the place survives a restart; Ctrl+Z undoes;
   a still click selects instead.
 - [ ] (M7) SUPER+F with nothing staged fills the gazed window; SUPER+F again restores.
 - [ ] (M7) SUPER+left-drag moves the staged window along the ring (20 px snap), Ctrl+Z undoes, the place
@@ -513,3 +526,17 @@ Copied from the plan (§7 M7); the items above cover the same ground inside the 
 - [ ] Stop: SUPER+mouse:272 is Omarchy's *Move window* again (`hyprctl binds -j`), SUPER+CTRL+Up/Down unbound, SUPER+CTRL+Left/Right Omarchy's group focus keys again.
 - [ ] Stereo start with the laptop display off: starts without the recording window; the message says so.
 - [ ] A `{release=true}` bind on `SUPER + mouse:272` fires on real Hyprland (the drag ends), and `hl.unbind` removes the mouse bind.
+
+### M8 glasses PR checklist
+
+Copied from the plan (§7 M8).
+
+- [ ] SUPER+wheel scrolls the cylinder up and down smoothly; windows stay upright, text at eye level stays sharp; the scroll stops half a view beyond the highest and lowest window.
+- [ ] SUPER+CTRL+Page_Up/Page_Down scroll a page; a vertical 4-finger pan scrolls, a horizontal one still turns the view along the ring; 3-finger flicks and taps unchanged.
+- [ ] A new window opens next to where you look, in x and y, without overlap; a dialog opens over its parent.
+- [ ] SUPER+SHIFT+Up three times and SUPER+left-drag upward leave the window above the old rows; Ctrl+Z undoes; the place survives a restart.
+- [ ] SUPER+Up/Down land on the windows above and below and bring them to eye level; confirm, search Enter and ALT+TAB do the same.
+- [ ] Ctrl+A packs the windows into a block around the gaze; the Overview shows all of it; the radar shows the height and the view rectangle.
+- [ ] Windows scrolled out of view above or below go idle (`Capture:` lines) and come back when scrolled in.
+- [ ] Stop: `hyprctl binds -j` shows Omarchy's *Scroll active workspace forward/backward* on SUPER+mouse_down/up again and no SUPER+CTRL+Page binds.
+- [ ] A `canvas-memory.tsv` from before M8 restores the layout unchanged.

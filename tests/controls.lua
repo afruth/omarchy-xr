@@ -385,9 +385,9 @@ local function seq(file) return tonumber(files[path..file]:match("^v1 42 (%d+) "
 -- give them back on exit (tiling.lua), including both ALT+TAB binds.
 local DIRECTIONS={LEFT={"left","l","Focus on left window","Swap window to the left"},RIGHT={"right","r","Focus on right window","Swap window to the right"},
     UP={"up","u","Focus on above window","Swap window up"},DOWN={"down","d","Focus on below window","Swap window down"}}
-local TAKEN={"SUPER + TAB","ALT + TAB","ALT + SHIFT + TAB"}
+local TAKEN={"SUPER + TAB","ALT + TAB","ALT + SHIFT + TAB","SUPER + mouse_down","SUPER + mouse_up"}
 for key in pairs(DIRECTIONS) do TAKEN[#TAKEN+1]="SUPER + "..key;TAKEN[#TAKEN+1]="SUPER + SHIFT + "..key end
-local ALWAYS,RELEASES={"SUPER + CTRL + G","SUPER + ALT + P"},{"ALT + ALT_L","ALT + ALT_R"}
+local ALWAYS,RELEASES={"SUPER + CTRL + G","SUPER + ALT + P","SUPER + CTRL + Page_Up","SUPER + CTRL + Page_Down"},{"ALT + ALT_L","ALT + ALT_R"}
 local function hex(text) return (text:gsub(".",function(c) return ("%02x"):format(c:byte()) end)) end
 local function isXR(chord) return bindings[chord]~=nil and bindings[chord].options.description:match("^XR: ")~=nil end
 local function allXR(list,wanted) for _,chord in ipairs(list) do assert(isXR(chord)==wanted,chord) end end
@@ -399,6 +399,8 @@ end
 local function omarchyDefaults()
     for _,chord in ipairs(TAKEN) do hl.unbind(chord) end
     hl.bind("SUPER + TAB",hl.dsp.focus({workspace="e+1"}),{description="Next workspace"})
+    hl.bind("SUPER + mouse_down",hl.dsp.focus({workspace="e+1"}),{description="Scroll active workspace forward"})
+    hl.bind("SUPER + mouse_up",hl.dsp.focus({workspace="e-1"}),{description="Scroll active workspace backward"})
     hl.bind("ALT + TAB",hl.dsp.window.cycle_next(),{description="Focus on next window"})
     hl.bind("ALT + TAB",hl.dsp.window.bring_to_top(),{description="Reveal active window on top"})
     hl.bind("ALT + SHIFT + TAB",hl.dsp.window.cycle_next({next=false}),{description="Focus on previous window"})
@@ -411,6 +413,10 @@ end
 local function assertOmarchy()
     local tab=bindings["SUPER + TAB"]
     assert(tab.options.description=="Next workspace");assert(tab.callback.kind=="focus");assert(tab.callback.spec.workspace=="e+1")
+    for chord,wheel in pairs({["SUPER + mouse_down"]={"forward","e+1"},["SUPER + mouse_up"]={"backward","e-1"}}) do
+        local b=bindings[chord];assert(#bindLists[chord]==1)
+        assert(b.options.description=="Scroll active workspace "..wheel[1]);assert(b.callback.kind=="focus");assert(b.callback.spec.workspace==wheel[2])
+    end
     for _,chord in ipairs({"ALT + TAB","ALT + SHIFT + TAB"}) do
         local list=bindLists[chord]
         assert(#list==2);assert(list[1].callback.kind=="window.cycle_next");assert(list[2].callback.kind=="window.bring_to_top")
@@ -469,7 +475,7 @@ local function testCanvasKeys()
     local before=bindings["SUPER + LEFT"]
     dofile("config/xr-controls.lua")
     assert(bindings["SUPER + LEFT"]~=before);allXR(TAKEN,true);allXR(ALWAYS,true);allXR(RELEASES,true)
-    assert(#bindLists["ALT + TAB"]==1);assert(#bindLists["SUPER + CTRL + G"]==1);assert(#omarchy_xr_canvas.takeovers==13)
+    assert(#bindLists["ALT + TAB"]==1);assert(#bindLists["SUPER + CTRL + G"]==1);assert(#omarchy_xr_canvas.takeovers==15)
     testTakeoverPresses()
     clock(149,"monitors");omarchy_xr_controls.refresh();assertOmarchy();allXR(ALWAYS,false)
     print("Canvas keys: search/pin always, takeovers with ALT release binds, restore of Omarchy's defaults, live flag and reload passed")
@@ -946,6 +952,36 @@ local function testResizeKeys()
     assert(right.callback.kind=="group.next");assert(right.options.description=="Move grouped window focus right")
     print("Resize keys: 100 px steps clamped to 100 px and the band, Omarchy's group keys back on exit passed")
 end
+-- M8 scroll (mode 19): the wheel is a takeover, SUPER+CTRL+Page_Up/Down are always bound in canvas mode.
+local testScrollKeys
+do
+    local function wheelIsOmarchy()
+        assert(bindings["SUPER + mouse_up"].options.description=="Scroll active workspace backward")
+        assert(bindings["SUPER + mouse_down"].options.description=="Scroll active workspace forward")
+        assert(bindings["SUPER + mouse_up"].callback.spec.workspace=="e-1");assert(bindings["SUPER + mouse_down"].callback.spec.workspace=="e+1")
+    end
+    testScrollKeys=function()
+        clock(222.5);omarchy_xr_controls.refresh()
+        for chord,want in pairs({["SUPER + CTRL + Page_Up"]="pageup",["SUPER + CTRL + Page_Down"]="pagedown"}) do
+            local mode,token=press(chord);assert(mode=="19",chord);assert(token==hex(want),chord)
+        end
+        -- A wheel notch counts within its run: the same direction continues it, a turn or another mode press starts one.
+        local function notch(chord)
+            local mode,token=press(chord);assert(mode=="19",chord)
+            return token:gsub("%x%x",function(h) return string.char(tonumber(h,16)) end):match("^(%a+):(%d+):(%d+)$")
+        end
+        local dir,run,one=notch("SUPER + mouse_down");assert(dir=="down" and one=="1")
+        local _,again,second=notch("SUPER + mouse_down");assert(again==run and second=="2")
+        local up,turned,first=notch("SUPER + mouse_up");assert(up=="up" and turned~=run and first=="1")
+        press("SUPER + CTRL + Page_Up")
+        local _,fresh,restart=notch("SUPER + mouse_up");assert(fresh~=turned and restart=="1")
+        clock(222.6,"canvas",nil,"0");omarchy_xr_controls.refresh();wheelIsOmarchy()
+        assert(isXR("SUPER + CTRL + Page_Up"));assert(select(2,press("SUPER + CTRL + Page_Down"))==hex("pagedown"))
+        clock(222.7,"monitors");omarchy_xr_controls.refresh();wheelIsOmarchy()
+        assert(bindings["SUPER + CTRL + Page_Up"]==nil);assert(bindings["SUPER + CTRL + Page_Down"]==nil)
+        print("Scroll keys: SUPER+wheel takeover and SUPER+CTRL+Page_Up/Down publish mode 19, wheel notches counted per run, Omarchy's workspace scroll back on exit passed")
+    end
+end
 local function testStageReclamp()
     clock(224);omarchy_xr_controls.refresh();tick(224)
     local w=find("0x50");w.at={x=19990,y=-10};w.size={x=3000,y=2000};dispatched={}
@@ -973,4 +1009,5 @@ testTapConfirm()
 testEnsureStaged()
 testStageDrag()
 testResizeKeys()
+testScrollKeys()
 testStageReclamp()

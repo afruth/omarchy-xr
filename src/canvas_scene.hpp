@@ -31,6 +31,8 @@
 // The window canvas scene (docs/infinite-canvas-plan.md §4.1-§4.4): every canvas window as its own
 // quad on the ring. Placement, projection and rates come from the pure headers; the scene owns the
 // windows, their captures and textures, and the Work/Overview camera. The View draws and aims it.
+// M8: the canvas is the full cylinder; the camera scroll (Camera::scrollY) moves it vertically, every
+// landing brings its window to eye level (focusOn) and the aims use projected y 0.
 namespace canvas {
 constexpr double fadeSeconds=.2;   // closed windows fade out, then leave
 constexpr size_t maxOccluders=24;  // bounds the notification berth search
@@ -155,7 +157,7 @@ public:
     Labels labels;
     tracking::Quaternion panAnchor;
     bool offline=false;
-    float heading=0, halfSpan=180;
+    float heading=0, halfSpan=180, pitch=0;   // the view centre's heading and pitch (degrees, up positive)
     float depth=2.4f, aimX=0, aimY=0, latchX=0, latchY=0;   // eye depth and aimed point (projected px)
     double lastDwellAt=-1e9, lastZoomAt=-1e9;
     double hubRetryAt=0;
@@ -166,7 +168,7 @@ public:
     // undo, the Alt-Tab switcher, the filled window and help. focusRequest (explicit focus, §5.6),
     // fillRequest (.fill) and bringRequested (a non-canvas window asked for) are carried out by the View.
     struct SearchSession {
-        struct Return { State state=State::Overview; std::string landed; float focusX=0, focusY=0, zoom=1, aimX=0, aimY=0, depth=0; };
+        struct Return { State state=State::Overview; std::string landed; float focusX=0, focusY=0, zoom=1, aimX=0, aimY=0, depth=0, scrollY=0; };
         bool open=false;
         std::string query, origin;
         std::vector<Result> results;
@@ -259,7 +261,8 @@ public:
         memory.note(r.cls, r.title, w.rect, now);
         if(primed) {
             w.pulseUntil=now+.3;
-            if(offView(project(w.rect, camera, ring), heading, halfSpan, ring)) w.cueUntil=now+3;
+            const auto [middle, half]=viewBand();
+            if(offView(project(w.rect, camera, ring), heading, halfSpan, ring, middle, half)) w.cueUntil=now+3;
         }
         windows.push_back(std::move(w));
     }
@@ -274,19 +277,16 @@ public:
         for(const auto& w:windows) if(!w.gone && !w.record.floating && w.record.pid==r.pid && r.pid>0) return w.rect;
         return {};
     }
-    // Session memory, then the parent rule, then a ring search from the camera focus.
+    // Session memory, then the parent rule, then a spiral search from the look point.
     Rect place(const windows::Record& r, float w, float h, double now) {
         const auto others=taken();
-        float startX=camera.targetFocusX, startY=camera.targetFocusY;
+        auto [startX, startY]=lookPoint();
         if(auto claimed=memory.claim(r.cls, r.title, now)) {
             Rect at{ring.unwrap(claimed->x), claimed->y, w, h};
-            if(inBand(at, metrics) && freeAt(at, others, settings.gapPx, ring.period())) return at;
+            if(freeAt(at, others, settings.gapPx, ring.period())) return at;
             startX=at.cx(); startY=at.cy();
         }
-        if(auto found=placeNew(w, h, startX, startY, others, ring, metrics, settings.gapPx, parentOf(r))) return *found;
-        // The 8-direction search reaches the outer rows only one step out; walk each row's centre line.
-        for(const float row:{0.f, metrics.rowHeight, -metrics.rowHeight})
-            if(auto found=placeNew(w, h, startX, row, others, ring, metrics, settings.gapPx)) return *found;
+        if(auto found=placeNew(w, h, startX, startY, others, ring, settings.gapPx, parentOf(r))) return *found;
         std::cerr << "Canvas: no free place for " << r.name() << "; overlapping at the focus" << std::endl;
         Rect fallback=canvas::snap({startX-w/2, startY-h/2, w, h}); fallback.x=ring.unwrap(fallback.x);
         return fallback;
@@ -391,13 +391,32 @@ public:
             if(w.pinned) r={r.cx(), r.cy(), 0, 0};
             projected.push_back(toLayout(w.name, r, brightness(w, now)));
         }
-        cull(heading, halfSpan);
+        cull(heading, halfSpan, pitch);
     }
     const std::vector<PanelLayout>& geometry() const { return projected; }
-    // A 10° margin keeps halos and edge windows from popping at the view border.
-    void cull(float headingDeg, float halfSpanDeg) {
-        heading=headingDeg; halfSpan=halfSpanDeg;
-        candidates=visibleIndices(projected, heading, halfSpan+10, ring);
+    // Where the view-centre ray meets the cylinder (projected px, canvas y down) and its horizontal
+    // length: from the eye at the aim, eye px short of the wall (the ring centre in Overview) at aimY.
+    struct Ray { float x=0, y=0, reach=0; };
+    Ray viewRay() const {
+        const float R=ring.radius, back=R-(working() ? depth : R), deg=spatial::pi/180;
+        const float turn=std::remainder(heading-ring.heading(aimX), 360.f)*deg, along=back*std::cos(turn);
+        const float reach=-along+std::sqrt(std::max(along*along+R*R-back*back, 0.f));
+        const float angle=std::atan2(reach*std::sin(turn), back+reach*std::cos(turn));
+        return {aimX+angle/deg*ring.pxPerDeg(), aimY-std::tan(pitch*deg)*900*reach, reach};
+    }
+    // The projected rows the pitched view spans at the ray's reach (M8), as a centre and half height.
+    std::pair<float,float> viewBand() const {
+        const auto ray=viewRay();
+        const float deg=spatial::pi/180, up=std::min(pitch+fov.vertical/2, 85.f), down=std::max(pitch-fov.vertical/2, -85.f);
+        const float top=aimY-std::tan(up*deg)*900*ray.reach, bottom=aimY-std::tan(down*deg)*900*ray.reach;
+        return {(top+bottom)/2, (bottom-top)/2};
+    }
+    // A 10° margin keeps halos and edge windows from popping at the view border; vertically half a view
+    // height (at the eye's reach) beyond the pitched view band (M8).
+    void cull(float headingDeg, float halfSpanDeg, float pitchDeg=0) {
+        heading=headingDeg; halfSpan=halfSpanDeg; pitch=pitchDeg;
+        const auto [middle, half]=viewBand();
+        candidates=visibleIndices(projected, heading, halfSpan+10, ring, middle, half+metrics.viewH/2*viewRay().reach/ring.radius);
         std::erase_if(candidates, [&](size_t i) { return windows[i].pinned; });
         for(auto& w:windows) w.candidate=false;
         for(auto i:candidates) windows[i].candidate=true;
@@ -550,7 +569,7 @@ public:
     }
     Aim reaim(const tracking::Quaternion& anchor) { return aim(aimX, aimY, depth, anchor); }
     Rect targetView(const Rect& r) const {
-        Camera c=camera; c.focusX=c.targetFocusX; c.focusY=c.targetFocusY; c.zoom=c.targetZoom;
+        Camera c=camera; c.focusX=c.targetFocusX; c.focusY=c.targetFocusY; c.zoom=c.targetZoom; c.scrollY=c.targetScrollY;
         return project(r, c, ring);
     }
     std::vector<Rect> liveRects() const {
@@ -559,6 +578,26 @@ public:
         return rects;
     }
     void resetGesture() { camera.anchored=false; lastZoomAt=-1e9; }
+    // The canvas point (x, y) at the focus and at eye level (M8): every landing goes through here.
+    void focusOn(float x, float y) { camera.targetFocusX=ring.unwrap(x); camera.targetFocusY=y; camera.targetScrollY=y; }
+    // The scroll keeps eye level within the live windows' vertical extent plus half a view on either
+    // side, at the target zoom (projected px); without windows within half a view of 0.
+    std::pair<float,float> scrollLimits() const {
+        const auto& c=camera; const float half=metrics.viewH/2;
+        const auto base=[&](float y) { return c.targetFocusY+(y-c.targetFocusY)*c.targetZoom; };
+        float top=INFINITY, bottom=-INFINITY;
+        for(const auto& r:liveRects()) { top=std::min(top, r.y); bottom=std::max(bottom, r.y+r.h); }
+        if(top>bottom) return {-half, half};
+        return {base(top)-half, base(bottom)+half};
+    }
+    // Vertical scroll (M8, mode 19, PageUp/PageDown): projected px, positive moves the view down the
+    // canvas; the view itself stays put.
+    Aim scrollBy(float dy) {
+        resetGesture();
+        const auto [lo, hi]=scrollLimits();
+        camera.targetScrollY=std::clamp(camera.targetScrollY+dy, lo, hi);
+        return {};
+    }
     // Work on one window: centred at its Work zoom, the eye at the depth where it fills the view.
     Aim land(const std::string& name, const tracking::Quaternion& anchor) {
         const auto* w=find(name);
@@ -568,8 +607,8 @@ public:
         state=w->beforeFill ? State::Fill : State::Work;
         if(w->beforeFill) filled=name;
         const float zoom=w->beforeFill ? 1.f : workZoom(w->rect, metrics);
-        camera.targetZoom=zoom; camera.targetFocusX=ring.unwrap(w->rect.cx()); camera.targetFocusY=w->rect.cy();
-        return aim(camera.targetFocusX, camera.targetFocusY, fitDepth(w->rect.w*zoom, w->rect.h*zoom), anchor);
+        camera.targetZoom=zoom; focusOn(w->rect.cx(), w->rect.cy());
+        return aim(camera.targetFocusX, 0, fitDepth(w->rect.w*zoom, w->rect.h*zoom), anchor);
     }
     // rectDistance for a flat rectangle, then deep enough that the curved window's arc fits the
     // horizontal view from inside the ring (its edges bend towards the eye).
@@ -584,23 +623,25 @@ public:
     Aim overview(const tracking::Quaternion& anchor) {
         const auto fit=fitBounds(liveRects(), ring, metrics);
         state=State::Overview; resetGesture();
-        camera.targetFocusX=fit.focusX; camera.targetFocusY=fit.focusY; camera.targetZoom=std::max(.08f, .92f*fit.zoom);
-        return aim(fit.focusX, fit.focusY, ring.radius, anchor);
+        focusOn(fit.focusX, fit.focusY); camera.targetZoom=std::max(.08f, .92f*fit.zoom);
+        return aim(fit.focusX, 0, ring.radius, anchor);
     }
     // The settled camera is remembered (the canvas-memory.tsv camera row); without a staged window
     // the next start returns to it in Overview, else to the fitted overview.
     void noteCamera(double now) {
         if(!rememberCamera || camera.moving()) return;
-        const Fit settled{ring.unwrap(camera.targetFocusX), camera.targetFocusY, std::clamp(camera.targetZoom, 1e-3f, 1.f)};
+        Fit settled{ring.unwrap(camera.targetFocusX), camera.targetFocusY, std::clamp(camera.targetZoom, 1e-3f, 1.f)};
+        settled.scrollY=camera.targetScrollY;
         const auto& saved=memory.camera;
-        if(saved && std::abs(saved->focusX-settled.focusX)<.5f && std::abs(saved->focusY-settled.focusY)<.5f && std::abs(saved->zoom-settled.zoom)<1e-4f) return;
+        if(saved && std::abs(saved->focusX-settled.focusX)<.5f && std::abs(saved->focusY-settled.focusY)<.5f && std::abs(saved->zoom-settled.zoom)<1e-4f &&
+           std::abs(saved->scrollY-settled.scrollY)<.5f) return;
         memory.noteCamera(settled, now);
     }
     Aim restoreCamera(const tracking::Quaternion& anchor) {
         if(!memory.camera) return overview(anchor);
         state=State::Overview; resetGesture();
-        camera.targetFocusX=ring.unwrap(memory.camera->focusX); camera.targetFocusY=memory.camera->focusY; camera.targetZoom=memory.camera->zoom;
-        return aim(camera.targetFocusX, camera.targetFocusY, ring.radius, anchor);
+        focusOn(memory.camera->focusX, memory.camera->focusY); camera.targetScrollY=memory.camera->scrollY; camera.targetZoom=memory.camera->zoom;
+        return aim(camera.targetFocusX, 0, ring.radius, anchor);
     }
     void noteDwell(const std::string& name, double now) {
         lastDwell=name; lastDwellAt=now;
@@ -647,7 +688,7 @@ public:
     void latch(const std::optional<std::pair<float,float>>& gazedPoint, double now) {
         if(now-lastZoomAt>.4) {
             const auto& c=camera;
-            if(gazedPoint) { latchX=ring.unwrap(c.focusX+ring.wrap(gazedPoint->first-c.focusX)/c.zoom); latchY=c.focusY+(gazedPoint->second-c.focusY)/c.zoom; }
+            if(gazedPoint) { latchX=unprojectX(c, ring, gazedPoint->first); latchY=unprojectY(c, gazedPoint->second); }
             else { latchX=c.targetFocusX; latchY=c.targetFocusY; }
             camera.anchored=false;
         }
@@ -674,36 +715,43 @@ public:
         if(camera.targetZoom<.9f*full) state=State::Overview;
         return {};
     }
-    // Grab semantics like monitor mode (canvas y points down): the focus and the aimed point move
-    // together, so content moves at a constant screen speed at any zoom.
+    // Grab semantics like monitor mode (canvas y points down), so content moves at a constant screen
+    // speed at any zoom: along the ring the focus and the aimed point move together (the head turns);
+    // vertically the scroll moves and the content follows the finger while the aim stays (M8).
     Aim pan(float dx, float dy, bool begin, const tracking::Quaternion& anchor) {
         if(begin) panAnchor=anchor;
         resetGesture();
-        const float speed=metrics.viewH/400/std::max(camera.targetZoom, .01f), limit=1.5f*metrics.rowHeight;
-        const float y=std::clamp(camera.targetFocusY-dy*speed, -limit, limit), moveX=-dx*speed, moveY=y-camera.targetFocusY;
-        camera.targetFocusX=ring.unwrap(camera.targetFocusX+moveX); camera.targetFocusY=y;
-        return aim(aimX+moveX, aimY+moveY, depth, panAnchor);
+        const float speed=metrics.viewH/400/std::max(camera.targetZoom, .01f), moveX=-dx*speed;
+        const auto [lo, hi]=scrollLimits();
+        camera.targetFocusX=ring.unwrap(camera.targetFocusX+moveX);
+        camera.targetScrollY=std::clamp(camera.targetScrollY-dy*metrics.viewH/400, lo, hi);
+        return aim(aimX+moveX, aimY, depth, panAnchor);
     }
     // After the View recalibrated the heading: Work faces the landed window, Overview the used arc.
     Aim recenter(const tracking::Quaternion& anchor={}) {
         resetGesture();
         if(working()) {
-            if(const auto* w=find(landed)) { camera.targetFocusX=ring.unwrap(w->rect.cx()); camera.targetFocusY=w->rect.cy(); }
-            return aim(camera.targetFocusX, camera.targetFocusY, depth, anchor);
+            if(const auto* w=find(landed)) focusOn(w->rect.cx(), w->rect.cy());
+            return aim(camera.targetFocusX, 0, depth, anchor);
         }
         const auto fit=fitBounds(liveRects(), ring, metrics);
-        camera.targetFocusX=fit.focusX; camera.targetFocusY=fit.focusY;
-        return aim(fit.focusX, fit.focusY, ring.radius, anchor);
+        focusOn(fit.focusX, fit.focusY);
+        return aim(fit.focusX, 0, ring.radius, anchor);
     }
     // Share of the window's angular interval inside the view, against the narrower of the two. The half
-    // span is the ring arc visible from the eye's depth.
+    // span is the ring arc visible from the eye's depth. M8: the same vertically against the view height
+    // at the eye's depth around the pitched view centre (eye level at pitch 0); the smaller share counts.
     float visibleShare(const CanvasWindow& w) const {
         const float eye=working() ? depth : ring.radius;
         const float half=navigation::visibleArc(eye, fov.horizontal()*spatial::pi/360, 1/ring.radius)/ring.radius*180/spatial::pi;
         const auto r=targetView(w.rect);
         const float centre=std::remainder(ring.heading(r.cx())-heading, 360.f), size=ring.heading(r.w);
         const float lo=std::max(centre-size/2, -half), hi=std::min(centre+size/2, half);
-        return std::max(hi-lo, 0.f)/std::max(std::min(size, 2*half), 1e-3f);
+        const float shareX=std::max(hi-lo, 0.f)/std::max(std::min(size, 2*half), 1e-3f);
+        const float halfV=metrics.viewH/2*eye/ring.radius, middle=viewRay().y;
+        const float top=std::max(r.y, middle-halfV), bottom=std::min(r.y+r.h, middle+halfV);
+        const float shareY=std::max(bottom-top, 0.f)/std::max(std::min(r.h, 2*halfV), 1e-3f);
+        return std::min(shareX, shareY);
     }
     // Hyprland focused a window (M2: the focus_history_id 0 row changed). The camera moves only when
     // less than 90 % of it is in view, and the state stays.
@@ -711,9 +759,9 @@ public:
         const auto* w=find(name);
         if(!w || visibleShare(*w)>=.9f) return {};
         resetGesture();
-        camera.targetFocusX=ring.unwrap(w->rect.cx()); camera.targetFocusY=w->rect.cy();
+        focusOn(w->rect.cx(), w->rect.cy());
         if(working()) { camera.targetZoom=w->beforeFill ? 1.f : workZoom(w->rect, metrics); if(name!=landed) state=w->beforeFill ? State::Fill : State::Work; landed=name; }
-        return aim(camera.targetFocusX, camera.targetFocusY, working() ? depth : ring.radius, anchor);
+        return aim(camera.targetFocusX, 0, working() ? depth : ring.radius, anchor);
     }
     // During a zoom gesture the eased focus follows the eased zoom, so the anchor's projection stays put.
     void holdAnchor(double now) {
@@ -757,7 +805,7 @@ public:
     void searchAttach() {
         if(search.open) return;
         search=SearchSession{}; search.open=true;
-        search.back={state, landed, camera.targetFocusX, camera.targetFocusY, camera.targetZoom, aimX, aimY, depth};
+        search.back={state, landed, camera.targetFocusX, camera.targetFocusY, camera.targetZoom, aimX, aimY, depth, camera.targetScrollY};
         search.order=mruOrder(false); search.origin=stagedName;
         rerank();
     }
@@ -794,8 +842,8 @@ public:
         const float high=perTan*std::tan((fov.vertical/2-.5f)*overlay::degrees), room=std::max(high-low, 1.f);
         if(w->rect.h*camera.targetZoom>room) camera.targetZoom=std::max(.01f, room/std::max(w->rect.h, 1.f));
         const float half=w->rect.h*camera.targetZoom/2, above=std::clamp(.22f*metrics.viewH, low+half, std::max(low+half, high-half));
-        camera.targetFocusX=ring.unwrap(w->rect.cx()); camera.targetFocusY=w->rect.cy();
-        return aim(camera.targetFocusX, camera.targetFocusY+above, ring.radius, anchor);
+        focusOn(w->rect.cx(), w->rect.cy());
+        return aim(camera.targetFocusX, above, ring.radius, anchor);
     }
     Aim searchMove(int step, const tracking::Quaternion& anchor) {
         const long n=long(search.results.size());
@@ -844,7 +892,7 @@ public:
         const auto* w=find(back.landed);
         state=back.state==State::Fill && !(w && w->beforeFill) ? State::Work : back.state;
         landed=back.landed; resetGesture();
-        camera.targetFocusX=back.focusX; camera.targetFocusY=back.focusY; camera.targetZoom=back.zoom;
+        camera.targetFocusX=back.focusX; camera.targetFocusY=back.focusY; camera.targetZoom=back.zoom; camera.targetScrollY=back.scrollY;
         return aim(back.aimX, back.aimY, back.depth, anchor);
     }
     // The palette shows in the Search state, the switcher once revealed, help while open.
@@ -935,13 +983,14 @@ public:
         if(searching) state=State::Search;
         return out;
     }
-    // CTRL+A in the prompt, SDL, Studio and the pose verb: grouped by category, then class, from the canvas
-    // point at the view heading (headingPoint); from Work or Fill it ends in Overview over the new layout.
+    // CTRL+A in the prompt, SDL, Studio and the pose verb: grouped by category, then class, in a block around
+    // the look point (M8); from Work or Fill it ends in Overview over the new layout.
     Aim arrange(const tracking::Quaternion& anchor) {
         std::unordered_map<std::string,std::string> titles;
         for(const auto& w:windows) if(!w.gone) titles[w.name]=w.record.title;
         const auto groupOf=[&](const Placed& p) { return std::string(categoryName(category(p.cls, titles[p.name])))+'\t'+p.cls; };
-        const auto placed=canvas::arrange(arrangeable(), headingPoint().first, ring, metrics, settings.gapPx, mruOrder(true), groupOf);
+        const auto [lookX, lookY]=lookPoint();
+        const auto placed=canvas::arrange(arrangeable(), lookX, lookY, ring, metrics, settings.gapPx, mruOrder(true), groupOf);
         history.checkpoint(snapshot());
         for(const auto& p:placed) if(auto* w=findMutable(p.name)) moveTo(*w, p.rect);
         refresh(clock);
@@ -962,6 +1011,28 @@ public:
         if(token=="down") return Direction::Down;
         return {};
     }
+    // Mode 19 tokens as view heights (M8): a wheel notch 0.2, a page 0.8; positive scrolls down. Lua sends a
+    // notch as "up:<run>:<count>" (.controls is last-writer, so notches between two polls share a line):
+    // every notch of the run since the last line read scrolls, at most 5 at once. Plain "up"/"down" is one.
+    std::optional<float> scrollFraction(const std::string& token) {
+        if(token=="pageup") return -.8f;
+        if(token=="pagedown") return .8f;
+        const auto colon=token.find(':');
+        const std::string dir=token.substr(0, colon);
+        if(dir!="up" && dir!="down") return {};
+        long notches=1;
+        if(colon!=std::string::npos) {
+            const auto second=token.find(':', colon+1);
+            const std::string run=token.substr(colon+1, second==std::string::npos ? 0 : second-colon-1);
+            const long count=second==std::string::npos ? 0 : std::atol(token.c_str()+second+1);
+            if(run.empty() || count<1) return {};
+            notches=std::min(run==wheelRun && count>wheelCount ? count-wheelCount : count, 5L);
+            wheelRun=run; wheelCount=count;
+        }
+        return (dir=="up" ? -.2f : .2f)*float(notches);
+    }
+    std::string wheelRun;   // the last wheel run read and its notch count
+    long wheelCount=0;
     // The landed window, else the staged one.
     std::string current() const { return find(landed) ? landed : stagedName; }
     // SUPER+arrows: an explicit landing (the View focuses the window, so Lua stages it).
@@ -976,7 +1047,6 @@ public:
         auto* w=findMutable(current());
         if(!w || w->pinned) return {};
         Rect r=canvas::snap(canvas::nudge(w->rect, dir, nudgeStep)); r.x=ring.unwrap(r.x);
-        if(!inBand(r, metrics)) return {};
         history.checkpoint(snapshot());
         moveTo(*w, r); refresh(clock);
         return chase(*w, anchor);
@@ -984,11 +1054,11 @@ public:
     // After a move in Work the camera follows a window that left the view (under 90 % visible).
     Aim chase(const CanvasWindow& w, const tracking::Quaternion& anchor) {
         if(!working() || visibleShare(w)>=.9f) return {};
-        camera.targetFocusX=ring.unwrap(w.rect.cx()); camera.targetFocusY=w.rect.cy();
-        return aim(camera.targetFocusX, camera.targetFocusY, depth, anchor);
+        focusOn(w.rect.cx(), w.rect.cy());
+        return aim(camera.targetFocusX, 0, depth, anchor);
     }
     // The Overview mouse drag (SDL window): the window follows the pointer, the camera stays. The end snaps
-    // like nudge (overlap allowed), must stay in the row band and is one undo checkpoint; a pinned window
+    // like nudge (overlap allowed), free in y (M8) and is one undo checkpoint; a pinned window
     // does not drag.
     void dragBegin(const std::string& name) {
         const auto* w=find(name);
@@ -1009,7 +1079,6 @@ public:
         auto* w=findMutable(dragName);
         if(!w) { dragName.clear(); return false; }
         Rect r=canvas::snap(w->rect); r.x=ring.unwrap(r.x);
-        if(!inBand(r, metrics)) { dragCancel(); return false; }
         history.checkpoint(dragStart);
         moveTo(*w, r); refresh(clock);
         std::cout << "Canvas: moved " << dragName << " to " << r.x << "," << r.y << std::endl;
@@ -1019,10 +1088,17 @@ public:
     // The canvas point at the aim: in Search where the search started from (the camera follows the
     // selection; phantomat summons to the navigation return), else the current one.
     std::pair<float,float> headingPoint() const {
-        float fx=camera.targetFocusX, fy=camera.targetFocusY, z=camera.targetZoom, ax=aimX, ay=aimY;
-        if(state==State::Search) { const auto& b=search.back; fx=b.focusX; fy=b.focusY; z=b.zoom; ax=b.aimX; ay=b.aimY; }
-        z=std::max(z, .01f);
-        return {ring.unwrap(fx+ring.wrap(ax-fx)/z), fy+(ay-fy)/z};
+        Camera c=camera; float ax=aimX, ay=aimY;
+        c.focusX=c.targetFocusX; c.focusY=c.targetFocusY; c.zoom=c.targetZoom; c.scrollY=c.targetScrollY;
+        if(state==State::Search) { const auto& b=search.back; c.focusX=b.focusX; c.focusY=b.focusY; c.zoom=b.zoom; ax=b.aimX; ay=b.aimY; c.scrollY=b.scrollY; }
+        return {unprojectX(c, ring, ax), unprojectY(c, ay)};
+    }
+    // The canvas point under the view-centre ray (M8: heading and pitch from the eye at its depth, through
+    // the eased camera as the radar does): where new windows start and Arrange centres its block. Without
+    // a view (tests) the point ahead at eye level.
+    std::pair<float,float> lookPoint() const {
+        const auto ray=viewRay();
+        return {unprojectX(camera, ring, ray.x), unprojectY(camera, ray.y)};
     }
     // To the heading without overlapping (summonRect), then land.
     Aim summon(const std::string& name, const tracking::Quaternion& anchor) {
@@ -1032,7 +1108,7 @@ public:
         auto others=taken();
         std::erase_if(others, [&](const Placed& p) { return p.name==name; });
         history.checkpoint(snapshot());
-        moveTo(*w, summonRect(w->rect, x, y, others, ring, metrics, settings.gapPx));
+        moveTo(*w, summonRect(w->rect, x, y, others, ring, settings.gapPx));
         refresh(clock);
         return land(name, anchor);
     }
@@ -1190,19 +1266,19 @@ public:
         return l;
     }
     // Ring positions around the canvas point at the view heading, at canvas scale; the view band is
-    // what the current zoom shows.
+    // what the current zoom shows. Heights are projected (zoom and scroll), in view heights.
     overlay::Radar radarView() const {
         overlay::Radar r;
-        const float zoom=std::max(camera.zoom, .01f);
-        const float centreX=ring.unwrap(camera.focusX+ring.wrap(heading*ring.pxPerDeg()-camera.focusX)/zoom);
+        const float zoom=std::max(camera.zoom, .01f), centreX=lookPoint().first;
         r.viewDeg=std::min(360.f, fov.horizontal()/zoom);
         for(const auto& w:windows) {
             if(w.gone || w.pinned) continue;
-            r.marks.push_back({ring.heading(ring.wrap(w.rect.cx()-centreX)), ring.heading(w.rect.w), rowFor(w.rect.cy(), metrics), w.staged});
+            const Rect p=project(w.rect, camera, ring);
+            r.marks.push_back({ring.heading(ring.wrap(w.rect.cx()-centreX)), ring.heading(w.rect.w), p.y/metrics.viewH, (p.y+p.h)/metrics.viewH, w.staged});
         }
         return r;
     }
-    void snap() { camera.focusX=camera.targetFocusX; camera.focusY=camera.targetFocusY; camera.zoom=camera.targetZoom; }
+    void snap() { camera.focusX=camera.targetFocusX; camera.focusY=camera.targetFocusY; camera.zoom=camera.targetZoom; camera.scrollY=camera.targetScrollY; }
     unsigned tierCount(governor::Tier tier) const {
         return unsigned(std::count_if(windows.begin(), windows.end(), [&](const CanvasWindow& w) { return !w.gone && w.decision.tier==tier; }));
     }

@@ -272,7 +272,7 @@ struct View {
     }
     void bindTexture(GLuint texture) const { gltex::bind(texture); }
     // The windowed canvas keys (§5.8) for the title bar; --help lists them all.
-    static constexpr const char* canvasKeys="/: search | F: fill | O: overview | Tab: switch | F1: help";
+    static constexpr const char* canvasKeys="/: search | F: fill | O: overview | Tab: switch | PgUp/PgDn: scroll | F1: help";
     bool openWindow() {
         if (SDL_Init(direct ? SDL_INIT_EVENTS : SDL_INIT_VIDEO) != 0) { std::cerr << SDL_GetError() << '\n'; return false; }
         if (direct) return true;
@@ -501,7 +501,7 @@ struct View {
     // Search and later are canvas verbs (M4): Switch steps by x (+-1) or finishes (begin; output
     // "cancel" cancels); Neighbour/Nudge take a direction token, Summon/Focus/Pin a window in output.
     enum class Verb { Fit, FitTarget, FitOutput, Recenter, ZoomBy, FlickIn, FlickOut, Pan,
-                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus };
+                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus, Scroll };
     struct Move { Verb verb; float x=0, y=0; bool begin=false; std::string output={}; };
     // Every external navigation entry point goes through here; monitor mode ignores the canvas verbs.
     void navigate(const Move& m) {
@@ -531,6 +531,8 @@ struct View {
         case Verb::FlickIn: explicitMove(now); applyAim(canvas->flickIn(anchor, now)); break;
         case Verb::FlickOut: explicitMove(now); applyAim(canvas->flickOut(anchor)); break;
         case Verb::Pan: recenterUntil=0; applyAim(canvas->pan(m.x, m.y, m.begin, anchor)); break;
+        // m.y: a fraction of the view height, positive scrolls down (M8).
+        case Verb::Scroll: explicitMove(now); applyAim(canvas->scrollBy(m.y*canvas->metrics.viewH)); break;
         default: canvasCommand(m, now, anchor); break;
         }
         afterCanvasVerb();
@@ -600,6 +602,11 @@ struct View {
     static float headingDeg(const tracking::Quaternion& view) {
         const auto f=targeting::rotate(tracking::conjugate(view), {0, 0, -1});
         return std::atan2(f.x, -f.z)*180/pi;
+    }
+    // Looking up is positive (the scene's view ray then meets the cylinder above the aim, canvas y down).
+    static float pitchDeg(const tracking::Quaternion& view) {
+        const auto f=targeting::rotate(tracking::conjugate(view), {0, 0, -1});
+        return std::atan2(f.y, std::hypot(f.x, f.z))*180/pi;
     }
     canvas::Fov canvasFov() const { return {fov, aspect()}; }
     // The eye eases to the scene's aim like every monitor-mode aim; no aim leaves the view where it is.
@@ -1066,8 +1073,9 @@ struct View {
         if (canvas) steerCanvas(); else tracking.clearCanvasVerbs();
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
     }
-    // The canvas key set (§5.5, modes 8-18); 11/12 with the token "release" end the switcher; 18 is the
-    // confirm (M7: the fit_target hotkey and the three-finger tap), which lands on and focuses the target.
+    // The canvas key set (§5.5, modes 8-19); 11/12 with the token "release" end the switcher; 18 is the
+    // confirm (M7: the fit_target hotkey and the three-finger tap), which lands on and focuses the target;
+    // 19 scrolls by its token (M8: up/down a wheel notch, pageup/pagedown a page).
     void canvasKey(int mode, const std::string& token) {
         switch (mode) {
         case 8: navigate({Verb::Fit}); break;
@@ -1080,6 +1088,7 @@ struct View {
         case 16: navigate({Verb::Pin}); break;
         case 17: navigate({Verb::Help}); break;
         case 18: std::cout << "Canvas: confirm " << fitTargetName(monotonicSeconds()) << std::endl; navigate({Verb::FitTarget}); break;
+        case 19: if (const auto f=canvas->scrollFraction(token)) navigate({.verb=Verb::Scroll, .y=*f}); break;
         default: break;
         }
     }
@@ -1121,8 +1130,8 @@ struct View {
         if (windowsPath.empty() && controls->windows) adoptList(*controls->windows);
     }
     // SUPER+left-drag in the glasses (M7): Lua's .drag travel (canvas-output logical px, the confinement
-    // overflow included) moves the staged window along the ring with M6's drag (snap, row band, undo
-    // checkpoint, memory); the real window stays at the stage origin. Only in Work/Fill on the stage.
+    // overflow included) moves the staged window over the cylinder with M6's drag (snap, free in y since
+    // M8, undo checkpoint, memory); the real window stays at the stage origin. Only in Work/Fill on the stage.
     void stageDrag(double dx, double dy, bool started, bool active) {
         const double now=monotonicSeconds();
         if (started) {
@@ -1249,7 +1258,8 @@ struct View {
         }
     }
     // 2D canvas keys (§5.8): / search, F Fill, O Overview, P pin, R recenter, Tab switcher (Return or
-    // 1.5 s end it), Alt(+Shift)+arrows neighbour (nudge), Ctrl+A/Z/Shift+Z, F1; Esc closes overlays, then quits.
+    // 1.5 s end it), Alt(+Shift)+arrows neighbour (nudge), Ctrl+A/Z/Shift+Z, F1, PageUp/PageDown scroll
+    // (M8); Esc closes overlays, then quits.
     void canvasKeyDown(const SDL_Keysym& key) {
         const bool ctrl=key.mod&KMOD_CTRL, shift=key.mod&KMOD_SHIFT, alt=key.mod&KMOD_ALT;
         if (promptShown && promptSdl) { sdlSearchKey(key.sym, ctrl, shift); return; }
@@ -1269,6 +1279,8 @@ struct View {
         case SDLK_TAB: navigate({Verb::Switch, shift ? -1.f : 1.f}); break;
         case SDLK_RETURN: case SDLK_KP_ENTER: if (canvas->switcher.active) navigate({.verb=Verb::Switch, .begin=true}); break;
         case SDLK_F1: navigate({Verb::Help}); break;
+        case SDLK_PAGEUP: navigate({.verb=Verb::Scroll, .y=-.8f}); break;
+        case SDLK_PAGEDOWN: navigate({.verb=Verb::Scroll, .y=.8f}); break;
         default: break;
         }
     }
@@ -1301,7 +1313,7 @@ struct View {
         if (canvas) { canvasMousePan(motion); return; }
         if (motion.state&SDL_BUTTON_MMASK) { panX+=motion.xrel*distance*.0015f; panY-=motion.yrel*distance*.0015f; targetPanX=panX; targetPanY=panY; }
     }
-    // Middle-drag pans the canvas focus; the first motion of a drag begins the gesture.
+    // Middle-drag pans the canvas focus and scrolls vertically (M8); the first motion of a drag begins the gesture.
     void canvasMousePan(const SDL_MouseMotionEvent& motion) {
         if (!(motion.state&SDL_BUTTON_MMASK)) { mousePanning=false; return; }
         interactionUntil=monotonicSeconds()+.4;
@@ -1376,7 +1388,8 @@ struct View {
         canvas->setFov(canvasFov());
         canvas->gazed=gaze.current ? gaze.current->output : std::string(); canvas->selected=selection.output;
         canvas->tick(monotonicSeconds(), cameraDt);
-        canvas->cull(headingDeg(currentView()), canvasFov().horizontal()/2);
+        const auto view=currentView();
+        canvas->cull(headingDeg(view), canvasFov().horizontal()/2, pitchDeg(view));
     }
     void renderScene(int width, int height, bool stereoView, bool flipped, int drawableW, int drawableH) {
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -1405,7 +1418,7 @@ struct View {
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
         if (canvas) {
-            canvas->cull(headingDeg(view), canvasFov().horizontal()/2);
+            canvas->cull(headingDeg(view), canvasFov().horizontal()/2, pitchDeg(view));
             drawSurfaces([&](const auto& visit){ canvas->forEachCandidate(visit); });
             drawCanvasLabels();
             drawXrCursor();
@@ -2016,7 +2029,7 @@ int main(int argc,char** argv) {
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit (monitors); R: recenter; Esc: exit\n"
-                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 6 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nCanvas keys (windowed): /: search; F: fill; O: overview; P: pin; R: recenter; Tab: switch (Return lands);\nAlt+arrows: neighbour; Alt+Shift+arrows: nudge; Ctrl+A: arrange; Ctrl+Z / Ctrl+Shift+Z: undo / redo; F1: help;\nEsc: close the overlay, then exit\n"; return 0; }
+                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 6 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nCanvas keys (windowed): /: search; F: fill; O: overview; P: pin; R: recenter; Tab: switch (Return lands);\nAlt+arrows: neighbour; Alt+Shift+arrows: nudge; Ctrl+A: arrange; Ctrl+Z / Ctrl+Shift+Z: undo / redo; F1: help;\nPageUp/PageDown: scroll; Esc: close the overlay, then exit\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.4.0\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;

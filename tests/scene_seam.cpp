@@ -134,7 +134,7 @@ void canvasLabels(View& v) {
         s.camera.zoom=s.camera.targetZoom=zoom;s.refresh(3);s.cull(0,180);
         for (auto& w:s.windows) w.visible=true;
         const auto quads=s.labelQuads();
-        assert(quads.size()==s.windows.size());
+        assert(quads.size()==s.candidates.size() && (zoom>.5f || quads.size()==s.windows.size()));   // M8: the cull bounds rows at zoom 1
         for (const auto& q:quads) {
             const auto* l=v.findLayout(q.layout.output);
             assert(q.texture && std::abs(q.layout.y+q.layout.height+8-l->y)<1e-2f && q.layout.width<=l->width+1e-3f && q.u>0 && q.u<=1);
@@ -195,9 +195,13 @@ void canvasSeam(SDL_Window* window, const std::string& pose) {
     assert(stats.find("\"mode\":\"canvas\"")!=std::string::npos && stats.find("\"canvasWindows\":3")!=std::string::npos);
     assert(stats.find("\"output\":\"0xb2\"")!=std::string::npos && stats.find("\"tiers\":{")!=std::string::npos);
     assert(v.monitorMathCalls==0 && v.canvas->occluders().size()<=3);
-    for (unsigned i=0;i<40;++i) list.records.push_back(canvasRecord(0x100+i,640,480,int(i)+3));
+    for (unsigned i=0;i<80;++i) list.records.push_back(canvasRecord(0x100+i,640,480,int(i)+3));
     v.canvas->adopt(list,2);v.canvas->tick(2,0);v.canvas->cull(0,180);
-    assert(v.canvas->candidates.size()==43 && v.canvas->occluders().size()==24 && v.monitorMathCalls==0);
+    // The whole ring around, vertically one view height beyond eye level (M8: the spiral also stacks rows,
+    // so 80 small windows put more than 24 into that band).
+    const auto inBand=[&](const PanelLayout& l){ return std::abs(l.y+l.height/2)<=v.canvas->metrics.viewH+l.height/2; };
+    const auto band=size_t(std::count_if(v.sceneGeometry().begin(),v.sceneGeometry().end(),inBand));
+    assert(band>24 && v.canvas->candidates.size()==band && v.canvas->occluders().size()==24 && v.monitorMathCalls==0);
     canvasLabels(v);
     canvasLease(v);
 }
