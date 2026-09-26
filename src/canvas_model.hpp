@@ -153,6 +153,12 @@ inline std::vector<size_t> visibleIndices(const std::vector<PanelLayout>& projec
     }
     return out;
 }
+// A projected window fully outside the view around the heading (the new-window edge cue).
+inline bool offView(const Rect& projected, float headingDeg, float halfSpanDeg, const Ring& ring) {
+    return std::abs(std::remainder(ring.heading(projected.cx())-headingDeg, 360.f)) > halfSpanDeg+ring.heading(projected.w)/2;
+}
+// Canvas px per viewport px at the camera zoom (the Overview mouse drag).
+inline float dragScale(const Metrics& m, float viewportPx, float zoom) { return m.viewW/std::max(viewportPx, 1.f)/std::max(zoom, .01f); }
 // workspaceBend's k = 2π/(span+gap) = 1/R: the ring centre is the eye.
 inline Cylinder cylinder(const Ring& ring, float gapPx) {
     spatial::Workspace w; w.degrees=360; w.follow=true; w.gap=gapPx/900;

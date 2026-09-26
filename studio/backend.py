@@ -198,6 +198,8 @@ def run_hypr(*args):
 
 
 class Manager:
+    SWITCH_TIMEOUT = 3.0
+
     def __init__(self, directory, renderer, runner=run_hypr, runtime=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -627,8 +629,11 @@ class Manager:
         actual = {monitor["name"]: monitor for monitor in self.monitors()}
         return all(self.output_matches(actual.get(self.prefix + monitor["id"], {}), monitor, rate) for monitor in layout["monitors"])
 
-    def desktop_origin(self, existing):
-        other = [monitor for monitor in existing if monitor["name"] not in self.owned]
+    def desktop_origin(self, existing, clear_owned=False):
+        # A live canvas output is an obstacle too (monitor outputs applied during a canvas->monitors switch);
+        # clear_owned also clears live monitor outputs (canvas created during a monitors->canvas switch).
+        other = [monitor for monitor in existing if clear_owned or monitor["name"] not in self.owned
+                 or monitor["name"] == self.canvas.name]
         # Preserve the desktop origin while its built-in panel is temporarily off.
         other += [monitor for monitor in self.laptop.saved() if monitor["name"] not in {item["name"] for item in other}]
         if other:
@@ -688,7 +693,8 @@ class Manager:
                 time.sleep(.1)
             else:
                 raise RuntimeError("The desktop could not apply the monitor size or position. Try Apply again.")
-            self.remove(self.owned - desired)
+            # A live canvas output leaves only through CanvasSession.remove (window restore first).
+            self.remove(self.owned - desired - {self.canvas.name})
             self.output_geometry = {name:{k:actual[name][k] for k in ("x","y")} for name in desired}
             self.persist_applied(layout)
         except Exception:
@@ -927,18 +933,77 @@ class Manager:
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
                                                 "renderMode":self.render_mode})
 
-    def set_render_mode(self, mode):
+    def set_render_mode(self, mode, layout=None):
         if mode not in ("monitors", "canvas"):
             raise ValueError("Choose Virtual monitors or Window canvas")
-        if self.viewer and self.viewer.poll() is None:
-            raise RuntimeError("Stop XR before switching the render mode.")
         if mode == "canvas" and self.controls_version() < 6:
             raise RuntimeError(CONTROLS_HINT)
+        if mode == self.render_mode:
+            return
+        if self.viewer and self.viewer.poll() is None:
+            self.switch_live(mode, layout)
+            return
         # Outputs of the other mode (Apply without a preview) never outlive the switch.
-        if mode != self.render_mode and self.owned:
+        if self.owned:
             self.stop_viewer()
         self.render_mode = mode
         self.save_presentation()
+
+    def switch_live(self, mode, layout):
+        """Hyprland side first, then the renderer's scene; the old mode's outputs go last."""
+        # Leaving the canvas returns its windows, which needs a computer display.
+        if self.laptop.status()["off"]:
+            raise RuntimeError("Turn the laptop display back on before switching the render mode.")
+        if mode == "canvas":
+            self.canvas.ensure(self.monitors())
+        else:
+            self.apply(layout or self.load())
+        previous, self.render_mode = self.render_mode, mode
+        self.save_presentation()
+        if self.request_mode(mode):
+            self.release_other_mode(previous)
+            return
+        self.append_backend_log("live mode switch not acknowledged; restarting the XR view")
+        self.restart_viewer(layout)
+
+    def request_mode(self, mode):
+        """Send mode:<mode> and wait for the renderer's .stats to report it (forced right after the switch)."""
+        sent = time.monotonic()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+                connection.sendto(f"mode:{mode}".encode(), str(self.pose_socket))
+        except OSError:
+            return False
+        while time.monotonic() - sent < self.SWITCH_TIMEOUT:
+            sample = self.performance_sample()
+            if sample.get("mode") == mode and sample.get("time", 0) >= sent - .5:
+                return True
+            time.sleep(.05)
+        return False
+
+    def release_other_mode(self, previous):
+        if previous == "monitors":
+            # relocate_workspaces never targets the canvas output, so nothing lands hidden there.
+            self.remove(set(self.owned) - {self.canvas.name})
+            self.applied = None
+            self.output_geometry = {}
+            self.internal_workspaces = {}
+        else:
+            self.canvas.remove()
+
+    def restart_viewer(self, layout):
+        """Stop-first fallback (D10): the mode is already persisted, so a failed restart leaves it selected."""
+        direct, present = self.direct, self.presenting
+        self.stop_viewer()
+        if self.canvas_mode:
+            self.canvas.ensure(self.monitors())
+        else:
+            self.apply(layout or self.load())
+        if direct:
+            self.start_dedicated()
+        else:
+            self.connect_tracking()
+            self.start(present=present)
 
     def disable_laptop_display(self):
         if not self.direct or not self.stereo_active or not self.viewer or self.viewer.poll() is not None:
@@ -1224,7 +1289,12 @@ def action_present_direct(manager, request):
 
 
 def action_render_mode(manager, request):
-    manager.set_render_mode(request.get("renderMode"))
+    # Re-selecting the active mode switches nothing, even while XR runs.
+    changed = request.get("renderMode") != manager.render_mode
+    live = changed and manager.viewer is not None and manager.viewer.poll() is None
+    manager.set_render_mode(request.get("renderMode"), request.get("layout"))
+    if live:
+        return {"message": "Switched to Window canvas." if manager.canvas_mode else "Switched to Virtual monitors."}
     return {"message": "Window canvas selected." if manager.canvas_mode else "Virtual monitors selected."}
 
 

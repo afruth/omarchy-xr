@@ -175,7 +175,8 @@ class CanvasSession:
             self.manager.restoration_error = "; ".join(filter(None, (self.manager.restoration_error, str(exc))))
 
     def create(self, existing, settings):
-        x = self.manager.desktop_origin(existing)
+        # Right of live monitor outputs too, which stay until the renderer has switched.
+        x = self.manager.desktop_origin(existing, clear_owned=True)
         self.runner("eval", self.monitor_rule(settings, x))
         # Journal intent first so a crash during creation can be recovered.
         self.manager.owned.add(self.name)

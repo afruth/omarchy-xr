@@ -112,4 +112,40 @@ void cylinderAlias(){
         const auto u=a.surfaces[i][k],v=b.surfaces[i][k];assert(u.x==v.x && u.y==v.y && u.z==v.z);
     }
 }
-int main(){cylinderAlias();placement();closestBerth();motion();reading();changingLayout();refreshRates();indicators();std::cout<<"Spatial placement, smooth motion, reading lock and directional cues passed\n";}
+// Inside the canvas ring (maxRadius, lowerBand): the berth is below the view centre and in view, and no
+// frame of a 75° turn takes the card beyond the ring reach or behind the view. With the 360° wall fed as
+// occluders nothing is clear, so the cheapest in-band point stands in (never overhead).
+Scene ringScene(bool wall){
+    Scene s;s.tanV=std::tan(28*spatial::pi/360);s.tanH=s.tanV*16/9;s.eye={0,0,0};s.depth=2.1f;s.maxRadius=2.1f;s.lowerBand=true;
+    if(!wall)return s;
+    const float gap=60;std::vector<PanelLayout> panels;
+    for(int i=0;i<30;++i)panels.push_back({std::to_string(i),float(i%10)*1340,float(i/10-1)*780-360,1280,720,0,100});
+    spatial::Workspace workspace;workspace.degrees=360;workspace.follow=true;workspace.gap=gap/900;
+    s.tessellate(panels,Cylinder{0,0,2*spatial::pi*2.4f-gap/900,2.4f,workspace});
+    assert(!s.surfaces.empty());
+    return s;
+}
+void inBand(const Scene& s,const Floater& f){
+    assert(centerInView(s,f.position));
+    const auto p=s.camera(f.position);const float pitch=std::atan2(p.y,-p.z);
+    assert(pitch<=0 && pitch>=-std::atan(s.tanV*.9f));
+}
+void insideRing(bool wall){
+    auto s=ringScene(wall);Floater f;
+    for(int i=0;i<240;++i)f.update(s,1.45f,.5f,i/60.);
+    if(!wall)assert(f.safe && f.onscreen);
+    inBand(s,f);assert(f.position.y<0 && length(f.position)<=2.1f+1e-3f);
+    auto previous=f.position;
+    for(int i=240;i<1620;++i){
+        const float yaw=std::min(75.f,(i-240)*.5f);
+        s.view=tracking::conjugate(tracking::orientation(0,0,yaw));
+        f.update(s,1.45f,.5f,i/60.);
+        assert(targeting::finite(f.position) && !f.behind);
+        assert(length(sub(f.position,s.eye))<=2.1f+1e-3f);
+        assert(length(sub(f.position,previous))<2.21f/60 && f.speed()<=2.201f);
+        previous=f.position;
+    }
+    if(!wall)assert(f.safe);
+    inBand(s,f);
+}
+int main(){cylinderAlias();placement();closestBerth();motion();reading();changingLayout();refreshRates();indicators();insideRing(false);insideRing(true);std::cout<<"Spatial placement, smooth motion, reading lock, directional cues and the inside-ring band passed\n";}

@@ -59,6 +59,25 @@ void releaseToken(const std::string& directory) {
     assert(accepted(false,11,hextoken::encodeHex("release"))=="rejected");
     assert(accepted(true,6,hextoken::encodeHex("card"))=="card" && accepted(false,7,hextoken::encodeHex("card"))=="card");
 }
+// The same flicks on a canvas View (offline scene, three windows): 6/7 dismiss and cycle and never pan.
+// The inside-ring berth itself is covered by canvas_focus.cpp notificationInsideRing.
+void canvasFlicks(SDL_Window* window,const std::string& directory) {
+    std::filesystem::create_directories(directory);
+    std::vector<Panel> none;const std::string empty;
+    View view(none,false,spatial::Workspace{40},30,empty,empty,false,true,64,28,empty,60,false);
+    view.window=window;view.mode=View::SceneMode::Canvas;
+    view.canvas=std::make_unique<canvas::Scene>(canvas::Ring{},canvas::Settings{},"",true);
+    const auto record=[](std::uint64_t address,unsigned w,unsigned h,int focus,windows::Place place) {
+        windows::Record r;r.address=address;r.cls="foot";r.title="w"+std::to_string(address);r.w=w;r.h=h;r.focusHistoryID=focus;r.place=place;r.pid=int(address);
+        return r;
+    };
+    windows::List list;
+    list.records={record(0xa1,1920,1080,1,windows::Place::Park),record(0xb2,1280,720,0,windows::Place::Stage),record(0xc3,800,600,2,windows::Place::Park)};
+    view.canvas->setFov(view.canvasFov());
+    assert(view.canvas->adopt(list,1));view.canvas->tick(1,0);
+    exercise(view,directory);
+    assert(view.monitorMathCalls==0);
+}
 int main() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     auto* window=SDL_CreateWindow("Notification controls",0,0,1280,720,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);assert(window);
@@ -69,8 +88,9 @@ int main() {
         View view(panels,false,spatial::Workspace{40},30,empty,empty,false,true,64,28,empty,60,false);
         view.window=window;exercise(view,temp);
     }
+    canvasFlicks(window,std::string(temp)+"/canvas");
     releaseToken(temp);
     AsyncFile::instance().flush();std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay, no camera fit and the canvas-only release token passed\n";
+    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay, no camera fit (monitors and canvas) and the canvas-only release token passed\n";
 }

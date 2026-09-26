@@ -211,11 +211,13 @@ check-canvas-live: all $(BUILD)/spike-window-capture
 .PHONY: check-canvas-live
 
 # Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
-# the offscreen canvas focus invariants (also in check-workspace-focus). Adds no coverage of its own.
+# the offscreen canvas focus and live mode switch invariants (also in check-workspace-focus). Adds no
+# coverage of its own.
 CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns %canvas-search,$(UNIT_BINS))
-check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus
+check-canvas: $(CANVAS_UNITS) $(BUILD)/test-canvas-focus $(BUILD)/test-mode-switch
 	for t in $(CANVAS_UNITS); do ./$$t || exit 1; done
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-mode-switch
 .PHONY: check-canvas
 
 clean:
@@ -291,10 +293,15 @@ $(BUILD)/test-workspace-focus: tests/workspace_focus.cpp $(APP_OBJS)
 $(BUILD)/test-canvas-focus: tests/canvas_focus.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Hidden SDL window; exercises the actual renderer without capturing the desktop (monitor and canvas mode).
-check-workspace-focus: $(BUILD)/test-workspace-focus $(BUILD)/test-canvas-focus
+$(BUILD)/test-mode-switch: tests/mode_switch.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Hidden SDL window; exercises the actual renderer without capturing the desktop (monitor and canvas
+# mode, and the live switch between them).
+check-workspace-focus: $(BUILD)/test-workspace-focus $(BUILD)/test-canvas-focus $(BUILD)/test-mode-switch
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-workspace-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-mode-switch
 .PHONY: check-workspace-focus
 
 $(BUILD)/test-scene-seam: tests/scene_seam.cpp $(APP_OBJS)

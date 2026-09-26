@@ -222,7 +222,7 @@ Item {
         if (!requestId) return;
         if (action !== "status") {
             error = false;
-            notify(action === "check" ? "Checking glasses connection…" : action === "reinitialize" ? "Starting recovery — watch for the administrator prompt…" : action === "present_direct" ? (root.directOutput ? "Updating monitors in the running XR session…" : "Starting stereo and reserving the glasses…") : "Working…");
+            notify(action === "check" ? "Checking glasses connection…" : action === "reinitialize" ? "Starting recovery — watch for the administrator prompt…" : action === "present_direct" ? (root.directOutput ? "Updating monitors in the running XR session…" : "Starting stereo and reserving the glasses…") : action === "set_render_mode" && root.viewing ? "Switching the XR view…" : "Working…");
         }
         backend.write(JSON.stringify({
             requestId: requestId,
@@ -952,7 +952,7 @@ Item {
                                 ModeSelector {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
-                                    locked: root.viewing || root.busy || !root.loaded
+                                    locked: root.busy || !root.loaded
                                     hint: root.loaded && root.controlsVersion < 6 ? "Window canvas needs XR controls v6 - open Utilities -> Setup & integrations and reinstall the controls" : ""
                                     accent: Color.accent
                                     foreground: Color.foreground

@@ -19,24 +19,24 @@
 
 The viewer draws and navigates through one scene seam so that a window canvas can
 replace the monitor scene without touching capture, drawing or input. `View::mode`
-is a `SceneMode`: `Monitors` (the default) or `Canvas` (`--canvas`, developer preview).
+is a `SceneMode`: `Monitors` (the default) or `Canvas` (`--canvas`, chosen in Studio).
 Geometry is read through `sceneGeometry()`, `sceneCylinder()` and
 `findLayout(name)`. Drawing walks `forEachSurface()`, which yields a read-only
 `SurfaceView` placed on a `Cylinder` (`src/surface.hpp`); `drawSurfaces(candidates)`
 draws the halos and then the panels of a candidate walk: monitor mode passes
-`forEachSurface`, canvas mode will pass its angular-culled visible windows.
+`forEachSurface`, canvas mode passes its angular-culled visible windows.
 Notification occlusion tessellates through `space::Scene::tessellate(panels, cylinder)`;
 the plan's `surfaces()` name clashes with the `Scene::surfaces` facet member, so the
 entry point is `tessellate()` and `monitors()` stays as the old alias. Every external navigation input (controls, tracking
 requests, wheel, keys) is routed as a `Move` through `navigate()`, the one place
-canvas mode will branch per verb. Sources implement `FrameSource`
+canvas mode branches per verb. Sources implement `FrameSource`
 (`src/frame_source.hpp`); `DesktopCapture` is the monitor implementation.
 `make check-preview` guards pixel identity across the seam, and
 `make check-scene-seam` checks the seam on the real `View`: poses, lookups,
 surface views, the stats mode, navigate equivalence, an empty scene and
 tolerance of appended live-settings fields.
 
-**Canvas mode** (M2, renderer-only; `docs/infinite-canvas-plan.md`) puts every window on
+**Canvas mode** (M2–M6; `docs/infinite-canvas-plan.md`, user guide `docs/window-canvas.md`) puts every window on
 a 360° ring of radius R around the eye (`Cylinder{0,0, 2πR − gap, R}`, 900 px per world
 unit, three rows of 850 px). `canvas::Scene` (`src/canvas_scene.hpp`) owns the windows:
 it adopts the window list by address, places new windows (session memory, then the
@@ -49,14 +49,12 @@ branch that aims the eye inside the ring (`|pan| ≤ R − 0.3`) and never calls
 math. Captures come from one `WindowCaptureHub` (`src/window_capture.{hpp,cpp}`: one
 Wayland connection and a GBM device shared by all windows, `hyprland_toplevel_export_v1`
 by address, a request always outstanding, `ignore_damage` pulls for parked windows).
-`governor::Fixed` (`src/capture_governor.hpp`) assigns the fixed S1b rates each frame:
-the staged window 60 Hz on two staggered lanes, the four largest other visible windows
-24 Hz (0.5 s entry / 1 s exit hysteresis), other visible windows 10 Hz, every visible
-window 10 Hz in Overview (6 Hz when 10 would exceed the 300 Mpix/s budget), off-screen
-windows idle with a ≤ 256 px thumbnail; `src/capture_cadence.hpp` spreads the phases.
-Until the Lua `.windows` mailbox lands (M3) the list comes from `--canvas-windows-file`
-in the same format, polled by mtime every 100 ms; `canvas.tsv` (the `--canvas` path) is
-polled every 250 ms and `canvas-memory.tsv` next to it keeps positions. `pose.sock.stats`
+`src/capture_governor.hpp` assigns each window's rate every frame (the ladder, below);
+off-screen windows idle with a ≤ 256 px thumbnail; `src/capture_cadence.hpp` spreads the
+phases. The window list comes from the Lua adapter's `.windows` mailbox beside the pose
+socket (`LiveControls::updateWindows()`, M3); developer and test runs pass the same format
+with `--canvas-windows-file`, polled by mtime every 100 ms. `canvas.tsv` is polled every
+250 ms and `canvas-memory.tsv` next to it keeps positions. `pose.sock.stats`
 adds `canvasWindows`, `canvasState` (`work`/`overview`), `tiers` (counts per tier) and,
 per window in `captures`, `tier`, `rateHz`, `fps`, `visible` and `requestToReadyMs`.
 Lease loss releases textures, labels and the hub with the GL context and regenerates
@@ -79,6 +77,73 @@ Quickshell layer-shell prompt (`studio/SearchPromptWindow.qml`) over the `.promp
 (renderer → prompt) and `.search` (prompt → renderer) mailboxes; `.fill` asks the Lua
 adapter to resize the staged window.
 
+M3 made the canvas a Studio mode: `config/xr-controls.lua` v6 publishes `.windows` and
+`.cursor`, stages the window the eye lands on (the staged window lives on the visible
+`omxr-canvas` workspace, the others on the hidden `omxr-park`), guards fullscreen and
+takes SUPER+F over; the renderer writes the `.mode` heartbeat (`v1 <pid> canvas|monitors
+<takeover> <stamp>`) that switches the adapter's canvas branch on and off, and
+`RegionSource` captures the staged window's rectangle of the canvas output so menus,
+tooltips and the native cursor show. `studio/canvas.py` (`CanvasSession`) creates the
+canvas output, journals every window's origin to `canvas-session.json` before moving it,
+and restores window by window before the output is removed.
+
+M5 replaced the fixed profile with the pixel-budget ladder (`governor::Ladder`, plan
+§4.4): rates from `60 › 40 › 30 › 24 › 20 › 15 › 10 › 6` Hz filled tier by tier
+(Focused, Near ≤ 4, Far/Overview) under the Studio budget (default 300 Mpix/s), lowered
+at once and raised after 2 s; the lowest-ranked windows idle rather than overrun. The
+budget self-calibrates from request→ready of pulled exports and from GPU frame time,
+and a VRAM estimate caps it at 512 MB. Windows rated above 30 Hz become live *slivers*
+(an 8 px strip at the right edge of the canvas output, `no_follow_mouse`) because a
+parked window is redrawn at ≈ 30 Hz at most; the renderer publishes the sliver set in
+the `.tiers` mailbox and the Lua adapter moves the windows. `pose.sock.stats` carries
+the `budget` block and per-window `place`/`inFlight`.
+
+**Live mode switch** (M6). The renderer holds both scene files from one state directory:
+`viewerPath` (`viewer.tsv`) and `canvasPath` (`canvas.tsv`, from `--canvas` or next to
+`--layout`); `environment.tsv`, `tracking.tsv` and `gaze.tsv` stay next to the start
+file. A `mode:canvas` or `mode:monitors` datagram on the pose socket sets
+`PoseSocket::modeRequested`; `tick()` applies it right after `tracking.update()`, so
+the rest of that frame already runs the new scene. `View::switchScene` refuses smoke
+runs, `--canvas-windows-file` runs, a missing canvas path and controls older than v6
+(checked before anything connects), and otherwise builds the new scene before tearing
+the old one down: `enterCanvasScene` connects the `WindowCaptureHub` first (a canvas
+that cannot capture logs `Window canvas unavailable` and keeps the monitors), then drops
+the panels and their captures; `enterMonitorScene` closes an open search prompt, saves
+the canvas memory, releases the hub and re-reads `viewer.tsv` (a layout that cannot be
+captured yet leaves an empty monitor scene that retries). `DirectOutput`, the SDL
+window, the spectator, the environment, the notification HUD and `LiveControls` stay;
+`LiveControls::setCanvasMode` rewrites the `.mode` heartbeat at once and, on a change,
+clears the canvas mailbox state so a re-entered canvas starts at sequence 1. The
+switch forces the next `.stats` report (`reportDue`) instead of waiting for the 5 s
+cadence, and logs `Scene: switched to canvas|monitors`. The backend drives it
+(`Manager.switch_live`, see **Lifecycle**) and treats the `.stats` `mode` with a fresh
+`time` as the acknowledgement; without one within 3 s it stops and restarts XR in the
+same presentation (the stop-first fallback, plan D10).
+
+**Notifications inside the ring** (M6). `space::Scene` gains `maxRadius` and
+`lowerBand`, both off by default so monitor mode runs the old code paths (pixel
+identity in `check-preview`). In canvas mode the card's route and berth search are
+capped at R − 0.3, berths are searched in a band below the view centre that stays
+inside the view, the card depth is the staged window's distance (else 0.85·R) capped at
+R − 0.3, no occluders are fed (`clear()` tests the eye→card pyramid against the facets,
+which can never pass inside a 360° wall), and `Hud::draw(now, false)` draws the cards
+depth-test-off after the scene. `canvas::Scene::occluders()` stays for the seam tests.
+The HUD exists whenever a pose socket does (D6), so the flat `--display` view, the
+windowed preview and the spectator show cards too; `make smoke` (no pose socket) and
+the preview stills (their own `Hud`) are unaffected.
+
+**New-window cues and the Overview drag** (M6). Windows added after the first adopted
+list (`Scene::primed`) get a 300 ms halo pulse through `haloTarget`; one whose centre is
+outside the view (`canvas::offView` against the last cull heading) also gets an edge
+chevron in the theme accent, drawn with `notifications::drawCue`, for up to 3 s or until
+its centre is in view (`expireCues`). In the SDL window (windowed preview, `--display`)
+a left press in Overview or Search starts `dragBegin` on the window under the pointer
+(pinned windows excepted); motion of 4 px or more moves it along the ring
+(`dragScale` converts pointer px to canvas px at the current zoom), release snaps to
+20 px, reverts outside the row band, records an undo checkpoint and saves the place to
+`canvas-memory.tsv`; a press without motion stays a click (stage and warp). The
+spectator gets no input, and in the glasses the real pointer lives in the staged window.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping
@@ -86,6 +151,16 @@ rectangles, creates or updates owned monitors, verifies actual dimensions,
 removes obsolete outputs, then writes the renderer layout. Layout editing leaves physical outputs alone. Dedicated presentation temporarily
 changes the VITURE mode and classification, then restores them on exit. An existing viewer stops before apply to release its captures.
 Monitor identifiers remain stable during an editor session.
+Choosing the other render mode while XR runs switches in place (`switch_live`): the
+Hyprland side first (canvas output and window migration, or `apply(layout)` with
+`viewer.tsv`; `desktop_origin` counts a live canvas output as an obstacle and a new
+canvas output clears live monitor outputs, so the two never overlap), then the `mode:`
+datagram, the `.stats` acknowledgement, and only then the release of the other mode's
+outputs (monitor outputs through `remove()`, whose `relocate_workspaces` never targets
+the canvas output; the canvas through `CanvasSession.remove`, which restores windows
+first). The mode is saved before the renderer is asked, so the stop-first fallback
+restarts in the new mode. A live switch is refused while the laptop display is off,
+because restoring canvas windows needs a computer display.
 
 The editor is a kept-loaded `panel` plus a `bar-widget`. Hiding it (Hide, Escape,
 or closing the window) dismisses the floating editor and leaves the top-bar icon
@@ -127,6 +202,21 @@ to the GPU driver that rendered it, so other machines regenerate it with
 `PREVIEW_UPDATE=1`. Canvas mode leaves those stills untouched; its live check is
 `tests/live_canvas.py`, which runs the renderer windowed against a temporary
 `SPIKE-canvas` headless output and asserts the capture rates from `pose.sock.stats`.
+`make check-workspace-focus` (and `make check-canvas`) also runs `test-mode-switch`
+(`tests/mode_switch.cpp`): real `mode:` datagrams through the bound socket for
+monitors → canvas → monitors → canvas (scene swap, environment kept, eye inside the
+ring, the `.mode` heartbeat, the forced `.stats` mode, the mailbox restarting at
+sequence 1, `canvas-memory.tsv` saved), the four refusals, and a mono frame that
+differs with the HUD. `tests/notification_space.cpp` adds the inside-ring cases (no
+occluders, and a tessellated 30-window 360° wall: lower band, inside the view, radius
+≤ R − 0.3 on every frame of a sweep, never `behind`); `canvas_focus.cpp` covers the
+pulse and edge cue, the Overview drag and the card inside the ring, and
+`notification_controls.cpp` the flicks on a canvas. `tests/test_canvas.py` covers the
+backend switch: `test_live_mode_switch_never_restarts_viewer_or_sdk` (the exact
+datagrams, the same viewer, no SDK or dedicated calls, windows parked and restored,
+`layout.json` byte-identical, no foreign workspace on the canvas output), non-overlapping
+outputs during the switch, the stop-first fallback in stereo and presenting, and the
+laptop-off refusal.
 
 ## Next milestones
 

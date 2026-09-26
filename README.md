@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.3.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.3.1).
+[Download the 0.4.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.4.0).
 The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.4.0-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -99,14 +99,17 @@ the selected Omarchy theme.
 6. **Stop & remove monitors** stops the viewer and removes the virtual outputs.
    Existing applications are left running and Hyprland relocates their workspaces.
 
-**Window canvas** (preview) is the second mode. With stereo stopped, choose **Window canvas**
-above the Start buttons on **Controls**. Each application window then gets its own panel on a ring
+**Window canvas** is the second mode. Choose **Window canvas** above the Start buttons on
+**Controls**, before starting or while stereo or a preview runs: a running session switches in
+place, keeping the glasses in stereo (if the renderer does not confirm within 3 s, Studio restarts
+XR in the new mode; the switch is refused while the laptop display is off). Each application window then gets its own panel on a ring
 around you, instead of sitting on a virtual monitor. At start Studio moves your windows to one
 hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
 SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
 and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
 SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
-F1 lists every canvas key. The second tab becomes **Canvas** with the ring and capture settings; the
+F1 lists every canvas key. New windows pulse briefly, and one placed outside your view gets an edge
+arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
 needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
@@ -216,7 +219,7 @@ omarchy pkg add gcc make pkgconf sdl2-compat libglvnd wayland mesa libdrm pango 
 make                 # optimized build with debug symbols and warnings
 make run             # synthetic preview without creating monitors
 make check           # pixel conversion, lifecycle and CLI tests
-make check-workspace-focus # workspace-to-camera integration; hidden offscreen window
+make check-workspace-focus # workspace-to-camera integration, canvas focus and the live mode switch (test-mode-switch); hidden offscreen window
 make check-scene-seam # renderer scene seam (geometry, surfaces, stats mode); hidden offscreen window
 make smoke           # ten rendered frames; requires a graphical session
 make check-preview   # pixel-exact renderer regression against tests/baselines; same GPU driver
@@ -243,15 +246,19 @@ python3 scripts/preview-ui.py capture /tmp/xr-monitors.png
 quickshell kill -p /tmp/omarchy-xr-ui-preview
 ```
 
-Window canvas (developer preview, not yet started by Studio) renders every window as its own quad
-on a 360° ring instead of monitor panels:
+Window canvas renders every window as its own quad on a 360° ring instead of monitor panels.
+Studio starts it with `--canvas <state>/canvas.tsv --pose-socket …` and the Lua adapter's
+`.windows` mailbox; a developer run without Studio can pass a windows file instead:
 `./build/omarchy-xr --canvas DIR/canvas.tsv --canvas-windows-file DIR/windows.tsv --pose-socket DIR/pose.sock`.
 `--canvas` names the settings file `canvas.tsv` (it may not exist yet; defaults apply; reloaded every
 250 ms), and `environment.tsv`, `tracking.tsv` and `gaze.tsv` are read from its directory. It cannot
 be combined with `--layout`, `--capture` or `--list-outputs`, and it needs Hyprland's
-`hyprland_toplevel_export_v1` v2. `F` toggles Overview and the staged window; `R` recenters.
+`hyprland_toplevel_export_v1` v2. `O` toggles Overview and the staged window, `F` fills; `R` recenters.
 `pose.sock.stats` reports `"mode":"canvas"`, `canvasWindows`, the capture tiers and per-window
-rate and fps.
+rate and fps. A `mode:canvas` / `mode:monitors` datagram switches a running renderer between the two
+scenes (`canvas.tsv` and `viewer.tsv` are both taken from the state directory of `--layout` or
+`--canvas`); it is refused in smoke runs, with `--canvas-windows-file`, and for canvas with controls
+older than v6. The viewer log says `Scene: switched to …` or `Scene: switch to … refused: …`.
 
 The windows file uses the `.windows` mailbox format from `docs/infinite-canvas-plan.md` §3.1 and
 is re-read whenever its mtime changes. The first line is `v1 <owner> <seq> <stamp>`. Each further
@@ -293,7 +300,10 @@ of Omarchy's installed notification service. Native desktop cards, actions,
 expiry, Do Not Disturb and history remain available. No packaged files are edited.
 
 In stereo, desktop notifications become separate, theme-colored 3D cards with
-shallow rims. Up to three cards form a staggered floating stack; flicking down
+shallow rims. The cards also show in the flat glasses view and the windowed
+preview whenever the XR controls are set up (the renderer has a pose socket);
+in Window canvas mode they float inside the ring, in the lower part of the view,
+drawn over the windows. Up to three cards form a staggered floating stack; flicking down
 brings the next notification to the front. The bridge mirrors up to 32 active
 alerts, with bounded text and textures. The stack uses the same perspective and
 eye separation as the monitors. It chooses the nearest clear position beside or above the workspace,
@@ -516,7 +526,11 @@ use supports `--direct DP-1 --stereo`, `--list-leases`, and `--pose-socket PATH`
 The SDK publisher sends `euler-nwu-v1 TIMESTAMP ROLL PITCH YAW` packets in degrees
 over a private local socket. Publishing runs independently of blocking USB
 control commands. Samples older than 250 ms are rejected; stale tracking holds
-the previous view. The same socket accepts recenter/fit/zoom controls from Studio.
+the previous view. The same socket accepts recenter/fit/zoom controls from Studio, the
+canvas verbs (`overview`, `search`, `fill`, `arrange`, `undo`, `redo`, `pin`, `help`,
+`focus:0x…`) and `mode:monitors` / `mode:canvas`, which switches the running renderer's
+scene in place (Studio sends it after preparing the outputs and waits for `pose.sock.stats`
+to report the new `mode`).
 
 Verified on the attached Pro 2: direct mono at 120 Hz, stereo at 60 Hz, three live
 1080p captures, live tracking, no renderer window or desktop VITURE output while

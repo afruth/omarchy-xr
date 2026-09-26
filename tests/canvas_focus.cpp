@@ -535,7 +535,7 @@ void firstMailboxLands(SDL_Window* window, const std::string& temp) {
     std::filesystem::create_directories(dir);
     std::vector<Panel> none;
     View v(none,false,spatial::Workspace{80},24,empty,pose,false,false,64,28,canvasPath,60,false);
-    v.window=window; v.mode=View::SceneMode::Canvas;
+    v.window=window; v.mode=View::SceneMode::Canvas; v.canvasPath=v.layoutPath;
     v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
     v.environment=std::make_unique<SkyEnvironment>("");
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
@@ -988,6 +988,141 @@ void takeoverFlag(View& v) {
     heartbeat("0"); assert(!v.canvas->settings.takeoverKeys);
     heartbeat("1"); assert(v.canvas->settings.takeoverKeys);
 }
+// M6 new-window cues. A remembered rect claimed by the next window of that title, found free near x.
+canvas::Rect freeNear(const canvas::Scene& s, float x, float w, float h) {
+    for (float dx=0;dx<4000;dx+=100) for (float sign:{1.f, -1.f}) for (float row:{0.f, -s.metrics.rowHeight, s.metrics.rowHeight}) {
+        canvas::Rect r=canvas::snap({x+sign*dx-w/2, row-h/2, w, h}); r.x=s.ring.unwrap(r.x);
+        if (canvas::inBand(r, s.metrics) && canvas::freeAt(r, s.taken(), s.settings.gapPx, s.ring.period())) return r;
+    }
+    assert(false); return {};
+}
+windows::Record remembered(View& v, std::uint64_t address, const canvas::Rect& rect, double now) {
+    auto r=record(address, "cue "+std::to_string(address), unsigned(rect.w), unsigned(rect.h), 50, int(address));
+    r.canvas=true; r.place=windows::Place::Park;
+    v.canvas->memory.entries.push_back({r.cls, r.title, rect, now, false});
+    return r;
+}
+// The edge cue fades over its last 0.5 s and ends after 3 s without a look; a closed window shows none.
+void cueLifetime(View& v, const windows::List& list, float far, double t) {
+    auto& s=*v.canvas;
+    const auto offView=[&](const canvas::Rect& r) { return canvas::offView(canvas::project(r, s.camera, s.ring), s.heading, s.halfSpan, s.ring); };
+    const auto away=freeNear(s, far, 400, 300); assert(offView(away));
+    auto next=list; next.records.push_back(remembered(v, 0xc0de3, away, t));
+    s.adopt(next, t);
+    const auto* w=s.find("0xc0de3"); assert(w && w->cueUntil==t+3);
+    s.tick(t+2.75, 0);
+    const auto cues=s.newWindowCues(); assert(cues.size()==1 && std::abs(cues[0].alpha-.5f)<1e-3f);
+    s.tick(t+3.01, 0); assert(s.newWindowCues().empty() && w->cueUntil==t+3);
+    const auto other=freeNear(s, far, 400, 300); assert(offView(other));
+    next.records.push_back(remembered(v, 0xc0de4, other, t+3.1));
+    s.adopt(next, t+3.1); assert(s.newWindowCues().size()==1);
+    const auto* closing=s.find("0xc0de4"); assert(closing);
+    s.adopt(list, t+3.2); assert(closing->gone && closing->cueUntil>s.clock && s.newWindowCues().empty());
+    s.tick(t+3.2+canvas::fadeSeconds+.01, 0); assert(!s.find("0xc0de3") && !s.find("0xc0de4"));
+}
+// (w) Only windows after the first list pulse (300 ms); one placed fully outside the view also gets an
+// edge cue until its centre is in view.
+void newWindowCues(View& v) {
+    work(v); landOn(v, "0x5005");
+    auto& s=*v.canvas; const auto list=s.lastList; const double now=monotonicSeconds();
+    for (auto& w:s.windows) w.cueUntil=w.pulseUntil=0;   // windows the tests before brought in
+    const float x=s.headingPoint().first, far=x+s.ring.period()/2;
+    const auto near=freeNear(s, x, 400, 300);
+    assert(!canvas::offView(canvas::project(near, s.camera, s.ring), s.heading, s.halfSpan, s.ring));
+    auto next=list; next.records.push_back(remembered(v, 0xc0de1, near, now));
+    s.adopt(next, now);
+    const auto* in=s.find("0xc0de1"); assert(in && sameRect(in->rect, near));
+    assert(in->pulseUntil>s.clock && s.haloTarget("0xc0de1")==1 && in->cueUntil==0 && s.newWindowCues().empty());
+    s.tick(now+.35, 0); assert(s.haloTarget("0xc0de1")==0);
+    const auto away=freeNear(s, far, 400, 300);
+    assert(canvas::offView(canvas::project(away, s.camera, s.ring), s.heading, s.halfSpan, s.ring));
+    next.records.push_back(remembered(v, 0xc0de2, away, now+.4));
+    s.adopt(next, now+.4);
+    const auto* out=s.find("0xc0de2"); assert(out && sameRect(out->rect, away));
+    assert(out->pulseUntil>s.clock && out->cueUntil>s.clock && s.newWindowCues().size()==1);
+    const auto cue=s.newWindowCues()[0]; assert(cue.name=="0xc0de2" && cue.alpha==1);
+    s.expireCues(v.overlayScene(v.currentView())); assert(s.newWindowCues().size()==1);
+    auto facing=v.overlayScene(v.currentView());
+    const auto d=targeting::normalize(targeting::sub(cue.centre, facing.eye));
+    facing.view=tracking::conjugate(tracking::orientation(0, -std::asin(d.y)*180/pi, -std::atan2(d.x, -d.z)*180/pi));
+    s.expireCues(facing); assert(s.newWindowCues().empty() && out->cueUntil==0);
+    s.adopt(list, now+.5); s.tick(now+.5+canvas::fadeSeconds+.01, 0);
+    assert(!s.find("0xc0de1") && !s.find("0xc0de2"));
+    cueLifetime(v, list, far, now+1);
+    canvas::Scene fresh(canvas::Ring{}, canvas::Settings{}, "", true);
+    assert(!fresh.primed);
+    fresh.adopt(listOf({record(0xd001, "a", 800, 600, 0, 1), record(0xd002, "b", 800, 600, 1, 2)}), 1);
+    for (auto& r:fresh.lastList.records) r.canvas=true;
+    fresh.adopt(fresh.lastList, 1);
+    assert(fresh.primed && fresh.live()==2);
+    for (const auto& w:fresh.windows) assert(w.pulseUntil==0 && w.cueUntil==0);
+}
+// (x) The Overview mouse drag: snapped, overlap allowed, clamped to the band, remembered and undoable; a
+// press without motion is a click, and in Work a press never drags.
+void overviewDrag(View& v) {
+    using V=View::Verb;
+    work(v); v.navigate({V::FlickOut}); ease(v, 120); assert(v.canvas->zoomedOut());
+    auto& s=*v.canvas; const auto* w=s.find("0x5003"); assert(w && !w->pinned);
+    const auto start=w->rect; const auto undos=s.history.undo.size();
+    s.dragBegin("0x5003"); for (int i=0;i<3;++i) s.dragBy(400, 0);
+    assert(s.dragEnd());
+    assert(std::abs(s.ring.wrap(w->rect.x-(start.x+1200)))<=10 && std::fmod(w->rect.x, 20.f)==0 && w->rect.y==start.y);
+    assert(s.history.undo.size()==undos+1);
+    assert(std::any_of(s.memory.entries.begin(), s.memory.entries.end(), [&](const auto& e) { return e.title==w->record.title && sameRect(e.rect, w->rect); }));
+    v.navigate({V::Undo}); assert(sameRect(w->rect, start));
+    ease(v, 60); panInsideRing(v);
+    s.dragBegin("0x5003"); s.dragBy(0, 5000);
+    assert(!s.dragEnd() && sameRect(w->rect, start) && s.history.undo.size()==undos);
+    // A pinned window does not drag: no motion, no checkpoint.
+    s.findMutable("0x5003")->pinned=true;
+    s.dragBegin("0x5003"); s.dragBy(400, 0);
+    assert(!s.dragEnd() && sameRect(w->rect, start) && s.history.undo.size()==undos);
+    s.findMutable("0x5003")->pinned=false;
+    // A cancelled drag puts the window back where it started.
+    s.dragBegin("0x5003"); s.dragBy(400, 0); assert(!sameRect(w->rect, start));
+    s.dragCancel(); assert(sameRect(w->rect, start) && s.history.undo.size()==undos && !s.dragEnd());
+    // Through the View: a press and release in place focuses; with motion it drags.
+    const auto at=projectCentre(v, "0x5003"); assert(at);
+    const auto serial=v.pointerSerial;
+    v.pressAt(at->first, at->second); assert(v.drag.active && v.drag.window=="0x5003" && v.pointerSerial==serial);
+    v.releaseAt(); assert(!v.drag.active && v.hoverOutput=="0x5003" && v.pointerSerial==serial+1 && sameRect(w->rect, start));
+    v.pressAt(at->first, at->second); v.dragMotion(2, 1); assert(!v.drag.moved); v.dragMotion(60, 0); assert(v.drag.moved);
+    assert(w->rect.x!=start.x);
+    v.releaseAt(); assert(!v.drag.active && s.history.undo.size()==undos+1 && std::fmod(w->rect.x, 20.f)==0);
+    v.navigate({V::Undo}); assert(sameRect(w->rect, start));
+    ease(v, 60); panInsideRing(v);
+    work(v);
+    bool pressed=false;
+    for (const auto& c:s.windows) if (const auto p=c.gone ? std::nullopt : projectCentre(v, c.name)) { v.pressAt(p->first, p->second); pressed=true; break; }
+    assert(pressed && !v.drag.active && s.dragName.empty());
+    assert(v.monitorMathCalls==0);
+}
+void publishCard(const std::string& folder) {
+    std::ofstream file(folder+"/notifications.json.tmp");
+    file << "{\"version\":1,\"generation\":\"ring\",\"time\":" << std::fixed << notifications::wallMilliseconds()
+         << ",\"entries\":[{\"key\":\"ring\",\"app\":\"Omarchy\",\"summary\":\"Inside the ring\",\"body\":\"Below the view centre.\"}]}";
+    file.close(); std::filesystem::rename(folder+"/notifications.json.tmp", folder+"/notifications.json");
+}
+// (y) In Work a card berths in view, in the lower band, never beyond R - 0.3 of the eye.
+void notificationInsideRing(View& v) {
+    work(v); landOn(v, "0x5005");
+    const auto folder=std::filesystem::path(v.posePath).parent_path().string();
+    publishCard(folder); v.notificationHud=std::make_unique<notifications::Hud>(folder);
+    auto& hud=*v.notificationHud;
+    for (int i=0;i<100 && !hud.visible();++i) { SDL_Delay(10); hud.update(v.tracking.camera, monotonicSeconds()); }
+    assert(hud.visible());
+    const float R=v.canvas->ring.radius; const double t0=monotonicSeconds();
+    for (int i=0;i<240;++i) {
+        const double t=t0+i/60.;
+        hud.update(v.tracking.camera, t); v.placeNotification(t);
+        const auto& f=hud.placement();
+        assert(notifications::space::length(targeting::add(f.position, {v.panX, v.panY, v.panZ}))<=R-.3f+1e-3f);
+    }
+    const auto& f=hud.placement(); const auto scene=v.overlayScene(v.currentView());
+    assert(f.safe && f.onscreen && notifications::space::centerInView(scene, f.position) && scene.camera(f.position).y<0);
+    hud.release(); v.notificationHud.reset();
+    std::filesystem::remove(folder+"/notifications.json");
+}
 // M5: the ladder in the renderer. A fresh View (its own mailboxes), times passed in, every window visible.
 struct Ladder {
     View& v;
@@ -1123,7 +1258,7 @@ void ladder(SDL_Window* window, const std::string& temp) {
     {
     std::vector<Panel> none;
     View v(none,false,spatial::Workspace{80},24,empty,pose,false,false,64,28,canvasPath,60,false);
-    v.window=window; v.mode=View::SceneMode::Canvas;
+    v.window=window; v.mode=View::SceneMode::Canvas; v.canvasPath=v.layoutPath;
     v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
     v.environment=std::make_unique<SkyEnvironment>("");
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
@@ -1152,7 +1287,7 @@ int main() {
     {
         std::vector<Panel> none;
         View v(none,false,spatial::Workspace{80},24,empty,pose,false,false,64,28,canvasPath,60,false);
-        v.window=window; v.mode=View::SceneMode::Canvas;
+        v.window=window; v.mode=View::SceneMode::Canvas; v.canvasPath=v.layoutPath;
         v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
         v.windowsPath=std::string(temp)+"/windows.tsv"; write(v.windowsPath, windowsFile(1, twelve()));
         v.environment=std::make_unique<SkyEnvironment>("");
@@ -1164,6 +1299,7 @@ int main() {
         mailboxList(v); hoverV4(v); virtualCursor(v); clickPath(v); stageSourceFallback(v); stageRegion(v);
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
         bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
+        newWindowCues(v); overviewDrag(v); notificationInsideRing(v);
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
@@ -1171,5 +1307,5 @@ int main() {
     sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback and closed windows leaving the ladder passed\n";
+    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag and notifications inside the ring passed\n";
 }

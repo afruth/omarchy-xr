@@ -26,6 +26,8 @@ public:
     bool overviewRequested=false,searchRequested=false,fillRequested=false,arrangeRequested=false,undoRequested=false,
         redoRequested=false,pinRequested=false,helpRequested=false;
     std::string focusRequested;
+    // mode:canvas|monitors (backend live switch, M6): the scene to switch to; the View consumes it.
+    std::string modeRequested;
     bool canvasVerb(const std::string& packet) {
         static constexpr std::pair<const char*,bool PoseSocket::*> verbs[]={{"overview",&PoseSocket::overviewRequested},
             {"search",&PoseSocket::searchRequested},{"fill",&PoseSocket::fillRequested},{"arrange",&PoseSocket::arrangeRequested},
@@ -73,6 +75,7 @@ public:
                 else if(packet=="fit_target" || packet=="fit_center")fitTargetRequested=true;
                 else if(packet=="zoom_in")++zoom;
                 else if(packet=="zoom_out")--zoom;
+                else if(packet=="mode:canvas" || packet=="mode:monitors") modeRequested=packet.substr(5);
                 else if(canvasVerb(packet)) {}
                 else camera.accept(packet,monotonicSeconds());
             }

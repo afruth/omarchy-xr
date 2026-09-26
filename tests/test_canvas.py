@@ -2,8 +2,10 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -99,7 +101,33 @@ class CanvasTests(unittest.TestCase):
         try: manager.cleanup()
         finally: manager.lock.close()
 
-    def test_mode_persists_and_is_blocked_while_viewing(self):
+    def ack_socket(self, manager, replies=True):
+        """The renderer's pose socket: records each datagram and, if replies, reports the requested mode in .stats."""
+        received: list[bytes] = []
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        server.bind(str(manager.pose_socket))
+        self.addCleanup(server.close)
+        stats = Path(str(manager.pose_socket) + ".stats")
+
+        def serve() -> None:
+            while True:
+                try: data = server.recv(256)
+                except OSError: return
+                received.append(data)
+                if not replies or manager.viewer is None: continue
+                sample = {"pid": manager.viewer.pid, "mode": data.decode().removeprefix("mode:"), "time": time.monotonic(), "fps": 60}
+                stats.with_suffix(".tmp").write_text(json.dumps(sample))
+                stats.with_suffix(".tmp").replace(stats)
+        threading.Thread(target=serve, daemon=True).start()
+        return received
+
+    @staticmethod
+    def running(manager, pid=4321):
+        process = Mock(pid=pid); process.poll.return_value = None
+        manager.viewer = process
+        return process
+
+    def test_mode_persists_and_switches_live_while_viewing(self):
         fake = CanvasHypr()
         manager = self.manager(fake)
         try:
@@ -110,14 +138,140 @@ class CanvasTests(unittest.TestCase):
             self.assertFalse(manager.owned)
             self.assertEqual(json.loads(manager.presentation_profile.read_text())["renderMode"], "canvas")
             with self.assertRaises(ValueError): manager.set_render_mode("stereo")
-            process = Mock(); process.poll.return_value = None; manager.viewer = process
-            with self.assertRaisesRegex(RuntimeError, "Stop XR before switching the render mode."):
-                manager.set_render_mode("monitors")
-            self.assertEqual(manager.render_mode, "canvas")
+            self.running(manager)
+            with patch.object(manager, "switch_live") as switch:
+                manager.set_render_mode("canvas")
+                switch.assert_not_called()
+                self.assertEqual(perform(manager, {"action": "set_render_mode", "renderMode": "canvas"})["message"], "Window canvas selected.")
+                switch.assert_not_called()
+                manager.set_render_mode("monitors", default_layout())
+                switch.assert_called_once_with("monitors", default_layout())
         finally: self.close(manager)
         again = self.manager(CanvasHypr())
         try: self.assertTrue(again.canvas_mode)
         finally: self.close(again)
+
+    def live_session(self, fake, manager):
+        manager.apply(default_layout())
+        fake.clients = [client("0x1", 1), client("0x2", 2, floating=True)]
+        fake.workspaces = [{"id": 2, "monitor": manager.prefix + "1", "windows": 1}]
+        manager.dedicated.stop = Mock()
+        return self.running(manager)
+
+    def close_live(self, manager):
+        manager.stereo_active = False
+        self.close(manager)
+
+    def test_live_mode_switch_never_restarts_viewer_or_sdk(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        try:
+            process = self.live_session(fake, manager)
+            layout_bytes = manager.profile.read_bytes()
+            manager.direct = manager.stereo_active = True
+            untouched = {name: Mock() for name in ("start_dedicated", "start", "connect_tracking")}
+            for name, mock in untouched.items(): setattr(manager, name, mock)
+            manager.sdk.connect = untouched["connect"] = Mock()
+            manager.sdk.stereo = untouched["stereo"] = Mock()
+            untouched["stop"] = manager.dedicated.stop
+            received = self.ack_socket(manager)
+            response = perform(manager, {"action": "set_render_mode", "renderMode": "canvas", "layout": default_layout()})
+            self.assertEqual(response["message"], "Switched to Window canvas.")
+            self.assertEqual(received, [b"mode:canvas"])
+            canvas = manager.canvas.name
+            self.assertTrue(manager.canvas.active and manager.stereo_active and manager.direct)
+            self.assertEqual(manager.owned, {canvas})
+            self.assertIsNone(manager.applied)
+            self.assertEqual(fake.window("0x1")["workspace"]["name"], "omxr-park")
+            self.assertEqual(fake.workspaces[0]["monitor"], "eDP-1")
+            self.assertFalse([w for w in fake.workspaces if w["monitor"] == canvas and not str(w.get("name", "")).startswith("omxr-")])
+            self.assertEqual(json.loads(manager.presentation_profile.read_text())["renderMode"], "canvas")
+            manager.set_render_mode("monitors", default_layout())
+            self.assertEqual(received, [b"mode:canvas", b"mode:monitors"])
+            self.assertEqual(manager.owned, {manager.prefix + m["id"] for m in default_layout()["monitors"]})
+            self.assertNotIn(canvas, fake.outputs)
+            self.assertTrue(fake.evals("omarchy_xr_canvas_rules=nil"))
+            self.assertEqual(fake.window("0x1")["workspace"]["id"], 1)
+            self.assertFalse(fake.window("0x1")["floating"])
+            self.assertEqual(fake.window("0x2")["workspace"]["id"], 2)
+            self.assertEqual(manager.profile.read_bytes(), layout_bytes)
+            self.assertEqual(json.loads(manager.presentation_profile.read_text())["renderMode"], "monitors")
+            self.assertIs(manager.viewer, process)
+            process.terminate.assert_not_called()
+            for name, mock in untouched.items():
+                with self.subTest(untouched=name): mock.assert_not_called()
+        finally: self.close_live(manager)
+
+    def test_live_outputs_never_overlap_during_the_switch(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        try:
+            self.live_session(fake, manager)
+            self.ack_socket(manager)
+            panels = [manager.output_rect(fake.outputs[manager.prefix + m["id"]]) for m in default_layout()["monitors"]]
+            with patch.object(manager, "release_other_mode", wraps=manager.release_other_mode) as release:
+                manager.set_render_mode("canvas")
+                release.assert_called_once_with("monitors")
+            # Created while the monitor outputs were still live: right of them.
+            self.assertGreaterEqual(fake.rules[manager.canvas.name]["x"], max(r[2] for r in panels) + 100)
+        finally: self.close_live(manager)
+
+    def test_live_switch_falls_back_to_stop_first_without_an_ack(self):
+        for present in (False, True):
+            with self.subTest(presenting=present):
+                self.state.joinpath("presentation.json").unlink(missing_ok=True)
+                fake = CanvasHypr()
+                manager = self.manager(fake)
+                try:
+                    process = self.live_session(fake, manager)
+                    manager.direct, manager.presenting = not present, present
+                    manager.start_dedicated, manager.start, manager.connect_tracking = Mock(), Mock(), Mock()
+                    received = self.ack_socket(manager, replies=False)
+                    with patch.object(Manager, "SWITCH_TIMEOUT", .2):
+                        manager.set_render_mode("canvas")
+                    self.assertEqual(received, [b"mode:canvas"])
+                    process.terminate.assert_called_once()
+                    if present:
+                        manager.start.assert_called_once_with(present=True)
+                        manager.start_dedicated.assert_not_called()
+                    else:
+                        manager.start_dedicated.assert_called_once()
+                        manager.start.assert_not_called()
+                    self.assertEqual(manager.render_mode, "canvas")
+                    self.assertTrue(manager.canvas.active)
+                    self.assertEqual(manager.owned, {manager.canvas.name})
+                    self.assertIn("not acknowledged", (manager.directory / "backend.log").read_text())
+                finally: self.close_live(manager)
+                os.unlink(manager.pose_socket)
+
+    def test_live_switch_refused_while_laptop_display_is_off(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        try:
+            self.live_session(fake, manager)
+            owned = set(manager.owned)
+            received = self.ack_socket(manager)
+            manager.laptop.status = Mock(return_value={"off": True, "outputs": ["eDP-1"], "error": ""})
+            with self.assertRaisesRegex(RuntimeError, "Turn the laptop display back on"):
+                manager.set_render_mode("canvas")
+            self.assertEqual(manager.render_mode, "monitors")
+            self.assertEqual((received, manager.owned), ([], owned))
+            self.assertNotIn(manager.canvas.name, fake.outputs)
+        finally: self.close_live(manager)
+
+    def test_monitor_outputs_clear_a_live_canvas_output(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        try:
+            manager.set_render_mode("canvas")
+            manager.canvas.ensure(manager.monitors())
+            manager.apply(default_layout())
+            canvas = fake.rules[manager.canvas.name]["x"]
+            for m in default_layout()["monitors"]:
+                self.assertGreaterEqual(fake.rules[manager.prefix + m["id"]]["x"], canvas + 2560 + 100)
+            # Monitor outputs never take the canvas output with them.
+            self.assertTrue(manager.canvas.active)
+        finally: self.close(manager)
 
     def test_canvas_mode_requires_controls_v6(self):
         manager = self.manager(CanvasHypr())

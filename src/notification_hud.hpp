@@ -195,11 +195,15 @@ public:
         target();
     }
     const space::Floater& placement()const{return floater;}
-    void draw(double now) const {
+    // A live scene switch changes depth and ring limits: berth afresh instead of easing from the old scene.
+    void resetPlacement(){floater.reset();}
+    // Canvas mode draws the cards over the ring (depthTest false); monitors keep the depth test.
+    void draw(double now,bool depthTest=true) const {
         if(!visible()) return;
         const float alpha=float(std::clamp((now-visibleSince)/.3,0.,1.));
         glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_TEXTURE_BIT|GL_CURRENT_BIT|GL_LINE_BIT);
-        glEnable(GL_DEPTH_TEST);glDepthMask(GL_FALSE);glDisable(GL_CULL_FACE);
+        if(depthTest)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);glDisable(GL_CULL_FACE);
         glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
         for(size_t j=layers();j>0;--j) {
             const size_t i=j-1;const auto& item=items[i];

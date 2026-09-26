@@ -6,7 +6,8 @@ and the window you work in is live at 60 Hz with its menus, tooltips and mouse p
 is in [infinite-canvas-plan.md](infinite-canvas-plan.md).
 
 It arrived with milestone M3; search, Fill, the window switcher, arranging, pinning, the radar strip
-and the F1 key help arrived with M4.
+and the F1 key help arrived with M4; the capture ladder with M5; the live mode switch, notifications
+inside the ring, new-window cues and the Overview mouse drag arrived with M6.
 
 ## Requirements
 
@@ -19,9 +20,8 @@ and the F1 key help arrived with M4.
 
 ## Turning it on
 
-1. Stop stereo or the preview. The mode can only be changed while nothing is being viewed.
-2. On **Controls**, choose **Window canvas** above the Start buttons.
-3. Optionally open the **Canvas** tab (the second tab in canvas mode) to change the output
+1. On **Controls**, choose **Window canvas** above the Start buttons.
+2. Optionally open the **Canvas** tab (the second tab in canvas mode) to change the output
    refresh and scale, ring radius, window gap, label size, capture budget, exclusions and whether
    your windows move to the canvas at start. **Apply canvas settings** saves them to
    `canvas.json` in the state directory (`~/.local/state/omarchy-xr`). The capture budget
@@ -29,7 +29,29 @@ and the F1 key help arrived with M4.
    summed over all windows. While the canvas runs, a line under the field shows how much of it is in
    use, whether the canvas has lowered it by itself, the capture latency and how many live slivers
    there are (see **Capture rates**).
-4. Press **Start stereo** (or **Open windowed preview** in **Utilities**).
+3. Press **Start stereo** (or **Open windowed preview** in **Utilities**).
+
+**Switching while XR runs.** The mode selector stays available while stereo or a preview runs; Studio
+shows "Switching the XR view…" and then "Switched to Window canvas." (or "…Virtual monitors."). The
+renderer, the glasses' stereo presentation and its display lease stay as they are; only the scene
+changes:
+
+1. Studio first prepares the desktop side of the new mode: for Window canvas it creates the canvas
+   output (to the right of the monitor outputs, which are still live) and moves your windows to
+   `omxr-park`, exactly as at a canvas start; for Virtual monitors it returns the canvas windows to
+   where they came from and applies your saved monitor layout (the monitor outputs are placed to the
+   right of the canvas output, and `viewer.tsv` is written).
+2. It then tells the running renderer: the `mode:canvas` or `mode:monitors` message on `pose.sock`.
+   The renderer builds the new scene in place and reports the new mode in `pose.sock.stats` at once.
+3. Only after that acknowledgement does Studio remove the other mode's outputs (the monitor outputs,
+   or the canvas output and its rules; SUPER+F and the other taken keys become Omarchy's again).
+
+If the renderer does not answer within 3 seconds, Studio stops XR and starts it again in the new mode,
+in the same presentation (stereo or the preview). The new mode is saved before that, so even if the
+restart fails the new mode stays selected. A switch is refused while the laptop display is off
+("Turn the laptop display back on before switching the render mode."), because returning the canvas
+windows needs a computer display; turn the laptop display on first. With XR stopped, choosing a mode
+only selects it for the next start.
 
 Choosing **Virtual monitors** again brings back monitor mode unchanged: your monitor setups and
 `layout.json` are not touched by a canvas session.
@@ -58,6 +80,35 @@ its original workspace. A tiled window is tiled again; a floating one gets back 
 position. A window you moved off the canvas yourself stays where you put it; if it was tiled
 before, it is tiled again. Windows that had no recorded origin go to the laptop's active workspace.
 Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
+
+## New windows
+
+A window that opens while the canvas runs gets a short halo pulse (300 ms) where it lands, so you see
+where it went. When it is placed outside your view, an accent-coloured chevron at the edge of the view
+points towards it for up to 3 seconds, or until you turn and its centre is in view. The windows moved
+to the canvas at start, and a canvas you switch to, show neither.
+
+## Moving windows
+
+In the glasses, **SUPER+SHIFT+arrows** nudges the window you work in by 100 px, **Shift+Enter** in the
+search summons a window next to you, and **Ctrl+A** arranges the ring (see **Keys**).
+
+In the windowed preview (and a flat `--display` run) you can also drag with the mouse: in Overview or
+the search, a left-drag moves the window under the pointer along the ring. It snaps to 20 px, may
+overlap other windows (like a nudge), stays within the three rows (a drop outside them puts the window
+back), and the new place is remembered for the next start. **Ctrl+Z** undoes it. A press that moves
+less than 4 px is an ordinary click: it selects the window and puts the pointer there. In Work a press
+never drags. The spectator and the glasses have no mouse drag: the real pointer is inside the window
+you work in.
+
+## Notifications
+
+Notifications work in both modes. In canvas mode the cards float inside the ring, never behind a
+window, in the lower part of your view, and are drawn over the windows. Look at a card and flick up
+with three fingers to dismiss it, or down to cycle through the stack, exactly as in monitor mode.
+
+The cards also show in the flat glasses view and in the windowed preview whenever the XR controls are
+set up (the renderer then has a pose socket), not only in stereo.
 
 ## Capture rates
 
@@ -216,6 +267,15 @@ keyboard only while the search is open.
 - **Menus or the pointer are missing on the working window**: the renderer falls back to the
   window export when the region capture of the canvas output fails; its log says
   `Region capture of 0x…: …`. `OMARCHY_XR_NO_REGION=1` forces that fallback for comparisons.
+- **Switching modes stopped XR and started it again**: the renderer did not acknowledge the switch
+  within 3 seconds, so Studio used the stop-first fallback (`backend.log` in the state directory says `live mode switch
+  not acknowledged; restarting the XR view`). The `mode` field of `pose.sock.stats` shows which scene the
+  renderer runs; `viewer.log` shows `Scene: switched to canvas` (or `monitors`) on success, and
+  `Scene: switch to … refused: …` or `Window canvas unavailable: …` when the renderer could not build
+  the new scene. The session continues in the new mode after the restart.
+- **"Turn the laptop display back on before switching the render mode."**: a live switch needs a
+  computer display to return the canvas windows to. Turn the laptop display on (Controls) and switch
+  again, or stop XR first.
 - **After a crash** (Studio or the renderer killed), the next Studio start finds
   `canvas-session.json`, puts the windows back, removes the canvas output and turns the canvas rules
   off. A journal from another Hyprland session is dropped, because its window addresses no longer
@@ -223,3 +283,141 @@ keyboard only while the search is open.
   SUPER+SHIFT+number.
 - **Studio still shows the old mode or no Canvas tab** after an update: reinstall Studio and
   rescan plugins (see the README), then reopen Studio.
+
+## End-to-end manual test checklist
+
+This is the consolidated manual test for a release. It collects the glasses checks of milestones
+M2–M6 into one pass; the automated gates (`make check`, `check-san`, `check-notifications`,
+`check-workspace-focus`, `check-environment`, `check-preview`, `smoke`, `smoke-canvas`, `check-ui`,
+`check-lint`) run first. The runtime directory is `$XDG_RUNTIME_DIR/omarchy-xr/` (`pose.sock.stats`,
+the `pose.sock.controls.*` mailboxes), the state directory `~/.local/state/omarchy-xr/`
+(`layout.json`, `viewer.tsv`, `canvas.json`, `canvas-session.json`, `viewer.log`, `backend.log`).
+
+Before starting, note `sha256sum ~/.local/state/omarchy-xr/{layout.json,viewer.tsv}` and
+`hyprctl binds -j > /tmp/binds-before.json`.
+
+### Presentation matrix
+
+Run each row with three or more windows open (a browser, a terminal, a video) and one notification
+(`notify-send test`). "Glasses flat" is **Utilities → Preview & cleanup → Open fullscreen mono**
+(`--display` on the glasses), the spectator is the flat window of Studio's **Recording** switch
+during stereo.
+
+| Mode | Presentation | Expected |
+|---|---|---|
+| ☐ Virtual monitors | Direct stereo | Monitors in SBS stereo; the lease is held (no VITURE desktop output); notification cards beside the monitors; flick up dismisses, flick down cycles. |
+| ☐ Virtual monitors | Glasses flat | Same monitors in mono; the notification card shows (mono HUD). |
+| ☐ Virtual monitors | Windowed preview | Same in a window; card shows; **R**, **F**, wheel, **Esc** work. |
+| ☐ Virtual monitors | Spectator | Mirrors the stereo view including the card; unchanged from 0.3.1. |
+| ☐ Window canvas | Direct stereo | Windows on the ring in SBS stereo; the staged window live with menus and the native cursor; the card floats inside the ring in the lower part of the view, over the windows. |
+| ☐ Window canvas | Glasses flat | Same ring in mono; card inside the ring; XR cursor or native cursor on the staged window. |
+| ☐ Window canvas | Windowed preview | Same in a window; windowed keys (`/ F O P Tab Alt+arrows F1 Esc`); Overview drag works. |
+| ☐ Window canvas | Spectator | Same picture as the glasses (overlays, cues, card, cursor). |
+
+### Start, stop, migration and restore
+
+- [ ] Window canvas → Start stereo: the `OMXR-…-canvas` output is created, every regular window moves to
+  `omxr-park` (special workspaces and excluded classes stay), `canvas-session.json` lists their origins.
+- [ ] Stop: every window returns to its origin workspace, tiled windows tiled again, floating ones at
+  their size and position; the canvas output and its rules are gone; SUPER+F is Omarchy's fullscreen
+  again (`hyprctl binds -j` equals `/tmp/binds-before.json` for the canvas chords).
+- [ ] `hyprctl reload` mid-session: rules reinstalled, the canvas keeps working, SUPER+F still Fill.
+- [ ] `kill -9` the backend during a canvas session, reopen Studio: windows restored, output and rules
+  removed.
+- [ ] After a canvas session `layout.json` and `viewer.tsv` hash as before, and monitor mode still
+  starts.
+- [ ] SUPER+3, SUPER+SHIFT+3 and the scratchpad never freeze the canvas; SUPER+SHIFT+number takes a
+  window off the canvas with its borders and tiling back.
+
+### Live switch
+
+Run in direct stereo and once in the windowed preview.
+
+- [ ] Monitors → Window canvas while in stereo: the glasses stay in SBS (no black flash to the desktop
+  mode, no lease re-request; `viewer.log` shows `Scene: switched to canvas` and no second
+  `OpenGL:` start line); windows migrate to `omxr-park`; the monitor outputs disappear only after
+  `pose.sock.stats` reports `"mode":"canvas"`.
+- [ ] Window canvas → Monitors while in stereo: windows return to their origin workspaces and tiling,
+  the monitor layout comes back at its saved size, the canvas output and rules are removed, the canvas
+  chords are Omarchy's again, SUPER+F is fullscreen again.
+- [ ] No workspace other than `omxr-canvas`/`omxr-park` sits on the canvas output at any point
+  (`hyprctl workspaces -j`), and no output overlaps another during the switch (`hyprctl monitors -j`).
+- [ ] Monitors → canvas → monitors: `layout.json` and `viewer.tsv` hash as before.
+- [ ] Studio shows "Switching the XR view…" then "Switched to …"; the footer and Canvas tab follow.
+- [ ] Refused while the laptop display is off: Studio says "Turn the laptop display back on before
+  switching the render mode." and nothing changes.
+- [ ] Fallback once: `kill -STOP $(pgrep -x omarchy-xr)` right before switching. After about 3 s
+  `backend.log` shows `live mode switch not acknowledged; restarting the XR view`, the frozen renderer
+  is ended, and XR comes back in the new mode in the same presentation (stereo again for stereo).
+  (A stale `controls.version` cannot force the renderer's own refusal: Studio reads the same file and
+  refuses the canvas first.)
+
+### Input
+
+- [ ] Click and type into windows via `fit_target`, mouse crossing and the SDL click in the preview;
+  stage + warp within 50 ms.
+- [ ] Menus, tooltips and the native cursor on the staged window (`pose.sock.stats` `stage.shown`
+  true); the spectator and preview show the XR cursor when the region is unavailable.
+- [ ] 60 s real-mouse sweep with the laptop display off, across the right edge of the canvas output:
+  focus never moves, a live sliver is never focused, the staged window never covers the strip.
+- [ ] SUPER+F and browser F11 never make a window fullscreen (F11 fills instead).
+- [ ] The three-finger double tap releases the pointer to the laptop screen centre.
+
+### Navigation
+
+- [ ] SUPER+CTRL+G opens the search in stereo, typing in Overview searches too; the camera follows the
+  best match and the palette never covers it; Enter lands, Shift+Enter summons, Esc clears then
+  reverts; a window off the canvas is brought over.
+- [ ] The Quickshell prompt holds the keyboard only while open; focus returns to the staged window.
+- [ ] ALT+TAB: tap flips to the previous window, hold shows the list, release lands (1.5 s fallback).
+- [ ] SUPER+TAB, SUPER+arrows, SUPER+SHIFT+arrows drive the canvas; with the takeover switch off they
+  are Omarchy's while SUPER+F, SUPER+CTRL+G, SUPER+ALT+P stay canvas keys.
+- [ ] Fill: ≈ 90 % of the view with native text; restore in the three cases (untouched, moved,
+  resized).
+- [ ] Ctrl+A arranges by kind without overlap; Ctrl+Z / Ctrl+Shift+Z undo and redo.
+- [ ] SUPER+ALT+P pins body-locked and readable while turning; unpin puts it back.
+- [ ] Radar strip and F1 help readable; overlays follow the head lazily (no jitter within 12°).
+- [ ] A new window pulses briefly where it lands; one placed behind you shows the accent chevron at the
+  view edge, which disappears when you look at it or after 3 s.
+- [ ] In the windowed preview, a left-drag in Overview moves the window under the pointer along the
+  ring in 20 px steps; a drop outside the rows reverts; the place survives a restart; Ctrl+Z undoes;
+  a still click selects instead.
+
+### Capture rates
+
+- [ ] `pose.sock.stats` in stereo with real head motion: focused 60, the others at the ladder rate,
+  `usedMpix ≤ effectiveMpix`, `calibration` 1 in steady state.
+- [ ] A 30 fps video in a near window plays smoothly with no dropped captures.
+- [ ] One hour in canvas mode: the renderer's GPU memory stays flat.
+- [ ] The omarchy-shell recording indicator stays steady while rates and places change.
+- [ ] Studio's budget readout ("Using X of Y Mpix/s", self-limited, latency, slivers) updates.
+- [ ] `make check-canvas-live` passes.
+
+### Notifications
+
+- [ ] Monitor mode: cards beside the workspace in view, in stereo, flat and preview.
+- [ ] Canvas mode: cards inside the ring in the lower part of the view, over the windows, never behind
+  a window or overhead, also after turning 180°.
+- [ ] Flick up dismisses the gazed card (in XR and on the desktop), flick down cycles, in both modes.
+- [ ] Glasses flat and windowed preview show the cards (mono HUD); `make check-preview` is
+  pixel-identical.
+
+### Environments, theme and tracking
+
+- [ ] The environment from `environment.tsv` shows in both modes and survives a live switch.
+- [ ] The theme accent colours halos, the radar, cues and cards after an Omarchy theme change.
+- [ ] Prediction and recenter behave the same in both modes (recenter aims the camera straight ahead).
+
+### Studio
+
+- [ ] The mode selector works while stopped and while viewing; it is disabled with the v6 hint for
+  older controls.
+- [ ] The Canvas tab saves its settings (decimal fields, exclusions, takeover switch).
+- [ ] The footer shows "Window canvas · N windows"; the budget readout updates.
+- [ ] View controls: Overview, Land on window, Search, Fill, Arrange, Undo in canvas mode; the monitor
+  controls in monitor mode.
+
+### Recovery
+
+- [ ] Direct-mode lease loss (unplug and replug the glasses) regenerates textures in both modes.
+- [ ] `kill -9` the renderer: Studio cleans up (canvas windows restored, outputs removed) in both modes.

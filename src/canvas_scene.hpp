@@ -44,6 +44,7 @@ struct CanvasWindow {
     unsigned demandW=1, demandH=1;
     std::string captureStatus;
     double retryAt=0, goneAt=0, lastFrame=0;
+    double pulseUntil=0, cueUntil=0;   // a new window's halo pulse and, placed out of view, its edge cue
     int retryMs=500;
     float halo=0;
     bool visible=false, candidate=false, staged=false, gone=false, closed=false, sized=false;
@@ -160,6 +161,12 @@ public:
     std::string filled, bringRequested, focusRequest;
     bool helpOpen=false;
     Overlays overlays;
+    // primed: the first list was adopted, so later windows are new (pulse and cue). The Overview mouse
+    // drag: the window, its rect and the layout when it started.
+    bool primed=false;
+    std::string dragName;
+    Rect dragFrom;
+    Snapshot dragStart;
 
     // offline: no compositor connection and no captures (tests).
     Scene(Ring r, Settings s, std::string statePath, bool noCapture=false)
@@ -213,6 +220,7 @@ public:
         trackStage();
         if(search.open) rerank();
         refresh(now);
+        primed=true;
         return stagedName!=before;
     }
     unsigned scaled(unsigned logical) const { return std::max(1u, unsigned(std::lround(logical*settings.outputScale))); }
@@ -226,6 +234,10 @@ public:
         CanvasWindow w; w.record=r; w.name=r.name(); w.pixelW=scaled(r.w); w.pixelH=scaled(r.h);
         w.rect=place(r, float(w.pixelW), float(w.pixelH), now);
         memory.note(r.cls, r.title, w.rect, now);
+        if(primed) {
+            w.pulseUntil=now+.3;
+            if(offView(project(w.rect, camera, ring), heading, halfSpan, ring)) w.cueUntil=now+3;
+        }
         windows.push_back(std::move(w));
     }
     std::vector<Placed> taken() const {
@@ -340,7 +352,9 @@ public:
         return state==State::Overview && gazed!=w.name && selected!=w.name ? 80.f : 100.f;
     }
     // The halo: the search selection full, other matches of a query at .35; else the View's selection.
+    // A new window pulses full for 300 ms first.
     float haloTarget(const std::string& name) const {
+        if(const auto* w=find(name); w && clock<w->pulseUntil) return 1.f;
         if(state!=State::Search) return name==selected ? 1.f : 0.f;
         if(name==selectedResult()) return 1;
         return !search.query.empty() && search.matches.count(name) ? .35f : 0.f;
@@ -474,6 +488,22 @@ public:
         std::vector<PanelLayout> out;
         for(auto i:order) out.push_back(projected[i]);
         return out;
+    }
+    // New windows placed outside the view (§5.7): an edge cue for at most 3 s, fading over its last 0.5 s.
+    struct WindowCue { std::string name; overlay::space::Vec centre; float alpha=1; };
+    std::vector<WindowCue> newWindowCues() const {
+        std::vector<WindowCue> out;
+        for(size_t i=0;i<windows.size();++i) {
+            const auto& w=windows[i];
+            if(w.gone || clock>=w.cueUntil) continue;
+            const auto c=cylinder().pose(projected[i]).center;
+            out.push_back({w.name, {c.x, c.y, c.z}, float(std::min(1., (w.cueUntil-clock)/.5))});
+        }
+        return out;
+    }
+    // A cue ends as soon as its window's centre is in view.
+    void expireCues(const overlay::space::Scene& scene) {
+        for(const auto& c:newWindowCues()) if(overlay::space::centerInView(scene, c.centre)) findMutable(c.name)->cueUntil=0;
     }
     const CanvasWindow* find(const std::string& name) const {
         const auto it=std::find_if(windows.begin(), windows.end(), [&](const CanvasWindow& w) { return !w.gone && w.name==name; });
@@ -911,6 +941,35 @@ public:
         if(!working() || visibleShare(*w)>=.9f) return {};
         camera.targetFocusX=ring.unwrap(r.cx()); camera.targetFocusY=r.cy();
         return aim(camera.targetFocusX, camera.targetFocusY, depth, anchor);
+    }
+    // The Overview mouse drag (SDL window): the window follows the pointer, the camera stays. The end snaps
+    // like nudge (overlap allowed), must stay in the row band and is one undo checkpoint; a pinned window
+    // does not drag.
+    void dragBegin(const std::string& name) {
+        const auto* w=find(name);
+        if(!w || w->pinned) { dragName.clear(); return; }
+        dragStart=snapshot(); dragName=name; dragFrom=w->rect;
+    }
+    void dragBy(float dx, float dy) {
+        auto* w=findMutable(dragName);
+        if(!w) return;
+        w->rect.x=ring.unwrap(w->rect.x+dx); w->rect.y+=dy;
+        refresh(clock);
+    }
+    void dragCancel() {
+        if(auto* w=findMutable(dragName)) { w->rect=dragFrom; refresh(clock); }
+        dragName.clear();
+    }
+    bool dragEnd() {
+        auto* w=findMutable(dragName);
+        if(!w) { dragName.clear(); return false; }
+        Rect r=canvas::snap(w->rect); r.x=ring.unwrap(r.x);
+        if(!inBand(r, metrics)) { dragCancel(); return false; }
+        history.checkpoint(dragStart);
+        moveTo(*w, r); refresh(clock);
+        std::cout << "Canvas: moved " << dragName << " to " << r.x << "," << r.y << std::endl;
+        dragName.clear();
+        return true;
     }
     // The canvas point at the aim: in Search where the search started from (the camera follows the
     // selection; phantomat summons to the navigation return), else the current one.
