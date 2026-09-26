@@ -836,7 +836,7 @@ struct View {
         glTranslatef(-eyePosition, 0, 0);
         glMultMatrixf(tracking::matrix(view).data()); glTranslatef(panX, panY, panZ);
         drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
-        if(stereoView && notificationHud) notificationHud->draw(lastCameraTime);
+        if(notificationHud) notificationHud->draw(lastCameraTime);
     }
     // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
     // candidates(visit) yields the surfaces to draw: every panel here, the culled windows in canvas mode.
