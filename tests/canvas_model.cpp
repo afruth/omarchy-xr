@@ -172,7 +172,22 @@ static void berths() {
     // The ring reach: R from the centre, less from a dollied eye looking outwards.
     assert(near(overlay::ringReach(facing(0), 2.4f), 2.4f, 1e-4f) && near(overlay::ringReach(facing(0, {0, 0, -1}), 2.4f), 1.4f, 1e-3f));
 }
+// The new-window cue: only a window fully outside the view counts; the heading wraps at ±180°.
+static void offViewAndDrag() {
+    const float d=ring.pxPerDeg();
+    const auto at=[&](float deg, float wDeg) { return Rect{deg*d-wDeg*d/2, -300, wDeg*d, 600}; };
+    assert(!offView(at(0, 20), 0, 24, ring));          // centre in view
+    assert(!offView(at(30, 20), 0, 24, ring));         // half in view
+    assert(!offView(at(33.9f, 20), 0, 24, ring));      // an edge still inside
+    assert(offView(at(40, 20), 0, 24, ring) && offView(at(180, 20), 0, 24, ring) && offView(at(-40, 20), 0, 24, ring));
+    assert(!offView(at(175, 20), -170, 24, ring));     // 15° apart across the seam
+    assert(offView(at(140, 20), -170, 24, ring));      // 50° apart across the seam
+    assert(!offView(at(355, 20), 5, 24, ring) && offView(at(300, 20), 5, 24, ring));
+    // Canvas px per viewport px: the view width over the viewport at zoom 1, four times that at 0.25.
+    assert(near(dragScale(m, 1920, 1), m.viewW/1920, 1e-5f) && near(dragScale(m, 1920, .25f), 4*m.viewW/1920, 1e-4f));
+    assert(std::isfinite(dragScale(m, 0, 0)));
+}
 int main() {
-    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing(); berths();
-    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling, settings and overlay berths passed\n";
+    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing(); berths(); offViewAndDrag();
+    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling, settings, overlay berths, the off-view cue and the drag scale passed\n";
 }

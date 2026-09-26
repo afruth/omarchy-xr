@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
     {
         std::vector<Panel> none;
         View v(none, false, spatial::Workspace{80}, 24, empty, pose, false, true, 64, 28, canvasPath, 60, false);
-        v.window=window; v.mode=View::SceneMode::Canvas;
+        v.window=window; v.mode=View::SceneMode::Canvas; v.canvasPath=v.layoutPath;
         v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
         v.environment=std::make_unique<SkyEnvironment>("");
         v.accent.path=std::string(temp)+"/colors.toml"; v.accent.update(0);

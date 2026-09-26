@@ -189,8 +189,14 @@ public:
     std::optional<::windows::List> windows;    // a new list this update, else nullopt
     std::optional<::windows::Cursor> cursor;   // a new cursor line this update, else nullopt
     std::optional<::windows::Search> search;   // a new prompt line this update, else nullopt
-    // The mode is announced with the next heartbeat.
-    void setCanvasMode(bool m) { canvasMode = m; heartbeat = 0; }
+    // The mode is announced with the next heartbeat; a live switch starts the canvas mailboxes over.
+    void setCanvasMode(bool m) {
+        heartbeat = 0;
+        if (m == canvasMode) return;
+        canvasMode = m;
+        windows.reset(); cursor.reset(); search.reset(); tiersSet.clear(); tiersAt = -1e9;
+        windowsSeq = cursorSeq = 0; windowsStamp = cursorStamp = searchStamp = {};
+    }
     explicit LiveControls(const std::string& pose) : path(pose.empty() ? "" : pose + ".controls"), session(std::to_string(getpid())) {
         if (const char* mirrored = std::getenv("OMARCHY_XR_MIRROR_STATE")) mirror = mirrored;
         if (mirror == path) mirror.clear();

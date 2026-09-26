@@ -21,7 +21,7 @@ Reserved-rights application licence: `LicenseRef-Omarchy-XR` (LICENSE). Vendor
 and open-source dependency terms are separately preserved. The included runtime
 is not a standalone SDK distribution. Read PRIVACY.md and THIRD_PARTY_NOTICES.md.
 
-Install the companion package from the public v0.3.1 release before enabling
+Install the companion package from the public v0.4.0 release before enabling
 the plugin, or use the plugin’s **Install XR runtime** button. It downloads
 the complete release package, checks a pinned SHA-256 and invokes pacman with
 visible confirmation prompts. AUR is not required. Run
@@ -33,7 +33,7 @@ its narrowly scoped polkit action permits the active local session.
 
 ## Submission status
 
-The repository and v0.3.1 assets are public, and a fresh source clone passes
+The repository and v0.4.0 assets are public, and a fresh source clone passes
 `omarchy plugin validate`. Direct package installation is documented and usable
 without AUR. The submission is open at
 https://github.com/omacom/omarchy-plugin-marketplace/issues/8144. Marketplace

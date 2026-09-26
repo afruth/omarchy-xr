@@ -22,6 +22,10 @@ struct Scene {
     float tanH=.45f,tanV=.25f,ipd=.064f,depth=5;
     std::vector<std::array<Vec,4>> surfaces;
     float ceiling=0;
+    // Inside the canvas ring: no card path beyond maxRadius of the eye, berths below the view centre.
+    // The defaults keep the monitor behaviour exactly.
+    float maxRadius=0;
+    bool lowerBand=false;
     void monitors(const std::vector<PanelLayout>& panels,float cx,float cy,float span,float distance,spatial::Workspace workspace){tessellate(panels,cx,cy,span,distance,workspace);}
     void tessellate(const std::vector<PanelLayout>& panels,const Cylinder& c){tessellate(panels,c.cx,c.cy,c.span,c.distance,c.workspace);}
     // Occluding facets of every surface; keeps its own /900 pose so placements stay bit-identical.
@@ -130,21 +134,37 @@ class Floater {
     bool initialized=false;
     int leg=0;
     float radius=0,routeRadius=0,angle=0,totalAngle=0,velocity=0,lastSpeed=0;
+    // A berth candidate in camera space: above or to either side (monitors), or mirrored below the view
+    // centre and kept inside the view (lowerBand). False skips it.
+    static bool bandPoint(const Scene& scene,float depth,int up,int side,float sign,Vec& out){
+        const float x=sign*depth*std::tan(side*.045f),y=depth*std::tan(.025f+up*.045f);
+        if(!scene.lowerBand){
+            out={x,y,-depth};
+            return !(std::abs(x)<depth*scene.tanH*.25f && y<depth*scene.tanV*.50f);
+        }
+        out={x,-y,-depth};
+        if(std::abs(x)>depth*scene.tanH*.90f || y>depth*scene.tanV*.90f)return false;
+        return !(std::abs(x)<scene.tanH*.25f*depth && y<scene.tanV*.5f*depth);
+    }
     Vec findPlace(const Scene& scene,float width,float height) const {
-        const float depth=std::max(.85f,scene.depth*.97f);
-        Vec best{};float score=1e9f;
+        const float cap=scene.maxRadius>0?scene.maxRadius-.05f:1e9f;
+        const float depth=std::max(.85f,std::min(scene.depth*.97f,cap));
+        Vec best{},fallback{};float score=1e9f,fallbackScore=1e9f;
         // At the monitor's depth, choose the physically closest free berth:
         // above or to either side. Right wins a symmetrical tie. No bottom slots.
+        // Inside the ring (lowerBand) nothing may go overhead: the cheapest in-band point stands in.
         for(int up=0;up<=24;++up)for(int side=0;side<=24;++side)for(float sign:{1.f,-1.f}){
             if(side==0 && sign<0)continue;
-            const Vec cameraPoint{sign*depth*std::tan(side*.045f),depth*std::tan(.025f+up*.045f),-depth};
-            if(std::abs(cameraPoint.x)<depth*scene.tanH*.25f && cameraPoint.y<depth*scene.tanV*.50f)continue;
+            Vec cameraPoint;
+            if(!bandPoint(scene,depth,up,side,sign,cameraPoint))continue;
             const float cost=dot(cameraPoint,cameraPoint);
+            if(scene.lowerBand && cost<fallbackScore){fallback=scene.world(cameraPoint);fallbackScore=cost;}
             if(cost>=score)continue;
             const auto candidate=scene.world(cameraPoint);
             if(clear(scene,candidate,width,height,.16f)){best=candidate;score=cost;}
         }
         if(score<1e9f)return best;
+        if(scene.lowerBand && fallbackScore<1e9f)return fallback;
         return add(scene.eye,{0,std::max(depth,scene.ceiling-scene.eye.y+height+1),-depth});
     }
     void route(const Scene& scene,Vec target,float width,float height){
@@ -152,6 +172,7 @@ class Floater {
         startDirection=normalize(sub(position,routeEye));endDirection=normalize(sub(target,routeEye));
         radius=length(sub(position,routeEye));
         routeRadius=std::max({radius,length(sub(target,routeEye)),outerRadius(scene)+std::hypot(width,height)/2+.45f});
+        if(scene.maxRadius>0){routeRadius=std::min(routeRadius,scene.maxRadius);radius=std::min(radius,routeRadius);}
         axis=normalize(cross(startDirection,endDirection));
         if(length(axis)<.01f)axis=normalize(cross(startDirection,{0,1,0}));
         if(length(axis)<.01f)axis={1,0,0};
@@ -206,7 +227,8 @@ public:
         const bool displaced=std::abs(targetDepth-scene.depth*.97f)>std::max(.4f,scene.depth*.18f);
         const bool settled=now-movedAt>.28;
         const bool destinationBlocked=!clear(scene,destination,width,height,.12f);
-        const bool routeInvalid=leg && (length(sub(scene.eye,routeEye))>.25f || routeRadius<outerRadius(scene)+std::hypot(width,height)/2+.35f || destinationBlocked);
+        const float reach=outerRadius(scene)+std::hypot(width,height)/2;
+        const bool routeInvalid=leg && (length(sub(scene.eye,routeEye))>.25f || routeRadius<std::min(reach+.35f,scene.maxRadius>0?scene.maxRadius:1e9f) || destinationBlocked);
         if(now>=retargetAt && settled && (routeInvalid || (!leg && (destinationBlocked || (!reading && (turned || displaced)))))){
             auto target=findPlace(scene,width,height);
             if(length(sub(target,position))>.10f)route(scene,target,width,height);
@@ -219,7 +241,7 @@ public:
         if(hold && !leg)heading=forward;
         lastSpeed=dt>0?length(sub(position,previous))/dt:0;
         const bool beside=clear(scene,position,width,height,.08f);
-        behind=length(sub(position,scene.eye))>outerRadius(scene)+std::hypot(width,height)/2+.10f;
+        behind=scene.maxRadius>0?false:length(sub(position,scene.eye))>reach+.10f;
         safe=beside || behind;
         // A close-up card may extend past the view edges while its centre is
         // directly under the user's gaze. Do not point away from that card.
