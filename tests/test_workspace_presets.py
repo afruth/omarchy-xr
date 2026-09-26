@@ -11,7 +11,7 @@ from test_studio import FakeHypr
 class WorkspacePresetsTests(unittest.TestCase):
     def test_geometry_and_independent_copies(self):
         items=built_in_setups()
-        self.assertEqual(len(items),8)
+        self.assertEqual(len(items),9)
         for item in items:
             validate(item['layout'])
         portrait=items[4]['layout']['monitors']
@@ -20,6 +20,12 @@ class WorkspacePresetsTests(unittest.TestCase):
         for index in (5,6):
             self.assertGreater(items[index]['layout']['monitors'][0]['curvature'],0)
             self.assertEqual(items[index]['layout']['curvature'],0)
+        stress=items[8]['layout']
+        self.assertEqual(items[8]['id'],'builtin:thirty-fhd')
+        self.assertEqual(len(stress['monitors']),30)
+        self.assertEqual([(m['x'],m['y']) for m in stress['monitors']],
+                         [(i%6*1950,i//6*1110) for i in range(30)])
+        self.assertTrue(all((m['width'],m['height'])==(1920,1080) for m in stress['monitors']))
         items[0]['layout']['monitors'][0]['width']=400
         self.assertEqual(built_in_setups()[0]['layout']['monitors'][0]['width'],1920)
 
@@ -28,6 +34,9 @@ class WorkspacePresetsTests(unittest.TestCase):
             runner=FakeHypr(); manager=Manager(folder,'/unused',runner)
             manager.graphics_limits={'maxWidth':8192,'maxHeight':8192}
             try:
+                manager.use_setup('builtin:thirty-fhd')
+                self.assertEqual(len(manager.load()['monitors']),30)
+                self.assertFalse(manager.owned)
                 manager.use_setup('builtin:one-fhd')
                 self.assertFalse(manager.owned)
                 self.assertFalse(manager.setups()['items'])

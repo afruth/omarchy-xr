@@ -662,8 +662,12 @@ their license explicitly permits redistribution.
 
 The Monitors tab includes Full HD, 4K, three Full HD, two Full HD,
 Full HD with two portrait Full HD sides, curved 3440 × 1440,
-curved 5120 × 1440, and 4K with a 1440 × 2160 side monitor.
+curved 5120 × 1440, 4K with a 1440 × 2160 side monitor, and a
+30 Full HD load-test setup in a 6 × 5 grid. Layouts support up to 30 monitors.
 Presets use 30 px spacing, 60 fps capture, scale 1, and full monitor brightness.
+The load-test setup contains 62.2 million pixels (about 249 MB per RGBA frame)
+before compositor buffers and capture textures. Select it only when testing
+memory and rendering capacity; stop and remove virtual monitors after the test.
 Curved presets bend the monitor surface; workspace curvature starts at zero.
 Mixed-height monitors are vertically centered.
 
