@@ -105,7 +105,25 @@ static void search() {
     const auto g=fields(std::string_view(fill).substr(0, fill.size()-1));
     unsigned w=0, h=0; assert(g.size()==7 && parseAddress(g[3])==0x55d4a1b2c3d0ULL && number(g[4],w) && w==1622 && number(g[5],h) && h==950);
 }
+// `.tiers`: the complete sliver set, sorted by address and deduplicated; parse keeps only the slivers.
+static void tiers() {
+    const auto line=tiersLine(4242, 3, {0x55d4a1b2c3e0ULL, 0x10, 0x55d4a1b2c3e0ULL}, 1700000002);
+    assert(line=="v1 4242 3 1700000002 0x10 sliver 0x55d4a1b2c3e0 sliver\n");
+    const auto t=parseTiers(line);
+    assert(t && t->owner=="4242" && t->seq==3 && t->stamp==1700000002 && t->slivers==(std::vector<std::uint64_t>{0x10, 0x55d4a1b2c3e0ULL}));
+    const auto none=parseTiers(tiersLine(1, 1, {}, 5));
+    assert(none && none->slivers.empty() && none->seq==1);
+    const auto mixed=parseTiers("v1 o 2 5 0xa park 0xB sliver");
+    assert(mixed && mixed->slivers==std::vector<std::uint64_t>{0xb});
+    for(auto bad:{"", "v1 o 1", "v2 o 1 5", "v1 o x 5", "v1 o 1 s", "v1 o 1 5 0xa", "v1 o 1 5 0xa sliver 0xb", "v1 o 1 5 0xa stage",
+                  "v1 o 1 5 0xa off", "v1 o 1 5 0xa SLIVER", "v1 o 1 5 12 sliver", "v1 o 1 5 0xa sliver 0xA park", "v1 o 1 5 0xa sliver 0x0a sliver"})
+        assert(!parseTiers(bad));
+    std::vector<std::uint64_t> many;
+    for(std::uint64_t i=1;i<=maxRecords;++i) many.push_back(i);
+    assert(parseTiers(tiersLine(1, 1, many, 5))->slivers.size()==maxRecords);
+    many.push_back(maxRecords+1); assert(!parseTiers(tiersLine(1, 1, many, 5)));
+}
 int main() {
-    sample(); hex(); rejections(); cursor(); search();
-    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header, the cursor, search, prompt and fill lines passed\n";
+    sample(); hex(); rejections(); cursor(); search(); tiers();
+    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header, the cursor, search, prompt, fill and tiers lines passed\n";
 }

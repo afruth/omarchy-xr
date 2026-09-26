@@ -122,17 +122,19 @@ static bool rejects(const std::string& text) { try { settings(text); } catch(con
 static void parsing() {
     const auto d=settings("");
     assert(d.fps==60 && d.radius==2.4f && d.gapPx==60 && d.dimUnmatched==.35f && d.adoptPolicy=="all" && d.excludes.empty());
-    const auto s=settings("# canvas v1 120 3 40 .5 1 1.25 400 new 0 future 7\nexclude 1234\n\nexclude foot\n");
+    const auto s=settings("# canvas v1 120 3 40 .5 1 1.25 400 new 0 120 future 7\nexclude 1234\n\nexclude foot\n");
     assert(s.fps==120 && s.radius==3 && s.gapPx==40 && s.dimUnmatched==.5f && s.labelDeg==1 && s.outputScale==1.25f);
     assert(s.captureBudgetMpix==400 && s.adoptPolicy=="new" && s.excludes==std::vector<std::string>({"1234", "foot"}) && !s.takeoverKeys);
     assert(d.takeoverKeys && !settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 0\n").takeoverKeys);
-    assert(settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all\n").takeoverKeys && settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 x\n").takeoverKeys);
+    assert(settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all\n").takeoverKeys && settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 60 x\n").takeoverKeys);
+    assert(s.refreshHz==120 && d.refreshHz==60 && settings("# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1\n").refreshHz==60);
     const auto partial=settings("# canvas v1 30 2\n");
     assert(partial.fps==30 && partial.radius==2 && partial.gapPx==60 && partial.captureBudgetMpix==300);
     for(auto bad:{"# canvas v1 0", "# canvas v1 121", "# canvas v1 60 .5", "# canvas v1 60 11", "# canvas v1 60 2 501",
                   "# canvas v1 60 2 60 .3 .8 3", "# canvas v1 60 2 60 .3 .8 1 40", "# canvas v1 60 2 60 .3 .8 1 2001",
                   "# canvas v1 sixty", "# canvas v10 60", "# settings 60", "# canvas v1 60\nfoo bar", "# canvas v1 60\nexclude a b",
-                  "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 2", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all -1", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all yes"})
+                  "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 2", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all -1", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all yes",
+                  "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 29", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 241", "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 fast"})
         assert(rejects(bad));
 }
 // Overlay berths (canvas_overlay.hpp): pure lazy-follow math, no GL.

@@ -13,7 +13,7 @@ from backend import Manager, default_layout, perform, validate as validate_layou
 from canvas import DEFAULTS, validate
 from test_studio import FakeHypr
 
-GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1"
+GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 60"
 NAMED = {"omxr-canvas": -1338, "omxr-park": -1337}
 
 
@@ -199,11 +199,11 @@ class CanvasTests(unittest.TestCase):
             saved = manager.canvas.save({"refresh": 120, "outputScale": 1.25, "exclude": ["firefox"], "radius": 3})
             self.assertEqual(manager.canvas.load(), saved)
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
-            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all 1", "exclude firefox", f"exclude {os.getpid()}"])
+            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all 1 120", "exclude firefox", f"exclude {os.getpid()}"])
             manager.canvas.save({**saved, "takeoverKeys": False})
             header = (manager.directory / "canvas.tsv").read_text().splitlines()[0]
-            self.assertEqual(header, "# canvas v1 60 3 60 0.35 0.8 1.25 300 all 0")
-            # The Lua adapter's adopt-policy pattern still finds field 8 with field 9 appended.
+            self.assertEqual(header, "# canvas v1 60 3 60 0.35 0.8 1.25 300 all 0 120")
+            # The Lua adapter's adopt-policy pattern still finds field 8 with fields 9 and 10 appended.
             self.assertEqual(re.match(r"^# canvas v1(?:\s+\S+){7}\s+([A-Za-z-]+)", header).group(1), "all")
             saved = manager.canvas.save({**saved, "takeoverKeys": True})
             manager.canvas.ensure(manager.monitors())
@@ -298,7 +298,7 @@ class CanvasTests(unittest.TestCase):
             manager.canvas.ensure(manager.monitors())
             self.assertFalse(fake.evals("window.move"))
             self.assertFalse(manager.canvas.journal.exists())
-            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 1"))
+            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 1 60"))
         finally: self.close(manager)
 
     def test_laptop_off_adoption_targets_park(self):
@@ -419,6 +419,25 @@ class CanvasTests(unittest.TestCase):
                              ("canvas", True, 1, 4))
             Path(str(manager.pose_socket) + ".stats").write_text(json.dumps({"pid": 123, "time": time.monotonic(), "canvasState": "search"}))
             self.assertEqual(manager.status()["canvasState"], "search")
+        finally: self.close(manager)
+
+    def test_status_budget(self):
+        manager = self.manager(CanvasHypr())
+        stats = Path(str(manager.pose_socket) + ".stats")
+        budget = {"setMpix": 300, "effectiveMpix": 300, "usedMpix": 290.3, "calibration": 1, "readyP50Ms": 12, "slivers": 1}
+        try:
+            self.assertEqual(manager.status()["canvasBudget"], {})
+            process = Mock(); process.poll.return_value = None; process.pid = 123; manager.viewer = process
+            stats.write_text(json.dumps({"pid": 123, "time": time.monotonic(), "budget": budget}))
+            # Monitor mode never reports the canvas budget, even from a stats file that carries one.
+            self.assertEqual(manager.status()["canvasBudget"], {})
+            manager.viewer = None
+            manager.set_render_mode("canvas")
+            self.assertEqual(manager.status()["canvasBudget"], {})
+            manager.viewer = process
+            self.assertEqual(manager.status()["canvasBudget"]["effectiveMpix"], 300)
+            stats.write_text(json.dumps({"pid": 999, "time": time.monotonic(), "budget": budget}))
+            self.assertEqual(manager.status()["canvasBudget"], {})
         finally: self.close(manager)
 
     def test_canvas_camera_verbs(self):

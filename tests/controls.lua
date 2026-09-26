@@ -612,7 +612,7 @@ local function testFill()
     assert(count("window.resize")==1) -- old sequence, foreign owner, stale stamp, not staged
     fillLine(5,staged,900,500,160);tick(160.8);assert(count("window.resize",staged)==2);assert(find(staged).size.y==500)
     dofile("config/xr-controls.lua");tick(160.9);assert(count("window.resize",staged)==2) -- the sequence survives a reload
-    fillLine(6,staged,5000,3000,160);tick(160.9);assert(last("window.resize").x==2560);assert(last("window.resize").y==1440)
+    fillLine(6,staged,5000,3000,160);tick(160.9);assert(last("window.resize").x==2552);assert(last("window.resize").y==1440)
     fillLine(7,staged,800,600,160);tick(161)
     print("Fill: staged window resized once per sequence, confinement follows, stale/foreign/old/other ignored, reload passed")
 end
@@ -717,6 +717,120 @@ local function testSettingsUnchangedInCanvas()
     assert(next(omarchy_xr_canvas.origin)==nil)
     print("Canvas mode keeps the 5-key settings file and remaps existing bindings passed")
 end
+-- `.tiers` (M5): the renderer's sliver set; slivers sit 8 px inside the right edge with no_follow_mouse.
+local function tiersFile(n,stamp,owner,list)
+    local line=string.format("v1 %s %d %d",owner or "42",n,stamp)
+    for _,address in ipairs(list or {}) do line=line.." "..address.." sliver" end
+    files[path..".tiers"]=line.."\n"
+end
+local function followProp(address,value)
+    local n=0
+    for _,d in ipairs(dispatched) do
+        local spec=d.spec
+        if d.kind=="window.set_prop" and spec.prop=="no_follow_mouse" and spec.window=="address:"..address and spec.value==value then n=n+1 end
+    end
+    return n
+end
+local function moves(address)
+    local n=0
+    for _,d in ipairs(dispatched) do if d.kind=="window.move" and d.spec.workspace and d.spec.window=="address:"..address then n=n+1 end end
+    return n
+end
+local function windowDispatches()
+    local n=0
+    for _,d in ipairs(dispatched) do if d.kind:match("^window%.") then n=n+1 end end
+    return n
+end
+local function lastIndex(kind,address)
+    for i=#dispatched,1,-1 do if dispatched[i].kind==kind and dispatched[i].spec.window=="address:"..address then return i end end
+    return 0
+end
+local function testTiersSliver()
+    files[path..".tiers"]=nil;cursorPos={x=500,y=400}
+    windows={};window("0xa","omxr-canvas");window("0xb","omxr-park");window("0xc","omxr-park")
+    clock(180);omarchy_xr_controls.refresh();omarchy_xr_canvas.staged="0xa";dispatched={}
+    tiersFile(1,180,"43",{"0xb"});tick(180)                  -- foreign owner
+    tiersFile(1,170,nil,{"0xb"});tick(180.6)                 -- stale stamp
+    files[path..".tiers"]="v1 42 x 180 0xb sliver\n";tick(181.2) -- malformed
+    assert(windowDispatches()==0)
+    tiersFile(1,181,nil,{"0xb"});tick(181.3)
+    local b=find("0xb")
+    assert(b.workspace.name=="omxr-canvas");assert(followProp("0xb","1")==1);assert(b.at.x==20000+2560-8);assert(b.at.y==0)
+    assert(lastIndex("window.bring_to_top","0xa")>lastIndex("window.move","0xb"));assert(count("window.bring_to_top","0xb")==0)
+    assert(row("0xb")[9]=="sliver");assert(row("0xb")[13]=="1");assert(row("0xa")[9]=="stage")
+    local n=windowDispatches()
+    tick(181.9)                                              -- the same line again
+    tiersFile(1,182,nil,{"0xb"});tick(182.5)                 -- heartbeat: same seq, fresh stamp
+    tiersFile(0,182,nil,{"0xb","0xc"});tick(183)             -- older seq
+    tiersFile(2,183,"43",{"0xb","0xc"});tick(183.6)          -- foreign owner
+    assert(windowDispatches()==n);assert(omarchy_xr_canvas.staged=="0xa")
+    tiersFile(2,184,nil,{"0xc","0xb"});tick(184)
+    local c=find("0xc");assert(c.workspace.name=="omxr-canvas");assert(c.at.x==22552);assert(c.at.y==24)
+    assert(followProp("0xc","1")==1);assert(followProp("0xb","1")==1);assert(moves("0xb")==1)
+    print("Tiers: sliver move, no_follow_mouse once, stage on top, .windows place, rejected lines, 24 px stacking passed")
+end
+local function testTiersPark()
+    dispatched={}
+    tiersFile(3,185,nil,{"0xc"});tick(185)
+    local b=find("0xb");assert(b.workspace.name=="omxr-park");assert(followProp("0xb","unset")==1);assert(moves("0xb")==1)
+    assert(moves("0xc")==0);assert(row("0xb")[9]=="park");assert(not omarchy_xr_canvas.slivers["0xb"])
+    files[path..".tiers"]=nil;tick(185.6)                    -- no file: no slivers
+    assert(find("0xc").workspace.name=="omxr-park");assert(followProp("0xc","unset")==1)
+    tick(186.2);tick(186.8);assert(moves("0xc")==1);assert(moves("0xb")==1) -- once per transition
+    tiersFile(4,187,nil,{"0xb"});tick(187);assert(moves("0xb")==2);assert(find("0xb").at.y==0)
+    tiersFile(5,187,nil,{"0xb","0xc"});tick(187.1)           -- two lines 100 ms apart ...
+    tiersFile(6,187,nil,{"0xc"});tick(187.2)
+    assert(moves("0xb")==2);assert(moves("0xc")==1)
+    tick(187.6)                                              -- ... apply once, with the newest set
+    assert(moves("0xb")==3);assert(moves("0xc")==2);assert(find("0xb").workspace.name=="omxr-park");assert(find("0xc").at.y==0)
+    tick(188.2);assert(moves("0xb")==3);assert(moves("0xc")==2)
+    tiersFile(6,186,nil,{"0xc"});tick(188.5)                 -- a renderer hitch: the same line goes stale ...
+    assert(moves("0xc")==3);assert(find("0xc").workspace.name=="omxr-park")
+    tiersFile(6,188,nil,{"0xc"});tick(189)                   -- ... and its heartbeat brings the sliver back
+    assert(moves("0xc")==4);assert(find("0xc").workspace.name=="omxr-canvas");assert(omarchy_xr_canvas.slivers["0xc"])
+    print("Tiers: sliver back to park, no_follow_mouse unset, missing file, one move per transition, 0.5 s rate limit, stale then heartbeat passed")
+end
+local function testStageBand()
+    clock(189);tiersFile(7,189,nil,{"0xc"});omarchy_xr_controls.refresh();dispatched={}
+    window("0xd","omxr-park",{size={x=2600,y=1400}})
+    hoverV4("0xa",20,1,1);hoverV4("0xd",21,10,10)
+    local d=find("0xd");assert(omarchy_xr_canvas.staged=="0xd");assert(d.size.x==2552);assert(d.size.y==1400)
+    assert(find("0xa").workspace.name=="omxr-park")         -- not in the set: parked
+    fillLine(8,"0xd",2600,900,189);tick(189.1);assert(d.size.x==2552);assert(d.size.y==900)
+    tiersFile(8,189,nil,{"0xc","0xd"});tick(189.2)
+    local n=windowDispatches();tick(189.8);assert(windowDispatches()==n) -- the staged window is never touched
+    hoverV4("0xc",22,10,10)
+    assert(omarchy_xr_canvas.staged=="0xc");assert(followProp("0xc","unset")==1);assert(not omarchy_xr_canvas.slivers["0xc"])
+    assert(d.workspace.name=="omxr-canvas");assert(followProp("0xd","1")==1);assert(omarchy_xr_canvas.slivers["0xd"])
+    assert(d.at.x==22552);assert(d.at.y==0)
+    tick(190.4);assert(row("0xd")[9]=="sliver");assert(row("0xc")[9]=="stage");assert(moves("0xd")==1) -- staged there, not moved again
+    print("Stage band: output minus the strip for staging and Fill, a staged sliver loses no_follow_mouse, a demoted window in the set becomes a sliver passed")
+end
+local function testTiersLeave()
+    clock(191);omarchy_xr_controls.refresh();dispatched={}
+    hl.dispatch(hl.dsp.window.move({window="address:0xd",workspace="1"})) -- SUPER+SHIFT+n on a sliver
+    assert(unsetProps("0xd")==7);assert(followProp("0xd","unset")==1);assert(not omarchy_xr_canvas.slivers["0xd"])
+    tick(191.1);assert(moves("0xd")==1)                     -- off the canvas: left alone
+    tiersFile(9,191,nil,{"0xb","0xd"});tick(191.6);assert(omarchy_xr_canvas.slivers["0xb"]);assert(moves("0xd")==1)
+    dofile("config/xr-controls.lua")
+    assert(omarchy_xr_canvas.slivers["0xb"]);assert(omarchy_xr_canvas.tiersSeq==9)
+    local n=moves("0xb");tick(192.2);assert(moves("0xb")==n)
+    dispatched={}
+    clock(192.5,"monitors");omarchy_xr_controls.refresh()
+    assert(followProp("0xb","unset")==1);assert(unsetProps("0xb")==7);assert(next(omarchy_xr_canvas.slivers)==nil)
+    files[path..".tiers"]=nil
+    print("Tiers leave: release, reload keeps the set, leaving the canvas unsets no_follow_mouse and the props passed")
+end
+-- On a short output the stack stops SLIVER_FLOOR (64) px above the bottom edge.
+local function testSliverFloor()
+    local height=canvasOutput.height;canvasOutput.height=100
+    windows={};window("0xa","omxr-canvas");window("0xb","omxr-park");window("0xc","omxr-park");window("0xe","omxr-park")
+    clock(194);omarchy_xr_controls.refresh();omarchy_xr_canvas.staged="0xa";dispatched={}
+    tiersFile(10,194,nil,{"0xb","0xc","0xe"});tick(194.6)
+    assert(find("0xb").at.y==0);assert(find("0xc").at.y==24);assert(find("0xe").at.y==36)
+    canvasOutput.height=height;files[path..".tiers"]=nil
+    print("Sliver stack: clamped 64 px above a short output's bottom edge passed")
+end
 testCanvasActivation()
 testCanvasKeys()
 testPublishWindows()
@@ -729,3 +843,8 @@ testAdoptPolicyEmpty()
 testExclusions()
 testFocusAddress()
 testSettingsUnchangedInCanvas()
+testTiersSliver()
+testTiersPark()
+testStageBand()
+testTiersLeave()
+testSliverFloor()
