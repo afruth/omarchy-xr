@@ -33,6 +33,8 @@ Item {
     property string requestedMode: ""
     property bool canvasActive: false
     property int canvasWindows: 0
+    // The renderer's live capture budget (pose.sock.stats "budget"); empty while no canvas viewer runs.
+    property var canvasBudget: ({})
     property int controlsVersion: 0
     property var canvasSettings: ({})
     property var canvasDraft: ({})
@@ -410,6 +412,7 @@ Item {
                     if (response.renderMode) root.renderMode = response.renderMode;
                     root.canvasActive = !!response.canvasActive;
                     root.canvasWindows = response.canvasWindows || (response.performance || {}).canvasWindows || 0;
+                    root.canvasBudget = response.canvasBudget || {};
                     if (response.controlsVersion !== undefined) root.controlsVersion = response.controlsVersion;
                     if (response.performance) {
                         var nextCaptures = response.performance.captures || [];
@@ -1663,10 +1666,28 @@ Item {
                                         onAmountEdited: function(value) { root.setCanvas("labelDeg", value); }
                                     }
                                     Ui.NumberField {
+                                        id: budgetField
+                                        readonly property string helpText: "Exported pixels per second across all windows; the canvas lowers it by itself when the compositor falls behind and raises it back slowly."
                                         label: "Capture budget (Mpix/s)"
                                         from: 50; to: 2000; stepSize: 50
                                         value: root.canvasDraft.captureBudgetMpix || 300
                                         onModified: function(value) { root.setCanvas("captureBudgetMpix", value); }
+                                        HoverHandler { id: budgetHover }
+                                        HelpTip {
+                                            target: budgetField
+                                            active: budgetHover.hovered
+                                            text: budgetField.helpText
+                                        }
+                                    }
+                                    Hint {
+                                        readonly property var budget: root.canvasBudget
+                                        Layout.columnSpan: 2
+                                        visible: root.canvasActive && budget.effectiveMpix !== undefined
+                                        text: visible ? "Using " + Math.round(budget.usedMpix) + " of " + Math.round(budget.effectiveMpix) + " Mpix/s"
+                                            + (budget.calibration < 1 ? " · self-limited to " + Math.round(100 * budget.calibration) + " %" : "")
+                                            + (budget.readyP50Ms >= 0 ? " · capture latency " + Math.round(budget.readyP50Ms) + " ms" : "")
+                                            + (budget.slivers ? " · " + budget.slivers + (budget.slivers === 1 ? " live sliver" : " live slivers") : "") : ""
+                                        helpText: budgetField.helpText
                                     }
                                 }
                                 RowLayout {

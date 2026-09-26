@@ -24,7 +24,11 @@ and the F1 key help arrived with M4.
 3. Optionally open the **Canvas** tab (the second tab in canvas mode) to change the output
    refresh and scale, ring radius, window gap, label size, capture budget, exclusions and whether
    your windows move to the canvas at start. **Apply canvas settings** saves them to
-   `canvas.json` in the state directory (`~/.local/state/omarchy-xr`).
+   `canvas.json` in the state directory (`~/.local/state/omarchy-xr`). The capture budget
+   (default 300 Mpix/s) is how many window pixels per second the canvas asks Hyprland to export,
+   summed over all windows. While the canvas runs, a line under the field shows how much of it is in
+   use, whether the canvas has lowered it by itself, the capture latency and how many live slivers
+   there are (see **Capture rates**).
 4. Press **Start stereo** (or **Open windowed preview** in **Utilities**).
 
 Choosing **Virtual monitors** again brings back monitor mode unchanged: your monitor setups and
@@ -54,6 +58,70 @@ its original workspace. A tiled window is tiled again; a floating one gets back 
 position. A window you moved off the canvas yourself stays where you put it; if it was tiled
 before, it is tiled again. Windows that had no recorded origin go to the laptop's active workspace.
 Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
+
+## Capture rates
+
+Each window is captured at its own rate, taken from the ladder 60, 40, 30, 24, 20, 15, 10 and 6 Hz.
+The window you work in always gets 60 Hz. The four largest other windows in view share what is left
+of the budget at one rate, as high as still leaves 6 Hz for the rest, and the remaining windows in
+view get up to 10 Hz. In Overview every window except the one you work in gets up to 10 Hz. When
+even 6 Hz does not fit, the smallest windows in view keep their last picture instead of going over
+the budget. Rates drop at once and rise again only after 2 seconds of headroom.
+
+The budget you set is a ceiling. When Hyprland takes clearly longer than usual to deliver captures
+(more than 2.5 output frames for two seconds; a healthy capture takes two), or the GPU runs out of
+time, the canvas lowers its own budget and raises it back slowly once things are calm again; it never
+goes above your setting, so raise the setting if you want more. The readout under the budget field
+shows this as "self-limited".
+
+**Live slivers.** A window rated above 30 Hz is moved to an 8-pixel strip at the right edge of the
+canvas output (a "sliver"), because Hyprland redraws a hidden (parked) window at most about 30 times a
+second, and only a window on the visible workspace can be captured faster. Slivers are stacked 24 px
+apart, ignore the pointer, and the window you stage is kept 8 px narrower than the output so it never
+covers them. When the rate drops to 30 Hz or below the window goes back to the hidden workspace; a
+window changes place at most once every 2 seconds. On a small canvas (two to four windows in view)
+the windows next to the one you work in are usually slivers.
+
+**Far over budget.** When many windows are in view (a zoomed-out Overview of 50 windows), 6 Hz for
+every one of them would exceed the budget. The canvas then keeps the last picture of the smallest
+windows instead of going over, because going over slows every capture down, the window you work in
+included. With the default budget a 60 Hz window plus about 30 other 720p windows run at 6 Hz; the
+rest show their last frame until you zoom in or raise the budget.
+
+What the ladder gives when every window is in view (1920×1080 windows, the default budget; the
+window you work in, when there is one, is always 60 Hz):
+
+| Windows | Others | Mpix/s used |
+|---|---|---|
+| 2 | 40 Hz (a live sliver) | 207 |
+| 4 | 3 × 24 Hz | 274 |
+| 6 | 4 × 15 Hz near, 1 × 10 Hz | 269 |
+| 11 | 4 × 10 Hz near, 6 × 6 Hz | 282 |
+| Overview, 30 × 1280×720, none of them yours | 10 Hz each | 276 |
+| Overview, 40 or 50 × 1280×720, none of them yours | 6 Hz each | 221 / 276 |
+| Overview, your 1080p window and 49 × 1280×720 | 31 × 6 Hz, 18 keep their last picture | 296 |
+
+Measured on the development machine (Intel Tiger Lake GT1 iGPU, the canvas output at
+2560×1440@60, test windows drawing at 60 fps, the default budget, the renderer in a 1280×720
+window; "in view" counts the windows besides yours that this view shows, the rest are idle). Every
+window ran within 0.2 fps of its rate, request→ready stayed at 33.1–33.3 ms, the canvas never
+lowered its budget, Hyprland used 5–11 % of a CPU core, and over a one-hour run neither the rates
+nor the renderer's GPU memory moved:
+
+| Set | In view | Work: your window / others | Overview |
+|---|---|---|---|
+| 2 × 1080p | 1 | 60 / 40 (sliver) | 60 / 10 |
+| 4 × 1080p | 2 | 60 / 2 × 40 (slivers) | 60 / 3 × 10 |
+| 4 × 1080p, wider view | 3 | 60 / 3 × 24 | 60 / 3 × 10 |
+| 6 × 1080p, wider view | 4 | 60 / 4 × 20 | 60 / 5 × 10 |
+| 11 × 1080p | 7 | 60 / 4 × 15 + 3 × 6 | 60 / 10 × 6 |
+| 1080p video at 30 fps + 1080p | 2 | 60 / 2 × 40 (slivers, the video without dropped captures) | 60 / 2 × 10 |
+| 50 mixed windows | 25 | 60 / 4 × 40 (slivers) + 21 × 6 | 60 / 44 × 6, 5 frozen |
+| 50 × 720p, none of them yours | 25 | 4 × 40 (slivers) + 21 × 6 | 50 × 6 |
+
+The **Capture budget** field sets the ceiling; the line under it shows the use ("Using 289 of 300
+Mpix/s"), "self-limited" when the canvas has lowered its budget, the capture latency and the number
+of live slivers. The development machine handles about 330–370 Mpix/s before captures slow down.
 
 ## Keys
 
@@ -126,6 +194,15 @@ keyboard only while the search is open.
 - **ALT+TAB, SUPER+TAB or SUPER+arrows do Omarchy's thing during a canvas session**: the takeover
   switch is off (Canvas tab), or the controls predate M4: reinstall them.
 
+- **A thin strip of windows at the right edge of the canvas output** (8 px wide, visible on the
+  canvas output or in a screenshot of it): these are live slivers, windows the canvas captures above
+  30 Hz. This is expected; they ignore the pointer and go back to the hidden workspace when their
+  rate drops. `pose.sock.stats` lists them with `"place":"sliver"`.
+- **Some thumbnails freeze in Overview or with many windows in view**: the canvas is far over its
+  capture budget and keeps the last picture of the smallest windows rather than slowing everything
+  down. The budget line in Studio's Canvas tab shows the use. Raise the capture budget (the
+  development machine handled up to about 350 Mpix/s) or close or exclude windows you do not need;
+  zooming in on a window also brings its neighbours back to life.
 - **"Window canvas needs XR controls v6"**: reinstall the controls (see Requirements). A controls
   file edited by hand, or an older one restored by a sync tool, shows the same hint.
 - **SUPER+F makes windows fullscreen during a canvas session**: the controls are not active for this

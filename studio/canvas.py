@@ -29,6 +29,8 @@ RANGES = (("fps", 1, 120, True, "Canvas capture rate must be 1–120 fps"),
           ("dimUnmatched", 0, 1, False, "Search dimming must be 0–100 percent"),
           ("labelDeg", .1, 5, False, "Label size must be 0.1–5°"),
           ("captureBudgetMpix", 50, 2000, False, "Capture budget must be 50–2000 Mpix/s"))
+# canvas.tsv header "# canvas v1 <TSV_FIELDS…> <adoptPolicy> <takeover> <refresh>": fields 1–7 below, 8 the adopt policy
+# (Lua matches it positionally), 9 the key takeover, 10 the output refresh (the renderer's latency threshold).
 TSV_FIELDS = ("fps", "radius", "gapPx", "dimUnmatched", "labelDeg", "outputScale", "captureBudgetMpix")
 
 
@@ -132,7 +134,7 @@ class CanvasSession:
         rows = [*s["exclude"], str(os.getpid()), str(os.getppid())]
         # Field 9 switches the optional window-key takeovers (read by the renderer, announced to Lua in .mode).
         takeover = 1 if s["takeoverKeys"] else 0
-        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} {takeover}\n" + "".join(f"exclude {t}\n" for t in rows))
+        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} {takeover} {s['refresh']}\n" + "".join(f"exclude {t}\n" for t in rows))
 
     def monitor_rule(self, settings, x):
         return (f'hl.monitor({{output="{self.name}", mode="{WIDTH}x{HEIGHT}@{settings["refresh"]}", '

@@ -8,6 +8,9 @@ local path = runtime_root .. "/pose.sock.controls"
 local CONTROLS_VERSION = 6
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
+-- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops
+-- SLIVER_FLOOR px above the bottom edge, so surplus slivers overlap there but stay on the output.
+local SLIVER_PX, SLIVER_STEP, SLIVER_FLOOR = 8, 24, 64
 local CANVAS_MONITOR_PATTERN = "^OMXR%-%x%x%x%x%x%x%x%x%-canvas$"
 local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=true}
 local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17}
@@ -24,12 +27,14 @@ local function retireWorkspaceEvents()
     for _,subscription in ipairs(omarchy_xr_controls.workspace_events or {}) do subscription:remove() end
 end
 -- Canvas state that must survive a config reload: journaled origins, the staged address,
--- event subscriptions, the SUPER+F takeover, the canvas key set and the mailbox sequence numbers.
+-- event subscriptions, the SUPER+F takeover, the canvas key set, the mailbox sequence numbers and
+-- the sliver set (slivers: moved by Lua; tiersWanted: the renderer's last `.tiers` set).
 local function canvasState()
     omarchy_xr_canvas = omarchy_xr_canvas or {origin={}, staged=nil, events={}, fill=nil, windowsSeq=0, cursorSeq=0}
     local saved=omarchy_xr_canvas
     saved.keys,saved.takeovers,saved.takeover=saved.keys or {},saved.takeovers or {},saved.takeover or false
     saved.fillSeq=saved.fillSeq or 0
+    saved.slivers,saved.tiersWanted,saved.tiersSeq=saved.slivers or {},saved.tiersWanted or {},saved.tiersSeq or 0
     return saved
 end
 local canvas = canvasState()
@@ -439,9 +444,12 @@ local function enforce(w)
     end
     if not w.floating then windowDispatch("float",address,{action="float"}) end
 end
+-- Every other window on the canvas workspace is a sliver (§3.3).
 local function place(w)
     if w.address==canvas.staged then return "stage" end
-    return w.workspace and w.workspace.name==PARK_WS and "park" or "off"
+    local name=w.workspace and w.workspace.name
+    if name==CANVAS_WS then return "sliver" end
+    return name==PARK_WS and "park" or "off"
 end
 local function flag(value) return value and 1 or 0 end
 local function windowRow(w)
@@ -482,16 +490,43 @@ local function publishWindows(now,mon)
     writeMailbox(".windows",header.."\n"..table.concat(rows,"\n"))
     windowsDirty=false;lastWindowsWrite=now
 end
+-- Sliver position: the index in the address-sorted `.tiers` set without the staged window.
+local function addressBefore(a,b) return #a<#b or (#a==#b and a<b) end
+local function sliverIndex(address,staged)
+    local list={}
+    for other in pairs(canvas.tiersWanted) do if other~=staged then list[#list+1]=other end end
+    table.sort(list,addressBefore)
+    for i,other in ipairs(list) do if other==address then return i-1 end end
+    return #list
+end
+-- A demoted staged window is already on the canvas workspace (onCanvas).
+local function makeSliver(mon,address,staged,onCanvas)
+    local width,height=logicalSize(mon)
+    local y=math.min(height-SLIVER_FLOOR,sliverIndex(address,staged)*SLIVER_STEP)
+    if not onCanvas then windowDispatch("move",address,{workspace="name:"..CANVAS_WS,follow=false}) end
+    windowDispatch("set_prop",address,{prop="no_follow_mouse",value="1"})
+    windowDispatch("move",address,{x=math.floor(mon.x+width-SLIVER_PX),y=math.floor(mon.y+y)})
+    canvas.slivers[address]=true;windowsDirty=true
+end
+local function dropSliver(address)
+    if not canvas.slivers[address] then return end
+    pcall(windowDispatch,"set_prop",address,{prop="no_follow_mouse",value="unset"})
+    canvas.slivers[address]=nil
+end
 local function stageWindow(address,mon)
     local fine,w=pcall(hl.get_window,"address:"..address)
     if not fine or not w then return false end
     local previous=canvas.staged
-    if previous and previous~=address then windowDispatch("move",previous,{workspace="name:"..PARK_WS,follow=false}) end
+    if previous and previous~=address then
+        if canvas.tiersWanted[previous] then makeSliver(mon,previous,address,true)
+        else windowDispatch("move",previous,{workspace="name:"..PARK_WS,follow=false}) end
+    end
+    dropSliver(address)
     enforce(w)
-    -- The stage band is the whole output in M3: the window sits at its origin, clamped to it.
+    -- The stage band is the output minus the sliver strip: the window sits at its origin, clamped to it.
     local maxW,maxH=logicalSize(mon)
     local width,height=pair(w.size)
-    width,height=math.floor(math.min(width,maxW)),math.floor(math.min(height,maxH))
+    width,height=math.floor(math.min(width,maxW-SLIVER_PX)),math.floor(math.min(height,maxH))
     windowDispatch("move",address,{workspace="name:"..CANVAS_WS,follow=false})
     windowDispatch("resize",address,{x=width,y=height})
     windowDispatch("move",address,{x=mon.x,y=mon.y})
@@ -560,7 +595,7 @@ end
 -- cursor confinement follows the new size.
 local function applyFill(mon,address,width,height)
     local maxW,maxH=logicalSize(mon)
-    width,height=math.max(1,math.min(width,math.floor(maxW))),math.max(1,math.min(height,math.floor(maxH)))
+    width,height=math.max(1,math.min(width,math.floor(maxW-SLIVER_PX))),math.max(1,math.min(height,math.floor(maxH)))
     windowDispatch("resize",address,{x=width,y=height})
     local rect=snapshot[address] or {x=mon.x,y=mon.y}
     rect.w,rect.h=width,height;snapshot[address]=rect
@@ -579,11 +614,60 @@ local function readFill(mon)
     canvas.fillSeq=fillSeq;address=address:lower()
     if fresh(tonumber(stamp)) and address==canvas.staged then applyFill(mon,address,tonumber(width),tonumber(height)) end
 end
+-- `.tiers`: v1 <owner> <seq> <stamp> [<address> sliver|park]..., the renderer's complete sliver set.
+-- nil keeps the last set (foreign owner, malformed or already seen); a missing or stale file means no slivers
+-- and forgets the seq, so the renderer's heartbeat (same seq, fresh stamp) brings the set back.
+local function readTiers()
+    local file=io.open(path..".tiers","r")
+    if not file then canvas.tiersSeq=0;return {} end
+    local line=file:read("*l") or "";file:close()
+    local owner,seqText,stamp,rest=line:match("^v1 (%d+) (%d+) (%d+)(.*)$")
+    if owner~=session then return nil end
+    if canvas.tiersOwner~=owner then canvas.tiersOwner,canvas.tiersSeq=owner,0 end
+    if not fresh(tonumber(stamp)) then canvas.tiersSeq=0;return {} end
+    local tiersSeq=tonumber(seqText)
+    if tiersSeq<=canvas.tiersSeq then return nil end
+    canvas.tiersSeq=tiersSeq
+    local set={}
+    for address,kind in rest:gmatch("(0x%x+) (%a+)") do if kind=="sliver" then set[address:lower()]=true end end
+    return set
+end
+local lastTiersApply=-math.huge
+local function tiersChanges()
+    local enter,leave={},{}
+    for _,w in ipairs(listWindows()) do
+        local address=w.address
+        if isMember(w) and address~=canvas.staged and not isExcluded(w) then
+            local wanted,current=canvas.tiersWanted[address],canvas.slivers[address]
+            if wanted and not current then enter[#enter+1]=address elseif current and not wanted then leave[#leave+1]=address end
+        end
+    end
+    return enter,leave
+end
+-- Park <-> sliver moves at most every 0.5 s; the staged window is never touched and stays on top.
+local function applyTiers(mon,now)
+    if now-lastTiersApply<.5 then return end
+    local enter,leave=tiersChanges()
+    if #enter==0 and #leave==0 then return end
+    for _,address in ipairs(leave) do
+        windowDispatch("move",address,{workspace="name:"..PARK_WS,follow=false})
+        dropSliver(address)
+    end
+    for _,address in ipairs(enter) do makeSliver(mon,address,canvas.staged) end
+    if canvas.staged then windowDispatch("bring_to_top",canvas.staged) end
+    lastTiersApply=now;windowsDirty=true
+end
+local function syncTiers(mon,now)
+    local wanted=readTiers()
+    if wanted then canvas.tiersWanted=wanted end
+    applyTiers(mon,now)
+end
 local function canvasTick()
     local mon=canvasMonitor()
     if not mon then return end
     local now=bootSeconds()
     readFill(mon)
+    pcall(syncTiers,mon,now)
     if windowsDirty and now-lastWindowsWrite>=.1 then publishWindows(now,mon) end
     publishCursor(mon,now)
     flushFocus()
@@ -624,8 +708,9 @@ local function guardWorkspace()
     end
 end
 local function markWindowsDirty() windowsDirty=true end
--- "unset" drops the set_prop overrides, so the window's own decorations come back.
+-- "unset" drops the set_prop overrides, so the window's own decorations come back (and a sliver's no_follow_mouse).
 local function undecorate(address)
+    dropSliver(address)
     for _,prop in ipairs(PROPS) do pcall(windowDispatch,"set_prop",address,{prop=prop[1],value="unset"}) end
 end
 -- The backend floats tiled windows before Lua sees them: its journal (canvas-session.json, written by
@@ -694,7 +779,7 @@ local function onClose(w)
     windowsDirty=true
     if not w or not w.address then return end
     if canvas.staged==w.address then canvas.staged=nil end
-    canvas.origin[w.address]=nil
+    canvas.origin[w.address]=nil;canvas.slivers[w.address]=nil
 end
 local function onMove(w)
     windowsDirty=true
@@ -773,7 +858,8 @@ local function leaveCanvas()
     retireCanvasKeys()
     retireCanvasEvents()
     for address in pairs(canvas.origin) do undecorate(address) end
-    canvas.staged=nil;canvas.origin={};snapshot={}
+    for address in pairs(canvas.slivers) do dropSliver(address) end
+    canvas.staged=nil;canvas.origin={};snapshot={};canvas.slivers={};canvas.tiersWanted={}
     overflowX,overflowY,cursorLine=0,0,nil
     focusAddress=nil;focusPending=nil
 end

@@ -27,13 +27,14 @@ CAPTURE = ROOT / "build" / "spike-window-capture"
 OUTPUT = "SPIKE-canvas"
 OUT_X, OUT_W, OUT_H = 20000, 2560, 1440
 SLIVER = 8
+SLIVER_FLOOR = 64  # the sliver stack stops this far above the bottom edge (Lua's SLIVER_FLOOR)
 REFRESH = int(os.environ.get("SPIKE_REFRESH", "60"))
 CLASS = "omarchy-xr-spike-client"
 PULL = set()  # addresses (without 0x) captured with ignore_damage=1
 STATE = pathlib.Path(os.environ.get("SPIKE_STATE", "/tmp/omarchy-xr-spike"))
 # Reused by tests/live_canvas.py (the M2 harness); keep these names and their behaviour stable.
-__all__ = ["CLASS", "OUTPUT", "OUT_X", "OUT_W", "OUT_H", "PROFILES", "STATE", "activate_canvas", "clients", "cpu_ticks",
-           "hyprctl", "hyprland_pid", "lua", "monitors", "place", "setup", "spawn", "teardown"]
+__all__ = ["CLASS", "OUTPUT", "OUT_X", "OUT_W", "OUT_H", "PROFILES", "SLIVER", "STATE", "activate_canvas", "clients", "cpu_ticks",
+           "hyprctl", "hyprland_pid", "lua", "monitors", "place", "setup", "sliver", "spawn", "teardown", "unsliver"]
 
 
 def hyprctl(*args):
@@ -101,7 +102,7 @@ def place(window, tier, index=0):
         lua(f'hl.dispatch(hl.dsp.window.move({{window="address:{addr}", workspace="name:spikecanvas", follow=false}}))')
         tier = "pile"
     x = OUT_X if tier == "stage" else OUT_X + OUT_W - SLIVER
-    y = 0 if tier == "stage" else min(OUT_H - 64, index * 24)
+    y = 0 if tier == "stage" else min(OUT_H - SLIVER_FLOOR, index * 24)
     if tier == "stage":
         info = next((c for c in clients() if c["address"] == addr), None)
         if staged(info, (w, h), (x, y)):
@@ -109,6 +110,22 @@ def place(window, tier, index=0):
         ensure_on_canvas(info)
     lua(f'hl.dispatch(hl.dsp.window.resize({{window="address:{addr}", x={w}, y={h}}})) '
         f'hl.dispatch(hl.dsp.window.move({{window="address:{addr}", x={x}, y={y}}}))')
+
+
+def sliver(address, index):
+    """M5 sliver (Lua's applyTiers): the 8 px strip at the right edge of the canvas workspace, stacked 24 px
+    apart, with no_follow_mouse so the pointer never focuses it."""
+    w = f"address:{address}"
+    lua(f'hl.dispatch(hl.dsp.window.move({{window="{w}", workspace="name:spikecanvas", follow=false}})) '
+        f'hl.dispatch(hl.dsp.window.move({{window="{w}", x={OUT_X + OUT_W - SLIVER}, y={min(OUT_H - SLIVER_FLOOR, index * 24)}}})) '
+        f'hl.dispatch(hl.dsp.window.set_prop({{window="{w}", prop="no_follow_mouse", value="1"}}))')
+
+
+def unsliver(address):
+    """Back to the park workspace, no_follow_mouse unset (Lua's park path)."""
+    w = f"address:{address}"
+    lua(f'hl.dispatch(hl.dsp.window.move({{window="{w}", workspace="name:spikepark", follow=false}})) '
+        f'hl.dispatch(hl.dsp.window.set_prop({{window="{w}", prop="no_follow_mouse", value="unset"}}))')
 
 
 def staged(info, size, at):
@@ -342,6 +359,18 @@ PROFILES = {
     "zoomed-out": "view:30:1280x720:10:10:park:pull;idle:20:960x600:2:0:park",
     "zoomed-out-50": "view:50:1280x720:10:10:park:pull",
     "zoomed-out-stress": "view:30:1280x720:0:10:park:pull;idle:20:960x600:0:0:park",
+    # M5 pixel-budget ladder (§4.4, S1c): a staged 1080p window and N-1 other 1080p windows, every client
+    # drawing at vsync. The capture fps is the ladder's expectation for the other windows at the default
+    # 300 Mpix/s budget: 2 -> 40 (a live sliver), 4 -> 24, 6 -> 15 near + 10 far, 11 -> 10 near + 6 far.
+    # tests/live_canvas.py derives its verdict from tests/canvas_ladder.py, not from these numbers.
+    "ladder-2": "focus:1:1920x1080:0:60:stage:i2;other:1:1920x1080:0:40:park:pull:i2",
+    "ladder-4": "focus:1:1920x1080:0:60:stage:i2;other:3:1920x1080:0:24:park:pull:i2",
+    "ladder-6": "focus:1:1920x1080:0:60:stage:i2;other:5:1920x1080:0:15:park:pull:i2",
+    "ladder-11": "focus:1:1920x1080:0:60:stage:i2;other:10:1920x1080:0:10:park:pull:i2",
+    # The 30 fps video case: a 1080p client drawing at 30 fps next to one other 1080p window; the two share
+    # Near at 40 Hz as live slivers, so every video frame is captured. (A smaller video window ranks below
+    # the 1080p ones by angular size and runs Far at 10 Hz, or leaves the view in the windowed renderer.)
+    "ladder-video": "focus:1:1920x1080:0:60:stage:i2;video:1:1920x1080:30:40:park:pull;other:1:1920x1080:0:40:park:pull:i2",
 }
 
 

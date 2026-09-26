@@ -440,6 +440,8 @@ void noFreePlace() {
 // deliver: every update is a new w x h CPU frame; demanded: the last setDemand visibility.
 struct FakeSource final : FrameSource {
     bool living=true, deliver=false, demanded=true; unsigned w=1, h=1; std::string failure;
+    double ready=-1;
+    double requestToReadyMs() const override { return ready; }
     bool update(CapturedFrame& f) override {
         if(!deliver) return false;
         f.width=f.sourceWidth=w; f.height=f.sourceHeight=h; f.texture=0; f.rgba.assign(size_t(w)*h*4, 255);
@@ -986,6 +988,158 @@ void takeoverFlag(View& v) {
     heartbeat("0"); assert(!v.canvas->settings.takeoverKeys);
     heartbeat("1"); assert(v.canvas->settings.takeoverKeys);
 }
+// M5: the ladder in the renderer. A fresh View (its own mailboxes), times passed in, every window visible.
+struct Ladder {
+    View& v;
+    void step(double t) { for (auto& w:v.canvas->windows) w.visible=!w.gone; v.scheduleCanvas(t); AsyncFile::instance().flush(); }
+    canvas::CanvasWindow& at(const std::string& name) { auto* w=v.canvas->findMutable(name); assert(w); return *w; }
+    std::string tiersPath() const { return mailbox(v)+".tiers"; }
+    std::optional<windows::Tiers> tiers() const { return windows::parseTiers(readFile(tiersPath())); }
+    std::filesystem::file_time_type written() const { return std::filesystem::last_write_time(tiersPath()); }
+    void adopt(const std::vector<Row>& rows, double t) { v.canvas->adopt(*windows::parse(mailboxFile(++seq, rows)), t); }
+    // Ages the `.tiers` line by 5 s, then runs the next heartbeat (a mode announcement resets its second).
+    windows::Tiers heartbeat() {
+        const auto before=*tiers();
+        write(tiersPath(), windows::tiersLine(getpid(), before.seq, before.slivers, bootNow()-5));
+        v.controls->setCanvasMode(true); v.controls->beat(); AsyncFile::instance().flush();
+        return *tiers();
+    }
+    unsigned long long seq=1;
+};
+std::vector<Row> ladderRows(unsigned count, unsigned w, unsigned h) {
+    std::vector<Row> rows{{0xa001, 1920, 1080, 0, "stage"}};
+    for (unsigned i=1;i<count;++i) rows.push_back({0xa001u+i, w, h, int(i), "park"});
+    return rows;
+}
+double statsNumber(const std::string& stats, const std::string& key) {
+    const auto at=stats.find("\""+key+"\":"); assert(at!=std::string::npos);
+    return std::stod(stats.substr(at+key.size()+3));
+}
+size_t occurrences(const std::string& text, const std::string& token) {
+    size_t n=0;
+    for (auto at=text.find(token); at!=std::string::npos; at=text.find(token, at+1)) ++n;
+    return n;
+}
+// (a) A window rated above 30 Hz is published as a sliver (seq 1, this pid, a fresh stamp); an unchanged
+// set or a change within 500 ms writes nothing; six windows lower its rate at once, the sliver goes after 2 s.
+void tiersMailbox(Ladder& l, double t) {
+    l.step(t);
+    assert(l.at("0xa002").decision.rateHz==10 && !std::filesystem::exists(l.tiersPath()));
+    l.step(t+.6);
+    assert(l.at("0xa002").decision.rateHz==40 && l.at("0xa002").decision.place==windows::Place::Sliver && l.v.canvas->sliverCount()==1);
+    auto tiers=l.tiers();
+    assert(tiers && tiers->owner==std::to_string(getpid()) && tiers->seq==1 && std::abs(tiers->stamp-bootNow())<=1);
+    assert(tiers->slivers==std::vector<std::uint64_t>{0xa002});
+    const auto first=l.written();
+    l.step(t+.8); l.v.controls->publishTiers({}, t+.9); AsyncFile::instance().flush();
+    assert(l.written()==first && l.tiers()->seq==1);
+    l.adopt(ladderRows(6, 1920, 1080), t+1); l.step(t+1);
+    l.step(t+1.6);
+    assert(l.at("0xa002").decision.tier==governor::Tier::Near && l.at("0xa002").decision.rateHz==15 && l.at("0xa006").decision.rateHz==10);
+    assert(l.at("0xa002").decision.place==windows::Place::Sliver && l.tiers()->slivers.size()==1 && l.tiers()->seq==1);
+    // The heartbeat keeps a non-empty set fresh for Lua (stale after 2 s): same seq and set, a new stamp.
+    const auto beat=l.heartbeat();
+    assert(beat.seq==1 && beat.slivers==std::vector<std::uint64_t>{0xa002} && std::abs(beat.stamp-bootNow())<=1);
+}
+// (b) The stats carry the budget block, and every capture row its place and lanes in flight. The new Near
+// windows still wait out the raise delay at 10 Hz (60 + 15 + 3 x 10 + 10 = 238.5 Mpix/s).
+void budgetStats(Ladder& l) {
+    l.v.workTimes={1}; l.v.frameTimes={1};
+    l.v.report(monotonicSeconds()); AsyncFile::instance().flush();
+    const auto stats=readFile(l.v.posePath+".stats");
+    assert(stats.find("\"budget\":")!=std::string::npos && stats.find("\"setMpix\":300,\"effectiveMpix\":300,")!=std::string::npos);
+    const double used=statsNumber(stats, "usedMpix");
+    assert(used>238 && used<=300 && statsNumber(stats, "slivers")==1 && statsNumber(stats, "calibration")==1 && statsNumber(stats, "vramMB")>0);
+    assert(occurrences(stats, "\"output\":")==6 && occurrences(stats, "\"place\":")==6 && occurrences(stats, "\"inFlight\":")==6);
+    assert(stats.find("\"place\":\"stage\",\"inFlight\":2")!=std::string::npos && occurrences(stats, "\"place\":\"sliver\"")==1);
+}
+void sliverLeaves(Ladder& l, double t) {
+    l.step(t+2.5);
+    assert(l.at("0xa002").decision.place==windows::Place::Sliver);
+    l.step(t+2.7);
+    assert(l.at("0xa002").decision.place==windows::Place::Park && l.tiers()->seq==2 && l.tiers()->slivers.empty());
+    // An empty set is left to go stale: the heartbeat does not rewrite it.
+    const auto beat=l.heartbeat();
+    assert(beat.seq==2 && beat.slivers.empty() && bootNow()-beat.stamp>=4);
+}
+// (c) Request→ready samples of an export over two output frames shrink the budget by 10 % and a tier
+// drops a step at once; the staged window's samples do not count; calm samples grow it back after 5 s.
+void readyCalibration(Ladder& l, double t) {
+    l.adopt(ladderRows(11, 1280, 720), t); l.step(t); l.step(t+.6); l.step(t+2.1);
+    auto& far=l.at("0xa00b"); auto& staged=l.at("0xa001");
+    assert(l.at("0xa002").decision.rateHz==30 && far.decision.rateHz==10 && std::abs(l.v.canvas->governor.usedMpix-290.3)<.1);
+    auto slow=std::make_unique<FakeSource>(), stage=std::make_unique<FakeSource>();
+    slow->ready=50; stage->ready=500;
+    far.source=std::move(slow); staged.source=std::move(stage);
+    auto& budget=l.v.canvas->governor.budget;
+    l.v.canvas->noteReady(staged, t+2.1); assert(budget.ready.empty());
+    // A damage-driven sliver waits on its client's commits, so it is not sampled either.
+    far.decision.ignoreDamage=false; l.v.canvas->noteReady(far, t+2.1); assert(budget.ready.empty());
+    far.decision.ignoreDamage=true;
+    for (int i=0;i<=21;++i) l.v.canvas->noteReady(far, t+2.2+i*.1);   // two slow seconds in a row
+    assert(budget.readyP50Ms==50 && std::abs(budget.effective()-270)<1e-9);
+    l.step(t+3.4);
+    assert(far.decision.rateHz==6 && l.at("0xa002").decision.rateHz==30 && l.v.canvas->governor.usedMpix<=270);
+    static_cast<FakeSource*>(far.source.get())->ready=10;
+    // Evaluations every ~1 s from t+4.3; the first growth comes 5 s after the calm began (≈ t+8.3).
+    double now=t+3.5;
+    for (;now<t+7.75;now+=.1) l.v.canvas->noteReady(far, now);
+    assert(budget.calibration==.9 && budget.readyP50Ms==10);
+    for (;now<t+9.75;now+=.1) l.v.canvas->noteReady(far, now);
+    assert(budget.calibration>.9);
+    for (;now<t+16;now+=.1) l.v.canvas->noteReady(far, now);
+    assert(budget.calibration==1 && budget.effective()==300);
+    far.source.reset(); staged.source.reset();
+}
+// GPU p80 over 60 % of the period takes 25 % steps, over 85 % panics every non-focused window to 6 Hz;
+// a calm GPU steps back one per 2 s.
+void gpuFeedback(Ladder& l, double t) {
+    const double period=1000.0/60;
+    auto& budget=l.v.canvas->governor.budget;
+    double now=t;
+    for (int i=0;i<45;++i, now+=1./60) l.v.canvas->noteGpu(12, period, now);
+    assert(budget.gpuSteps==2 && !budget.panic && std::abs(budget.effective()-300*.75*.75)<1e-9);
+    for (int i=0;i<30;++i, now+=1./60) l.v.canvas->noteGpu(15, period, now);
+    assert(budget.panic);
+    l.step(now);
+    for (const auto& w:l.v.canvas->windows) assert(w.staged ? w.decision.rateHz==60 : w.decision.rateHz<=6);
+    for (int i=0;i<60*15 && (budget.gpuSteps || budget.panic);++i, now+=1./60) l.v.canvas->noteGpu(2, period, now);
+    assert(!budget.gpuSteps && !budget.panic && budget.effective()==300);
+}
+// (d) A closed window leaves the ladder's maps with its release: nothing stale is raised if it returns.
+void closedForgotten(Ladder& l, double t) {
+    auto& g=l.v.canvas->governor;
+    l.step(t-.1);
+    assert(g.granted.count("0xa002") && g.movedAt.count("0xa002"));
+    auto rows=ladderRows(11, 1280, 720); rows.erase(rows.begin()+1);
+    l.adopt(rows, t); l.v.canvas->tick(t+.25, 0);
+    assert(!l.v.canvas->find("0xa002") && !g.granted.count("0xa002") && !g.movedAt.count("0xa002") && !g.near.count("0xa002"));
+    l.step(t+.3);
+    assert(!g.granted.count("0xa002"));
+}
+void ladder(SDL_Window* window, const std::string& temp) {
+    const std::string dir=temp+"/ladder", pose=dir+"/pose.sock", canvasPath=dir+"/canvas.tsv", empty;
+    std::filesystem::create_directories(dir);
+    {
+    std::vector<Panel> none;
+    View v(none,false,spatial::Workspace{80},24,empty,pose,false,false,64,28,canvasPath,60,false);
+    v.window=window; v.mode=View::SceneMode::Canvas;
+    v.canvas=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, "", true);
+    v.environment=std::make_unique<SkyEnvironment>("");
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
+    v.primeCamera(); v.startCanvas();
+    write(mailbox(v)+".windows", mailboxFile(1, ladderRows(2, 1280, 720)));
+    v.steer();
+    assert(v.canvas->stagedName=="0xa001" && !v.canvas->zoomedOut());
+    Ladder l{v};
+    const double t=monotonicSeconds();
+    tiersMailbox(l, t); budgetStats(l); sliverLeaves(l, t);
+    readyCalibration(l, t+10); gpuFeedback(l, t+30); closedForgotten(l, t+50);
+    v.finishCanvas();
+    }
+    AsyncFile::instance().flush();
+    assert(!std::filesystem::exists(pose+".controls.tiers"));   // unlinked with the controls
+}
 }
 
 int main() {
@@ -1013,9 +1167,9 @@ int main() {
         assert(v.monitorMathCalls==0);
         v.finishCanvas();
     }
-    firstMailboxLands(window, temp);
+    firstMailboxLands(window, temp); ladder(window, temp);
     sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs and the takeover flag passed\n";
+    std::cout << "Canvas focus: placement without overlap on 3 rows, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback and closed windows leaving the ladder passed\n";
 }

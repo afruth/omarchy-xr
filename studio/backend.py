@@ -1109,6 +1109,7 @@ class Manager:
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
                 "canvasWindows": performance.get("canvasWindows", 0) if self.canvas_mode else 0,
                 "canvasState": performance.get("canvasState", "") if self.canvas_mode else "",
+                "canvasBudget": performance.get("budget", {}) if self.canvas_mode else {},
                 "restorationError": "; ".join(filter(None, (self.restoration_error, self.output_error, self.viewer_exit))), "glasses": glasses}
 
     def append_backend_log(self, text):

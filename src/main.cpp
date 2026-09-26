@@ -165,6 +165,7 @@ struct View {
     std::unique_ptr<notifications::Hud> notificationHud;
     std::optional<LiveControls> controls;
     std::string spectatorError;
+    std::string ladderLogged;   // the last "Canvas: ladder" line, logged once per change
     SDL_Window* window=nullptr;
     SDL_GLContext context=nullptr;
     GLint maxTexture=0;
@@ -736,12 +737,13 @@ struct View {
     // Hub dispatch once per tick, then every window; a closed window stays closed, no backoff.
     void updateWindowCaptures() {
         canvas->pump();
+        const double now=monotonicSeconds();
         for (auto& w:canvas->windows) {
             if (w.stageSource) updateStage(w);
             if (!w.source) continue;
             // While region frames are shown, the idling export's thumbnail must not replace them.
             if (w.regionShown) { CapturedFrame parked; w.source->update(parked); }
-            else if (w.source->update(w.frame)) { w.stageFrame=false; uploadWindow(w); }
+            else if (w.source->update(w.frame)) { w.stageFrame=false; canvas->noteReady(w, now); uploadWindow(w); }
             if (!w.source) continue;
             if (!w.source->alive()) { std::cout << w.name << ": window closed" << std::endl; w.captureStatus="closed"; w.closed=true; canvas::Scene::dropSource(w); }
             else if (!w.source->error().empty()) dropWindow(w);
@@ -1264,7 +1266,14 @@ struct View {
             const float scale=w.quality.update(plan.scale, cameraTime);
             w.demandW=std::max(1u, unsigned(std::ceil(l.width*scale))); w.demandH=std::max(1u, unsigned(std::ceil(l.height*scale)));
         }
-        canvas->schedule(canvas->zoomedOut(), monotonicSeconds());
+        scheduleCanvas(monotonicSeconds());
+    }
+    // The ladder's rates, its sliver set to Lua (.tiers, rate-limited there) and a log line per step change.
+    void scheduleCanvas(double now) {
+        canvas->schedule(canvas->zoomedOut(), now);
+        if (controls) controls->publishTiers(canvas->sliverAddresses(), now);
+        auto ladder=canvas->ladderSummary();
+        if (ladder!=ladderLogged) { std::cout << "Canvas: ladder " << ladder << std::endl; ladderLogged=std::move(ladder); }
     }
     // One canvas step per tick: FOV-derived metrics, camera easing, projection and the cull.
     void stepCanvas(float cameraDt) {
@@ -1497,8 +1506,13 @@ struct View {
         std::cout << ", sky skipped " << skyCulled << " eye draws";
         if (output) std::cout << ", missed vblanks " << missed-missedBaseline << " (" << missed << " session)";
         std::cout << std::endl;
-        if (canvas) printWindowCaptures(now);
+        if (canvas) { printBudget(); printWindowCaptures(now); }
         for (const auto& p:panels) if (p.capture) std::cout << "Capture: " << p.layout.output << " " << (p.visible?"visible":"paused") << " " << p.capture->transport() << " " << p.width << "x" << p.height << " source " << p.sourceWidth << "x" << p.sourceHeight << " requests " << p.capture->requests() << " frames " << p.frames << std::endl;
+    }
+    void printBudget() const {
+        const auto& g=canvas->governor; const auto& b=g.budget;
+        std::cout << "Budget: " << g.usedMpix << "/" << b.effective() << " Mpix/s (set " << b.setMpix << ", calibration " << b.calibration << ", gpu steps " << b.gpuSteps
+                  << (b.panic ? ", panic" : "") << "), request->ready p50 " << b.readyP50Ms << " ms, VRAM ~" << std::lround(g.vramBytes/(1<<20)) << " MB, slivers " << canvas->sliverCount() << std::endl;
     }
     void printWindowCaptures(double now) const {
         for (const auto& w:canvas->windows) {
@@ -1525,6 +1539,14 @@ struct View {
             << ",\"searchOpen\":" << (canvas->search.open?"true":"false") << ",\"pinned\":" << canvas->pinnedCount()
             << ",\"tiers\":{\"focused\":" << canvas->tierCount(Tier::Focused) << ",\"near\":" << canvas->tierCount(Tier::Near) << ",\"far\":" << canvas->tierCount(Tier::Far)
             << ",\"overview\":" << canvas->tierCount(Tier::Overview) << ",\"idle\":" << canvas->tierCount(Tier::Idle) << "}";
+        writeBudgetStats(stats);
+    }
+    // The ladder's budget (§4.4): the Studio setting, what calibration and GPU feedback leave of it, the use.
+    void writeBudgetStats(std::ostringstream& stats) const {
+        const auto& g=canvas->governor; const auto& b=g.budget;
+        stats << ",\"budget\":{\"setMpix\":" << b.setMpix << ",\"effectiveMpix\":" << b.effective() << ",\"usedMpix\":" << g.usedMpix
+            << ",\"calibration\":" << b.calibration << ",\"gpuSteps\":" << b.gpuSteps << ",\"panic\":" << (b.panic?"true":"false")
+            << ",\"readyP50Ms\":" << b.readyP50Ms << ",\"vramMB\":" << g.vramBytes/(1<<20) << ",\"slivers\":" << canvas->sliverCount() << "}";
     }
     void writeWindowStats(std::ostringstream& stats, double now) const {
         bool first=true;
@@ -1534,6 +1556,7 @@ struct View {
             first=false;
             const double ready=w.source ? w.source->requestToReadyMs() : -1;
             stats << "{\"output\":" << std::quoted(w.name) << ",\"tier\":" << std::quoted(canvas::tierName(w.decision.tier)) << ",\"rateHz\":" << w.decision.rateHz
+                << ",\"place\":" << std::quoted(canvas::placeName(w.decision.place)) << ",\"inFlight\":" << w.decision.inFlight
                 << ",\"fps\":" << w.reportFrames/std::max(now-reportTime, 1e-3) << ",\"visible\":" << (w.visible?"true":"false") << ",\"transport\":" << std::quoted(w.source ? w.source->transport() : "none")
                 << ",\"width\":" << w.width << ",\"height\":" << w.height << ",\"nativeWidth\":" << w.sourceWidth << ",\"nativeHeight\":" << w.sourceHeight << ",\"frames\":" << w.frames;
             if (ready>=0) stats << ",\"requestToReadyMs\":" << ready;
@@ -1693,6 +1716,7 @@ struct View {
         for (auto i=gpuBefore; i<gpuSceneTimes.size(); ++i) {
             const double frameGpu=gpuSpectatorTimes[i]+gpuSceneTimes[i];
             latchGpu.push_back(frameGpu);
+            if (canvas) canvas->noteGpu(frameGpu, periodMs, monotonicSeconds());
             const auto before=governor.level;
             if (governor.update(frameGpu, periodMs, monotonicSeconds())!=before)
                 std::cout << "Spectator: " << governor.name() << " (frame GPU time " << frameGpu << " ms of " << periodMs << ")" << std::endl;

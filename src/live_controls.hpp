@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <vector>
 
 // Mailboxes sit beside the pose socket. Hover and the heartbeat are also
 // mirrored to OMARCHY_XR_MIRROR_STATE temporarily, until the Lua adapter
@@ -99,6 +100,10 @@ class LiveControls {
     bool promptOpen=false, takeover=true;
     std::string promptOutput;
     timespec searchStamp{};
+    // .tiers (M5): the sliver set last written, sorted; tiersAt is its monotonic write time (rate limit).
+    unsigned long long tiersSeq=0;
+    std::vector<std::uint64_t> tiersSet;
+    double tiersAt=-1e9;
     // Canvas focus names a window address, canonicalised to Record::name(); monitor focus an OMXR- output.
     bool focusName(const std::string& name) const {
         if (canvasMode) return bool(::windows::parseAddress(name));
@@ -145,6 +150,9 @@ class LiveControls {
         const auto unseen = line->editSeq - searchSeq;
         if (line->keys.size() > unseen) line->keys.erase(line->keys.begin(), line->keys.end() - long(unseen));
         searchSeq = line->editSeq; search = std::move(*line);
+    }
+    void writeTiers() {
+        writeFile(path + ".tiers", ::windows::tiersLine(getpid(), tiersSeq, tiersSet, bootSeconds()));
     }
     void writePrompt() {
         writeFile(path + ".prompt", ::windows::promptLine(getpid(), promptSeq, promptOpen, promptOutput, bootSeconds()));
@@ -198,6 +206,7 @@ public:
             unlink((base + ".focus").c_str());unlink((base + ".notification").c_str());
             unlink((base + ".mode").c_str()); unlink((base + ".windows").c_str()); unlink((base + ".cursor").c_str());
             unlink((base + ".prompt").c_str()); unlink((base + ".fill").c_str()); unlink((base + ".search").c_str());
+            unlink((base + ".tiers").c_str());
         }
     }
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
@@ -237,6 +246,16 @@ public:
         if (path.empty() || !parsed) return;
         writeFile(path + ".fill", ::windows::fillLine(getpid(), ++fillSeq, *parsed, w, h, bootSeconds()));
     }
+    // The live sliver set (§4.4, canvas mode): written when it changes, at most every 500 ms; a change
+    // inside that window waits for a later call. The heartbeat keeps a non-empty set fresh.
+    void publishTiers(std::vector<std::uint64_t> slivers, double nowMonotonic) {
+        if (path.empty() || !canvasMode) return;
+        std::sort(slivers.begin(), slivers.end());
+        slivers.erase(std::unique(slivers.begin(), slivers.end()), slivers.end());
+        if (slivers == tiersSet || nowMonotonic - tiersAt < .5) return;
+        tiersSet = std::move(slivers); tiersAt = nowMonotonic; ++tiersSeq;
+        writeTiers();
+    }
     // The optional takeover chords (canvas.tsv takeoverKeys), announced with the next heartbeat.
     void setTakeover(bool on) { if (on != takeover) { takeover = on; heartbeat = 0; } }
     void update() {
@@ -251,14 +270,15 @@ public:
         updateControls();
     }
     // Once per second: .active (owner + stamp), .mode (v1 owner canvas|monitors takeover stamp; the flag
-    // switches the optional takeover chords, SUPER+F is always taken) and an open .prompt, so a late
-    // prompt still opens and a dead renderer's request goes stale.
+    // switches the optional takeover chords, SUPER+F is always taken), an open .prompt and a non-empty
+    // .tiers (same seq, fresh stamp), so a late reader still sees them and a dead renderer's go stale.
     void beat() {
         const auto now = bootSeconds();
         if (now == heartbeat) return;
         writeFile(path + ".active", session + ' ' + std::to_string(now) + '\n');
         writeFile(path + ".mode", "v1 " + session + " " + (canvasMode ? "canvas" : "monitors") + (takeover ? " 1 " : " 0 ") + std::to_string(now) + "\n");
         if (promptOpen) writePrompt();
+        if (canvasMode && !tiersSet.empty()) writeTiers();
         if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
         heartbeat = now;
     }

@@ -199,6 +199,17 @@ smoke-canvas: all $(BUILD)/spike-window-capture
 	python3 tests/live_canvas.py --smoke
 .PHONY: smoke-canvas
 
+# Opt-in M5 ladder acceptance (Hyprland session, ~4 min): SPIKE-canvas with 2, 4 and 6 1080p test clients,
+# the renderer windowed with a view that holds them all (S1c rows 60/40, 60 + 24 x 3, 60 + 15 x 4 + 10), every
+# settled report checked against tests/canvas_ladder.py, then the default view with slivers. Not part of check.
+CANVAS_LIVE_VIEW = --fov 100 --size 1600x1200 --all-in-view
+check-canvas-live: all $(BUILD)/spike-window-capture
+	python3 tests/live_canvas.py profile ladder-2 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-4 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-6 $(CANVAS_LIVE_VIEW)
+	python3 tests/live_canvas.py profile ladder-6
+.PHONY: check-canvas-live
+
 # Convenience alias: the Window Canvas subset of UNIT_BINS (run-units and check-san run them too) plus
 # the offscreen canvas focus invariants (also in check-workspace-focus). Adds no coverage of its own.
 CANVAS_UNITS = $(filter %canvas-model %canvas-placement %canvas-memory %window-list %capture-cadence %capture-governor %region-turns %canvas-search,$(UNIT_BINS))

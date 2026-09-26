@@ -99,6 +99,14 @@ inline const char* tierName(governor::Tier tier) {
     default: return "idle";
     }
 }
+inline const char* placeName(windows::Place place) {
+    switch(place) {
+    case windows::Place::Stage: return "stage";
+    case windows::Place::Sliver: return "sliver";
+    case windows::Place::Park: return "park";
+    default: return "off";
+    }
+}
 class Scene {
 public:
     Ring ring;
@@ -112,7 +120,7 @@ public:
     Memory memory;
     windows::List lastList;               // the last adopted list, re-adopted when exclusions change
     std::unique_ptr<WindowCaptureHub> hub;
-    governor::Fixed governor;
+    governor::Ladder governor;
     std::string stagedName, gazed, memoryPath;
     // The canvas output from the window list header (global origin, name); empty for a header without it.
     std::string outputName;
@@ -157,8 +165,11 @@ public:
     Scene(Ring r, Settings s, std::string statePath, bool noCapture=false)
         : ring(r), settings(std::move(s)), memoryPath(std::move(statePath)), offline(noCapture) {
         metrics=canvas::metrics(ring, Fov{}); depth=ring.radius;
-        governor.budgetMpix=settings.captureBudgetMpix; governor.maxHz=unsigned(settings.fps);
+        configureGovernor();
         if(!memoryPath.empty()) memory.load(memoryPath);
+    }
+    void configureGovernor() {
+        governor.budget.setMpix=settings.captureBudgetMpix; governor.budget.refreshHz=settings.refreshHz; governor.maxHz=unsigned(settings.fps);
     }
     bool connect(std::string& error) {
         if(offline) return true;
@@ -171,7 +182,7 @@ public:
     // apply to the last list at once.
     bool applySettings(Settings next, double now=0) {
         const bool ringChanged=next.radius!=settings.radius || next.gapPx!=settings.gapPx, excludesChanged=next.excludes!=settings.excludes;
-        settings=std::move(next); governor.budgetMpix=settings.captureBudgetMpix; governor.maxHz=unsigned(settings.fps);
+        settings=std::move(next); configureGovernor();
         if(ringChanged) { ring.radius=settings.radius; depth=std::min(depth, ring.radius); for(auto& w:windows) w.rect.x=ring.unwrap(w.rect.x); refresh(now); }
         if(excludesChanged) adopt(lastList, now);
         return ringChanged;
@@ -360,13 +371,13 @@ public:
     }
     template<class F> void forEachSurface(F&& f) const { for(size_t i=0;i<windows.size();++i) f(surfaceView(i)); }
     template<class F> void forEachCandidate(F&& f) const { for(auto i:candidates) f(surfaceView(i)); }
-    // The fixed S1b governor over every window; visible and demand come from the View's projection.
+    // The pixel-budget ladder over every window; visible and demand come from the View's projection.
     void schedule(bool zoomedOut, double now) {
         std::vector<governor::Input> in; in.reserve(windows.size());
         for(size_t i=0;i<windows.size();++i) {
             const auto& w=windows[i];
             const bool pinned=w.pinned && !w.gone;
-            in.push_back({w.name, w.staged && !w.gone, w.visible || pinned, projected[i].width/ring.pxPerDeg(), w.record.focusHistoryID, w.pixelW, w.pixelH, pinned});
+            in.push_back({w.name, w.staged && !w.gone, w.visible || pinned, projected[i].width/ring.pxPerDeg(), w.record.focusHistoryID, w.pixelW, w.pixelH, pinned, w.demandW, w.demandH, w.record.place==windows::Place::Sliver});
         }
         const auto decisions=governor.plan(in, zoomedOut, now);
         for(size_t i=0;i<windows.size();++i) {
@@ -383,6 +394,31 @@ public:
             w.source->setIgnoreDamage(d.ignoreDamage);
             w.source->setDemand(!w.regionShown && (w.visible || w.pinned) && d.rateHz>0, w.demandW, w.demandH);
         }
+    }
+    // The `.tiers` sliver set: live windows the ladder rated above 30 Hz (§4.4).
+    std::vector<std::uint64_t> sliverAddresses() const {
+        std::vector<std::uint64_t> out;
+        for(const auto& w:windows) if(!w.gone && w.decision.place==windows::Place::Sliver) out.push_back(w.record.address);
+        return out;
+    }
+    unsigned sliverCount() const { return unsigned(sliverAddresses().size()); }
+    // Request→ready self-calibration from pulled exports only: the staged window's region lanes measure ≈ 33 ms
+    // by construction (M3), and a damage-driven sliver measures its client's commit pace, not compositor load.
+    void noteReady(const CanvasWindow& w, double now) {
+        if(w.staged || !w.source || !w.decision.ignoreDamage) return;
+        const double ms=w.source->requestToReadyMs();
+        if(ms>=0) governor.budget.readySample(ms, now);
+    }
+    void noteGpu(double frameGpuMs, double periodMs, double now) { governor.budget.gpuSample(frameGpuMs, periodMs, now); }
+    // The per-tier step for the log, e.g. "near 30 Hz, far 10 Hz"; tiers without a live window are left out.
+    std::string ladderSummary() const {
+        std::string out;
+        for(auto tier:{governor::Tier::Near, governor::Tier::Far, governor::Tier::Overview}) {
+            unsigned hz=0; bool any=false;
+            for(const auto& w:windows) if(!w.gone && w.decision.tier==tier) { any=true; hz=std::max(hz, w.decision.rateHz); }
+            if(any) out+=(out.empty() ? "" : ", ")+std::string(tierName(tier))+' '+std::to_string(hz)+" Hz";
+        }
+        return out.empty() ? "focused only" : out;
     }
     void openSources(double now) {
         if(offline || !hub || !hub->error().empty()) return;

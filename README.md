@@ -106,7 +106,9 @@ hidden canvas output. The window you work in is live at 60 Hz with its menus and
 SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
 and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
 SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
-F1 lists every canvas key. The second tab becomes **Canvas** with the ring and capture settings. Window canvas
+F1 lists every canvas key. The second tab becomes **Canvas** with the ring and capture settings; the
+capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
+line under it shows the live use while the canvas runs. Window canvas
 needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
 shortcuts & gestures** (or `make install-controls`). Until you do, the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
@@ -221,6 +223,7 @@ make check-preview   # pixel-exact renderer regression against tests/baselines; 
 make check-canvas    # alias: just the window canvas tests (check and check-workspace-focus run them too)
 make check-canvas-preview # canvas overlay stills (palette, switcher, radar, help, Fill, pin) as PNGs; GL session
 make smoke-canvas    # opt-in, Hyprland session: canvas smoke against a temporary SPIKE-canvas output
+make check-canvas-live # opt-in, Hyprland session: capture ladder acceptance (ladder-2/4/6 all in view, ladder-6 default view) on SPIKE-canvas
 python3 tests/live_studio.py  # opt-in Hyprland integration test with temporary outputs
 python3 tests/live_tracking.py # opt-in hardware test; close other SDK sessions first
 python3 tests/live_dedicated.py # opt-in stereo/DRM handoff/restoration test
@@ -262,12 +265,17 @@ previous list stays.
 `make spike-canvas` first) writes such a file from `hyprctl clients -j`:
 `python3 tests/live_canvas.py write FILE [--stage 0xADDRESS] [--all]` writes it once, `watch`
 rewrites it every 500 ms (without `--all` only the spike test clients are listed). `profile
-[NAME] [--seconds 40] [--stereo]` is the M2 acceptance run: it creates the headless
-`SPIKE-canvas` output, spawns the profile's test clients (the default `zoomed-in-near-parked`:
-one staged 1920x1080 window, 4 + 6 parked 1280x720 and 39 parked 960x600), starts the
-renderer windowed on that output, feeds a steady pose, enters Overview after about 20 s and
-returns to Work two reports later, then prints the tier table and asserts the fixed rates
-(focused ≥ 58 fps, near ≥ 23, far 9–11, idle 0, Overview 10 or 6 Hz) and Hyprland CPU ≤ 20 %.
+[NAME] [--seconds 40] [--stereo] [--size WxH] [--fov DEG] [--churn]` is the capture acceptance run:
+it creates the headless `SPIKE-canvas` output, spawns the profile's test clients (the default
+`zoomed-in-near-parked`: one staged 1920x1080 window, 4 + 6 parked 1280x720 and 39 parked 960x600;
+`ladder-2/4/6/11` and `ladder-video` are the M5 1080p sets), starts the renderer windowed on that
+output, moves the renderer's slivers (`pose.sock.controls.tiers`) to the right edge of the canvas
+workspace like the controls adapter does, feeds a steady pose, enters Overview after about 20 s and
+returns to Work two reports later. It prints the tier and budget table and checks every settled
+report against the ladder model `tests/canvas_ladder.py` (each window's rate, tier, captures in
+flight and place; focused ≥ 58 fps, the others within 1 fps of their rate; used ≤ effective budget),
+at most 4 steady-state `screencast` events, no renderer GPU-memory growth and Hyprland CPU ≤ 20 %;
+`--churn` opens and closes a window during Work and fails when a ladder tier rises twice within 2 s.
 `make smoke-canvas` (`--smoke`) runs `--smoke-test --stereo --canvas` against one staged and
 four parked clients. Both remove the output and the clients afterwards and give focus back.
 

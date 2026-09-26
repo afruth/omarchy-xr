@@ -188,4 +188,29 @@ inline std::string fillLine(int pid, unsigned long long seq, std::uint64_t addre
     return "v1 "+std::to_string(pid)+' '+std::to_string(seq)+' '+addressToken(address)+' '+std::to_string(w)+' '+std::to_string(h)+' '+
         std::to_string(stamp)+'\n';
 }
+// `.tiers` (renderer -> Lua, M5): v1 <pid> <seq> <stamp> [<address> sliver]..., the complete sliver set
+// sorted by address, so a reader that missed a line converges; every other canvas window is parked. seq
+// counts set changes (at most one per 500 ms); the 1 s heartbeat rewrites the line with a fresh stamp.
+// A missing or stale file means no slivers. Readers also accept `park` pairs.
+struct Tiers { std::string owner; unsigned long long seq=0; long stamp=0; std::vector<std::uint64_t> slivers; };
+inline std::string tiersLine(int pid, unsigned long long seq, std::vector<std::uint64_t> slivers, long stamp) {
+    std::sort(slivers.begin(), slivers.end());
+    slivers.erase(std::unique(slivers.begin(), slivers.end()), slivers.end());
+    std::string line="v1 "+std::to_string(pid)+' '+std::to_string(seq)+' '+std::to_string(stamp);
+    for(auto address:slivers) line+=' '+addressToken(address)+" sliver";
+    return line+'\n';
+}
+inline std::optional<Tiers> parseTiers(std::string_view line) {
+    while(!line.empty() && (line.back()=='\n' || line.back()==' ')) line.remove_suffix(1);
+    const auto f=fields(line);
+    Tiers t;
+    if(f.size()<4 || f.size()%2 || (f.size()-4)/2>maxRecords || f[0]!="v1" || !number(f[2],t.seq) || !number(f[3],t.stamp)) return {};
+    std::unordered_set<std::uint64_t> seen;
+    for(size_t i=4;i<f.size();i+=2) {
+        const auto address=parseAddress(f[i]);
+        if(!address || (f[i+1]!="sliver" && f[i+1]!="park") || !seen.insert(*address).second) return {};
+        if(f[i+1]=="sliver") t.slivers.push_back(*address);
+    }
+    t.owner=f[1]; return t;
+}
 }
