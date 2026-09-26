@@ -598,7 +598,7 @@ workspace tilt. Live head tracking still preserves its gravity reference.
 
 Enable **Utilities → Recording → Mono recording window** to open a separate computer window alongside stereo on the glasses. The preference is saved; it can also be toggled while stereo runs. Select **Omarchy XR — Mono spectator** in your recording application's window picker. Closing that window leaves stereo running; Studio can reopen it.
 
-The window renders the same head-controlled camera from its center, without stereo separation. It shares captured desktop textures, uses GPU DMA-BUF buffers with no CPU readback, and renders at up to 30 fps. Resizing preserves the glasses' aspect ratio with letterboxing. Hidden or busy windows skip rendering instead of waiting on the compositor. The extra scene rendering still adds GPU work. CLI: `--direct OUTPUT --stereo --spectator`.
+The window renders the same head-controlled scene from its center, without stereo separation. Floating XR notifications, including gaze highlights and flick-driven changes, appear in recordings. It shares captured desktop textures, uses GPU DMA-BUF buffers with no CPU readback, and renders at up to 30 fps. Resizing preserves the glasses' aspect ratio with letterboxing. Hidden or busy windows skip rendering instead of waiting on the compositor. The extra scene rendering still adds GPU work. CLI: `--direct OUTPUT --stereo --spectator`.
 
 ### Saved monitor setups
 
