@@ -13,7 +13,7 @@ local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 local SLIVER_PX, SLIVER_STEP, SLIVER_FLOOR = 8, 24, 64
 local CANVAS_MONITOR_PATTERN = "^OMXR%-%x%x%x%x%x%x%x%x%-canvas$"
 local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=true}
-local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17}
+local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18}
 local setHoverTimer, updateCanvas, releasePointer
 local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
@@ -26,15 +26,21 @@ end
 local function retireWorkspaceEvents()
     for _,subscription in ipairs(omarchy_xr_controls.workspace_events or {}) do subscription:remove() end
 end
+-- The SUPER+left-drag binds (M7), the drag's plain release bind (dragRelease) and the `.drag` id and
+-- sequence, which stay monotonic across a reload.
+local function dragState(saved)
+    saved.dragBinds,saved.dragId,saved.dragSeq=saved.dragBinds or {},saved.dragId or 0,saved.dragSeq or 0
+end
 -- Canvas state that must survive a config reload: journaled origins, the staged address,
 -- event subscriptions, the SUPER+F takeover, the canvas key set, the mailbox sequence numbers and
--- the sliver set (slivers: moved by Lua; tiersWanted: the renderer's last `.tiers` set).
+-- the sliver set (slivers: moved by Lua; tiersWanted: the renderer's last `.tiers` set) and the drag state.
 local function canvasState()
     omarchy_xr_canvas = omarchy_xr_canvas or {origin={}, staged=nil, events={}, fill=nil, windowsSeq=0, cursorSeq=0}
     local saved=omarchy_xr_canvas
     saved.keys,saved.takeovers,saved.takeover=saved.keys or {},saved.takeovers or {},saved.takeover or false
     saved.fillSeq=saved.fillSeq or 0
     saved.slivers,saved.tiersWanted,saved.tiersSeq=saved.slivers or {},saved.tiersWanted or {},saved.tiersSeq or 0
+    dragState(saved)
     return saved
 end
 local canvas = canvasState()
@@ -56,12 +62,37 @@ local function restoreFullscreen()
     hl.unbind("SUPER + F")
     hl.bind("SUPER + F", hl.dsp.window.fullscreen({mode="fullscreen"}), {description="Full screen"})
 end
+-- SUPER+left-drag is Omarchy's window.drag (tiling.lua), bound with o.bind as well: the canvas replaces it
+-- with a press and a release bind and gives the default back on exit.
+local DRAG_CHORD="SUPER + mouse:272"
+local function retireDragRelease()
+    local binding=canvas.dragRelease
+    if binding then pcall(function() binding:remove() end) end
+    canvas.dragRelease=nil
+end
+local function retireDragBinds()
+    for _,binding in ipairs(canvas.dragBinds) do pcall(function() binding:remove() end) end
+    canvas.dragBinds={}
+    retireDragRelease()
+end
+local function restoreDrag()
+    retireDragBinds()
+    hl.unbind(DRAG_CHORD)
+    hl.bind(DRAG_CHORD,hl.dsp.window.drag(),{mouse=true,description="Move window"})
+end
 -- Canvas key set (§5.5), an explicit action->mode map. SUPER+CTRL+G and SUPER+ALT+P are free in Omarchy
 -- and always bound; the takeovers (canvas.tsv takeoverKeys) replace Omarchy's defaults from
 -- bindings/tiling.lua and rebind them on exit, like SUPER+F. The ALT release binds end the switcher.
 -- Arrange (13) and help (17) arrive as keys of the search prompt, which holds the keyboard in Overview.
+-- SUPER+CTRL+arrows resize the staged window in Lua (M7); Left/Right are Omarchy's group focus keys, given back on exit.
 local CANVAS_KEYS={{chord="SUPER + CTRL + G",mode=CANVAS_MODES.search,desc="search window (canvas)"},
-    {chord="SUPER + ALT + P",mode=CANVAS_MODES.pin,desc="pin window (canvas)"}}
+    {chord="SUPER + ALT + P",mode=CANVAS_MODES.pin,desc="pin window (canvas)"},
+    {chord="SUPER + CTRL + LEFT",resize={dw=-100},desc="narrower window (canvas)",
+        restore={{desc="Move grouped window focus left",dsp=function() return hl.dsp.group.prev() end}}},
+    {chord="SUPER + CTRL + RIGHT",resize={dw=100},desc="wider window (canvas)",
+        restore={{desc="Move grouped window focus right",dsp=function() return hl.dsp.group.next() end}}},
+    {chord="SUPER + CTRL + UP",resize={dh=-100},desc="shorter window (canvas)"},
+    {chord="SUPER + CTRL + DOWN",resize={dh=100},desc="taller window (canvas)"}}
 local ON_TOP={desc="Reveal active window on top",dsp=function() return hl.dsp.window.bring_to_top() end}
 local TAKEOVER_KEYS={
     {chord="SUPER + TAB",mode=CANVAS_MODES.overview,desc="overview (canvas)",
@@ -102,6 +133,8 @@ retireWorkspaceEvents()
 local function retireCanvas()
     retireCanvasEvents()
     if canvas.fill then restoreFullscreen() end
+    if #canvas.dragBinds>0 then restoreDrag() end
+    retireDragRelease()
     retireCanvasKeys()
 end
 retireCanvas()
@@ -246,6 +279,10 @@ local function recordTap(now)
     end
     if not lastTap or now-lastTap>400 or now<lastTap then lastTap=now end
 end
+-- In canvas mode a single tap confirms (focuses the gazed window) once no second tap followed in 400 ms.
+local function settleTap(now)
+    if canvasMode and lastTap and now and now-lastTap>400 then lastTap=nil;publish(0,CANVAS_MODES.confirm) end
+end
 local taps={}
 local ok,touchpads=pcall(require,"hypr.xr-touchpads")
 if ok and #touchpads>0 then
@@ -272,7 +309,9 @@ local function configure(nextFingers,nextKeys)
     for mode,key in ipairs(keys) do
         if key~="" then
             local action=mode
-            local binding=hl.bind(key,function() publish(0,action) end,{description="XR: "..descriptions[mode]})
+            -- In canvas mode fit_target confirms the gazed window; the flick-in gesture keeps mode 2.
+            local binding=hl.bind(key,function() publish(0,(action==2 and canvasMode) and CANVAS_MODES.confirm or action) end,
+                {description="XR: "..descriptions[mode]})
             binding:set_enabled(active);bindings[#bindings+1]=binding
         end
     end
@@ -353,7 +392,7 @@ local function refresh()
 end
 local timer = hl.timer(refresh, {timeout=250, type="repeat"})
 -- Keep the timer alive and expose the exact callbacks for integration checks.
-omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=function() publish(0,3) end,bindings=bindings, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,2) end}
+omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=function() publish(0,3) end,bindings=bindings, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,canvasMode and CANVAS_MODES.confirm or 2) end}
 
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
@@ -513,7 +552,8 @@ local function dropSliver(address)
     pcall(windowDispatch,"set_prop",address,{prop="no_follow_mouse",value="unset"})
     canvas.slivers[address]=nil
 end
-local function stageWindow(address,mon)
+-- Quiet staging (XR's own choice, M7) leaves the keyboard focus where it is.
+local function stageWindow(address,mon,quiet)
     local fine,w=pcall(hl.get_window,"address:"..address)
     if not fine or not w then return false end
     local previous=canvas.staged
@@ -531,7 +571,7 @@ local function stageWindow(address,mon)
     windowDispatch("resize",address,{x=width,y=height})
     windowDispatch("move",address,{x=mon.x,y=mon.y})
     windowDispatch("bring_to_top",address)
-    hl.dispatch(hl.dsp.focus({window="address:"..address}))
+    if not quiet then hl.dispatch(hl.dsp.focus({window="address:"..address})) end
     canvas.staged=address;overflowX,overflowY=0,0;windowsDirty=true
     snapshot[address]={x=mon.x,y=mon.y,w=width,h=height}
     return true
@@ -578,13 +618,61 @@ end
 local function publishCursor(mon,now)
     local fine,c=pcall(hl.get_cursor_pos)
     if not fine or not c then return end
-    local x,y=c.x,c.y
-    if onMonitor(mon,x,y) then x,y=confine(x,y) else overflowX,overflowY=0,0 end
+    local x,y,inside=c.x,c.y,onMonitor(mon,c.x,c.y)
+    if inside then x,y=confine(x,y) else overflowX,overflowY=0,0 end
     local line=string.format("%.1f %.1f %.1f %.1f",x,y,overflowX,overflowY)
-    if line==cursorLine and now-cursorWritten<.4 then return end
-    canvas.cursorSeq=canvas.cursorSeq+1
-    writeMailbox(".cursor",string.format("v1 %s %d %s %d\n",session,canvas.cursorSeq,line,math.floor(now)))
-    cursorLine,cursorWritten=line,now
+    if line~=cursorLine or now-cursorWritten>=.4 then
+        canvas.cursorSeq=canvas.cursorSeq+1
+        writeMailbox(".cursor",string.format("v1 %s %d %s %d\n",session,canvas.cursorSeq,line,math.floor(now)))
+        cursorLine,cursorWritten=line,now
+    end
+    if inside then return x,y end
+end
+-- SUPER+left-drag on the canvas (M7): `.drag` carries the pointer travel since the press, confinement
+-- overflow included, in the `.pan` v2 codec; the renderer moves the staged window along the ring and
+-- the real window stays at the stage origin. A release bind matches the modifiers held at release, so
+-- letting go of SUPER first would miss it: a plain button release bind lives for the drag, and 3 s
+-- without pointer travel end it too.
+local DRAG_IDLE=3
+local drag={active=false,startX=0,startY=0,dx=0,dy=0,moved=0}
+local function publishDrag()
+    if not active then return end
+    canvas.dragSeq=canvas.dragSeq+1
+    writeMailbox(".drag",string.format("v2 %s %d %d %.9f %.9f %d %d\n",session,canvas.dragSeq,canvas.dragId,drag.dx,drag.dy,
+        drag.active and 1 or 0,math.floor(bootSeconds())))
+end
+local function endDrag()
+    retireDragRelease()
+    if not drag.active then return end
+    drag.active=false;publishDrag()
+end
+local function beginDrag()
+    if not (canvasMode and canvas.staged) then return end
+    local fine,c=pcall(hl.get_cursor_pos)
+    if not fine or not c then return end
+    canvas.dragId=canvas.dragId+1;drag.active=true;drag.moved=bootSeconds()
+    drag.startX,drag.startY,drag.dx,drag.dy=c.x+overflowX,c.y+overflowY,0,0
+    retireDragRelease()
+    canvas.dragRelease=hl.bind("mouse:272",endDrag,{release=true,description="XR: end window move (canvas)"})
+    publishDrag()
+end
+local function updateDrag(x,y,now)
+    if not drag.active then return end
+    local dx,dy=drag.dx,drag.dy
+    if x then dx,dy=x+overflowX-drag.startX,y+overflowY-drag.startY end
+    if dx~=drag.dx or dy~=drag.dy then drag.dx,drag.dy,drag.moved=dx,dy,now;publishDrag()
+    elseif now-drag.moved>=DRAG_IDLE then endDrag() end
+end
+-- SUPER+CTRL+arrows: 100 px steps, at least 100 px and at most the stage band.
+local function resizeStaged(step)
+    local mon=canvasMonitor()
+    local rect=canvas.staged and snapshot[canvas.staged]
+    if not (mon and rect) then return end
+    local maxW,maxH=logicalSize(mon)
+    local width=math.floor(math.max(100,math.min(maxW-SLIVER_PX,rect.w+(step.dw or 0))))
+    local height=math.floor(math.max(100,math.min(maxH,rect.h+(step.dh or 0))))
+    windowDispatch("resize",canvas.staged,{x=width,y=height})
+    rect.w,rect.h=width,height;windowsDirty=true
 end
 local function flushFocus()
     if not focusPending then return end
@@ -662,14 +750,69 @@ local function syncTiers(mon,now)
     if wanted then canvas.tiersWanted=wanted end
     applyTiers(mon,now)
 end
+-- Always a staged window (M7): the most recently focused member, staged quietly at most every 0.5 s.
+local ensureStaged
+do
+    local lastEnsure=-math.huge
+    local function stagedLive()
+        local fine,w=pcall(hl.get_window,"address:"..canvas.staged)
+        return fine and w and isMember(w)
+    end
+    local function mruMember()
+        local best
+        for _,w in ipairs(listWindows()) do
+            if isMember(w) and not isExcluded(w) and (not best or (w.focus_history_id or 0)<(best.focus_history_id or 0)) then best=w end
+        end
+        return best
+    end
+    ensureStaged=function(mon,now)
+        if now-lastEnsure<.5 then return end
+        lastEnsure=now
+        if canvas.staged and stagedLive() then return end
+        local best=mruMember()
+        if best then stageWindow(best.address,mon,true) end
+    end
+end
+-- A SUPER+right-drag resizes the real window, maybe from a corner: 0.5 s after its geometry settles
+-- the staged window goes back to the stage origin, clamped to the band.
+local reclampStage
+do
+    local stageSeen
+    local function sameGeometry(seen,address,x,y,width,height)
+        return seen and seen.address==address and seen.x==x and seen.y==y and seen.w==width and seen.h==height
+    end
+    local function onStage(mon,x,y,width,height)
+        local maxW,maxH=logicalSize(mon)
+        return x==mon.x and y==mon.y and width<=maxW-SLIVER_PX and height<=maxH
+    end
+    reclampStage=function(mon,now)
+        local address=canvas.staged
+        local fine,w=pcall(hl.get_window,"address:"..(address or ""))
+        if not (address and fine and w) or drag.active then stageSeen=nil;return end
+        local x,y=pair(w.at)
+        local width,height=pair(w.size)
+        if not sameGeometry(stageSeen,address,x,y,width,height) then stageSeen={address=address,x=x,y=y,w=width,h=height,at=now};return end
+        if now-stageSeen.at<.5 or onStage(mon,x,y,width,height) then return end
+        -- One try per geometry: a window that refuses the clamp (a minimum size) is not retried.
+        stageSeen.at=math.huge
+        local maxW,maxH=logicalSize(mon)
+        width,height=math.floor(math.min(width,maxW-SLIVER_PX)),math.floor(math.min(height,maxH))
+        windowDispatch("resize",address,{x=width,y=height})
+        windowDispatch("move",address,{x=mon.x,y=mon.y})
+        snapshot[address]={x=mon.x,y=mon.y,w=width,h=height};windowsDirty=true
+    end
+end
 local function canvasTick()
     local mon=canvasMonitor()
     if not mon then return end
     local now=bootSeconds()
     readFill(mon)
     pcall(syncTiers,mon,now)
+    ensureStaged(mon,now)
+    reclampStage(mon,now)
     if windowsDirty and now-lastWindowsWrite>=.1 then publishWindows(now,mon) end
-    publishCursor(mon,now)
+    local x,y=publishCursor(mon,now)
+    updateDrag(x,y,now)
     flushFocus()
 end
 -- The 3-finger double tap hands the pointer back to the first non-XR monitor.
@@ -816,8 +959,9 @@ local function readMode()
 end
 local function bindCanvasKey(entry)
     if entry.restore then hl.unbind(entry.chord) end
-    local mode,token=entry.mode,entry.token and hexToken(entry.token) or nil
-    local binding=hl.bind(entry.chord,function() publish(0,mode,token) end,{description="XR: "..entry.desc,release=entry.release})
+    local mode,token,step=entry.mode,entry.token and hexToken(entry.token) or nil,entry.resize
+    local callback=step and function() resizeStaged(step) end or function() publish(0,mode,token) end
+    local binding=hl.bind(entry.chord,callback,{description="XR: "..entry.desc,release=entry.release})
     return {chord=entry.chord,restore=entry.restore,binding=binding}
 end
 local function installTakeovers(takeover)
@@ -846,15 +990,21 @@ local function enterCanvas(takeover)
     retireFill()
     hl.unbind("SUPER + F")
     canvas.fill=hl.bind("SUPER + F",function() publish(0,CANVAS_MODES.fill) end,{description="XR: fill window (canvas)"})
+    retireDragBinds()
+    hl.unbind(DRAG_CHORD)
+    canvas.dragBinds={hl.bind(DRAG_CHORD,beginDrag,{description="XR: move window along the ring (canvas)"}),
+        hl.bind(DRAG_CHORD,endDrag,{release=true,description="XR: end window move (canvas)"})}
     installCanvasKeys(takeover)
     retireCanvasEvents()
     for name,callback in pairs(CANVAS_EVENTS) do canvas.events[#canvas.events+1]=hl.on(name,callback) end
     windowsDirty=true;lastWindowsWrite=-math.huge;readCanvasSettings()
-    focusAddress=nil;focusPending=nil;cursorLine=nil
+    focusAddress=nil;focusPending=nil;cursorLine=nil;lastTap=nil
 end
 local function leaveCanvas()
     canvasMode=false
     restoreFullscreen()
+    endDrag()
+    restoreDrag()
     retireCanvasKeys()
     retireCanvasEvents()
     for address in pairs(canvas.origin) do undecorate(address) end
@@ -1031,7 +1181,7 @@ local function updatePointer()
     gazeDispatch=false
     if not success then error(message) end
     publishPane(hoverName)
-    if canvasMode then canvasTick() end
+    if canvasMode then settleTap(tapTime());canvasTick() end
 end
 local hoverTimer
 setHoverTimer = function(enabled)

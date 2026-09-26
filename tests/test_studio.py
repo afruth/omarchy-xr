@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"studio"))
-from backend import Manager, default_layout, validate, add_gutters, serve, effective_scale
+from backend import Manager, default_layout, validate, add_gutters, serve, effective_scale, action_present_direct
 from sdk import SDK
 import io
 
@@ -337,6 +337,42 @@ class LayoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"computer display"): manager.set_spectator(True)
             finally:
                 manager.viewer=None; manager.direct=False; manager.cleanup(); manager.lock.close()
+
+    def test_stereo_start_skips_unplaceable_spectator(self):
+        glasses={"name":"DP-1","description":"VITURE Pro","width":1920,"height":1080,"activeWorkspace":{"id":3}}
+        laptop={"name":"eDP-1","width":1920,"height":1080,"activeWorkspace":{"id":1},"disabled":True}
+        virtual=[{"name":"OMXR-1a2b3c4d-canvas","activeWorkspace":{"id":-1338}},{"name":"OMXR-1a2b3c4d-1","activeWorkspace":{"id":7}}]
+        for mode in ("canvas","monitors"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                runner=Mock(return_value="ok")
+                manager=Manager(temp,"/unused",runner)
+                manager.monitors=Mock(return_value=[glasses,laptop,*virtual])
+                manager.dedicated.output="DP-1"; manager.spectator_enabled=True
+                manager.render_mode=mode
+                args=["/unused","--canvas" if mode=="canvas" else "--layout"]
+                try:
+                    with patch.object(Manager,"_canvas_args",return_value=args),patch.object(Manager,"_monitor_args",return_value=args):
+                        self.assertEqual(manager.viewer_command(True,True),args+["--direct","DP-1","--stereo"])
+                        events=[json.loads(line) for line in (Path(temp)/"display-events.jsonl").read_text().splitlines()]
+                        self.assertEqual(events[-1]["stage"],"spectator-skipped")
+                        self.assertIn("computer display",events[-1]["error"])
+                        self.assertIn("computer display",manager.status()["spectatorSkipped"])
+                        runner.assert_not_called()
+                        laptop["disabled"]=False
+                        self.assertEqual(manager.viewer_command(True,True),args+["--direct","DP-1","--stereo","--spectator"])
+                        self.assertIn('workspace="1 silent"',runner.call_args.args[1])
+                        self.assertEqual(manager.status()["spectatorSkipped"],"")
+                        laptop["disabled"]=True
+                        with self.assertRaisesRegex(RuntimeError,"computer display"): manager.set_spectator(True)
+                    manager.canvas.ensure=Mock(return_value={}); manager.apply=Mock()
+                    manager.start_dedicated=Mock(side_effect=lambda: manager.direct_arguments())
+                    self.assertEqual(action_present_direct(manager,{"layout":{}})["message"],
+                                     "Stereo active. Recording window skipped: no computer display.")
+                    laptop["disabled"]=False
+                    self.assertEqual(action_present_direct(manager,{"layout":{}})["message"],"Stereo active.")
+                    laptop["disabled"]=True
+                finally:
+                    manager.cleanup(); manager.lock.close()
 
     def test_saved_setups_roundtrip_and_live_switch(self):
         with tempfile.TemporaryDirectory() as temp:

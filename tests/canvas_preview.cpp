@@ -154,6 +154,9 @@ void run(View& v, const std::filesystem::path& directory) {
     assert(v.canvas->switcher.revealed && v.canvas->overlayOpen());
     still(v, directory, "switcher.png", Kind::Switcher);
     v.navigate({.verb=View::Verb::Switch, .begin=true, .output="cancel"}); assert(!v.canvas->switcher.active);
+    // Every row (M7 added four) stays on the card, above the takeover-off note when that shows.
+    namespace ov=canvas::overlay;
+    assert(std::size(ov::helpRows)==22 && ov::helpBottom(true)<=ov::helpHeight-24 && ov::helpBottom(false)<=ov::helpHeight-48);
     v.navigate({View::Verb::Help}); assert(v.canvas->helpOpen);
     still(v, directory, "help.png", Kind::Help);
     v.navigate({View::Verb::Help}); assert(!v.canvas->helpOpen);

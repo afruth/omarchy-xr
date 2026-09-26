@@ -314,6 +314,21 @@ class CanvasTests(unittest.TestCase):
             self.assertIsNone(manager.applied)
         finally: self.close(manager)
 
+    def test_place_spectator_ignores_live_canvas_output(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake, "canvas")
+        try:
+            manager.canvas.ensure(manager.monitors())
+            canvas_output = next(name for name in fake.outputs if name.startswith("OMXR-") and name.endswith("-canvas"))
+            fake.outputs[canvas_output]["focused"] = True
+            fake.outputs["eDP-1"]["focused"] = False
+            manager.place_spectator()
+            self.assertIn('workspace="1 silent"', fake.evals("omarchy-xr-spectator")[-1])
+            fake.outputs["eDP-1"]["disabled"] = True
+            with self.assertRaisesRegex(RuntimeError, "computer display"): manager.place_spectator()
+            fake.outputs["eDP-1"]["disabled"] = False
+        finally: self.close(manager)
+
     def test_ensure_creates_one_output_and_touches_no_layout(self):
         for seeded in (False, True):
             with self.subTest(seeded=seeded):

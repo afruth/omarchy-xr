@@ -336,7 +336,8 @@ local function installCanvasHl()
     hl.dsp={focus=tagged("focus"),cursor={move=tagged("cursor.move")},
         window={move=tagged("window.move"),resize=tagged("window.resize"),float=tagged("window.float"),set_prop=tagged("window.set_prop"),
             bring_to_top=tagged("window.bring_to_top"),fullscreen=tagged("window.fullscreen"),fullscreen_state=tagged("window.fullscreen_state"),
-            cycle_next=tagged("window.cycle_next"),swap=tagged("window.swap")},
+            cycle_next=tagged("window.cycle_next"),swap=tagged("window.swap"),drag=tagged("window.drag")},
+        group={prev=tagged("group.prev"),next=tagged("group.next")},
         workspace={move=tagged("workspace.move"),toggle_special=tagged("workspace.toggle_special")}}
     hl.dispatch=function(d) dispatched[#dispatched+1]=d;apply(d) end
     hl.get_monitors=function() return {laptop,canvasOutput} end
@@ -848,3 +849,128 @@ testTiersPark()
 testStageBand()
 testTiersLeave()
 testSliverFloor()
+
+-- M7: confirm, auto-staging, the SUPER+left-drag takeover, resize keys and the stage re-clamp.
+files["/state/omarchy-xr/controls-settings.tsv"]="3\nCTRL + Up\nCTRL + Down\n\n\n\n"
+local DRAG="SUPER + mouse:272"
+local function testConfirmHotkey()
+    clock(200);omarchy_xr_controls.refresh()
+    bindings["CTRL + Down"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 18 %- 200\n$"))
+    omarchy_xr_controls.fit_target();assert(files[path]:match(" 18 %- 200\n$"))
+    bindings["CTRL + Up"].callback();assert(files[path]:match("^v2 .* 1\n$"))
+    gstart(20000);gmove(20050,-60);gend(20100);assert(files[path]:match("^v2 .* 2\n$")) -- the flick-in keeps mode 2
+    clock(200.5,"monitors");omarchy_xr_controls.refresh()
+    bindings["CTRL + Down"].callback();assert(files[path]:match("^v2 .* 2\n$"))
+    omarchy_xr_controls.fit_target();assert(files[path]:match("^v2 .* 2\n$"))
+    print("Confirm hotkey: fit_target publishes 18 in canvas mode, 2 in monitor mode; the flick keeps 2 passed")
+end
+local function testTapConfirm()
+    clock(201);omarchy_xr_controls.refresh()
+    local tap=bindings["mouse:274"]
+    local before=files[path]
+    files["/proc/uptime"]="201.5";tap.callback();assert(files[path]==before)
+    tick(201.7);assert(files[path]==before)                  -- a second tap may still follow
+    tick(201.95);assert(files[path]:match("^v3 42 .* 18 %- 201\n$"))
+    before=files[path];tick(202.5);assert(files[path]==before) -- once
+    files["/proc/uptime"]="203";tap.callback();files["/proc/uptime"]="203.2";tap.callback()
+    assert(files[path]:match("^v2 .* 3\n$"));before=files[path]
+    tick(203.8);assert(files[path]==before)                  -- a double tap is no confirm
+    files["/proc/uptime"]="204";tap.callback();gstart(204100);gend(204150,true)
+    tick(204.6);assert(files[path]==before)                  -- a swipe cancels the tap
+    clock(205,"monitors");omarchy_xr_controls.refresh();before=files[path]
+    files["/proc/uptime"]="205.5";tap.callback();tick(206);assert(files[path]==before)
+    print("Tap confirm: single tap confirms after 400 ms once, double tap and swipe do not, monitor mode ignores it passed")
+end
+local function kindsFor(address)
+    local out={}
+    for _,d in ipairs(dispatched) do if d.spec and d.spec.window=="address:"..address then out[#out+1]=d.kind..(d.spec.workspace and "@ws" or "") end end
+    return table.concat(out," ")
+end
+local function testEnsureStaged()
+    windows={};omarchy_xr_canvas.staged=nil;cursorPos={x=500,y=400}
+    window("0x3f","omxr-park",{focus_history_id=0,class="omarchy-xr-spectator"}) -- never staged, even as the MRU
+    window("0x40","omxr-park",{focus_history_id=3});window("0x41","omxr-park",{focus_history_id=1,at={x=20500,y=300}})
+    window("0x42","omxr-park",{focus_history_id=7});window("0x43","1",{focus_history_id=0})
+    clock(210);omarchy_xr_controls.refresh();dispatched={}
+    tick(210)
+    assert(omarchy_xr_canvas.staged=="0x41");local b=find("0x41")
+    assert(b.workspace.name=="omxr-canvas");assert(b.at.x==20000);assert(b.at.y==0)
+    assert(kindsFor("0x41")=="window.move@ws window.resize window.move window.bring_to_top")
+    assert(count("focus")==0);assert(count("cursor.move")==0) -- quiet: keyboard and pointer stay
+    tick(210.2);assert(row("0x41")[9]=="stage");assert(row("0x40")[9]=="park")
+    for i,w in ipairs(windows) do if w==b then table.remove(windows,i);break end end
+    fire("window.close",b);assert(omarchy_xr_canvas.staged==nil)
+    tick(210.4);assert(omarchy_xr_canvas.staged==nil)       -- at most every 0.5 s
+    tick(210.6);assert(omarchy_xr_canvas.staged=="0x40");assert(count("focus","0x40")==0)
+    local n=windowDispatches();tick(211.2);assert(windowDispatches()==n) -- a live staged window stays
+    windows={};window("0x44","1");omarchy_xr_canvas.staged=nil;dispatched={}
+    tick(211.8);assert(windowDispatches()==0);assert(omarchy_xr_canvas.staged==nil)
+    print("Ensure staged: the MRU member is staged quietly, the next one after a close, nothing without members passed")
+end
+local function dragFields() return files[path..".drag"]:match("^v2 42 %d+ (%d+) (%S+) (%S+) ([01]) %d+\n$") end
+local function testStageDrag()
+    windows={};window("0x50","omxr-canvas");window("0x51","omxr-park");omarchy_xr_canvas.staged="0x50"
+    clock(219.5,"monitors");omarchy_xr_controls.refresh();assert(bindings[DRAG].callback.kind=="window.drag")
+    clock(220);omarchy_xr_controls.refresh();tick(220);assert(omarchy_xr_canvas.staged=="0x50") -- staged again on entry
+    local list=bindLists[DRAG];assert(#list==2);assert(list[1].options.description:match("^XR: "));assert(list[2].options.release==true)
+    dispatched={};cursorPos={x=20100,y=100};files["/proc/uptime"]="220";list[1].callback()
+    assert(files[path..".drag"]:match("^v2 42 %d+ 1 0%.0+ 0%.0+ 1 220\n$"))
+    cursorPos={x=20140,y=130};tick(220.1)
+    local id,dx,dy,held=dragFields();assert(id=="1");assert(tonumber(dx)==40);assert(tonumber(dy)==30);assert(held=="1")
+    cursorPos={x=21000,y=130};tick(220.2)                     -- confined: the overflow carries the travel
+    assert(cursorPos.x==20798);assert(select(2,dragFields())=="900.000000000");assert(select(3,dragFields())=="30.000000000")
+    local plain=bindings["mouse:272"];assert(plain.options.release==true) -- SUPER let go first: the plain release ends it
+    assert(plain.options.description:match("^XR: "));plain.callback()
+    assert(select(4,dragFields())=="0");assert(select(2,dragFields())=="900.000000000");assert(bindings["mouse:272"]==nil)
+    list[1].callback();assert(bindings["mouse:272"]);list[2].callback();assert(bindings["mouse:272"]==nil)
+    assert(select(4,dragFields())=="0")
+    assert(count("window.move","0x50")==0);assert(find("0x50").at.x==20000) -- the real window never moves
+    dofile("config/xr-controls.lua");assert(#bindLists[DRAG]==2)  -- a reload retires the old binds
+    cursorPos={x=20300,y=300};bindLists[DRAG][1].callback();assert(dragFields()=="3");assert(select(4,dragFields())=="1")
+    clock(221,"monitors");omarchy_xr_controls.refresh();assert(select(4,dragFields())=="0") -- leaving ends the drag
+    assert(bindings["mouse:272"]==nil)
+    local restored=bindings[DRAG];assert(#bindLists[DRAG]==1);assert(restored.callback.kind=="window.drag")
+    assert(restored.options.mouse==true);assert(restored.options.description=="Move window")
+    print("Stage drag: SUPER+left-drag taken over, cumulative travel with overflow, release, the plain-release fallback, reload, restore of window.drag passed")
+end
+local function testResizeKeys()
+    clock(222);omarchy_xr_controls.refresh();tick(222);assert(omarchy_xr_canvas.staged=="0x50");dispatched={}
+    local function key(name,times) for _=1,times or 1 do bindings["SUPER + CTRL + "..name].callback() end return last("window.resize") end
+    assert(key("RIGHT").x==900);assert(last("window.resize").y==600);assert(key("DOWN").y==700);assert(key("UP").y==600)
+    assert(key("LEFT",12).x==100);tick(222.2);assert(row("0x50")[4]=="100");assert(row("0x50")[5]=="600")
+    assert(key("RIGHT",40).x==2552);assert(key("DOWN",20).y==1440);assert(key("UP",20).y==100)
+    clock(223,"monitors");omarchy_xr_controls.refresh()
+    assert(bindings["SUPER + CTRL + UP"]==nil);assert(bindings["SUPER + CTRL + DOWN"]==nil)
+    local left,right=bindings["SUPER + CTRL + LEFT"],bindings["SUPER + CTRL + RIGHT"]
+    assert(left.callback.kind=="group.prev");assert(left.options.description=="Move grouped window focus left")
+    assert(right.callback.kind=="group.next");assert(right.options.description=="Move grouped window focus right")
+    print("Resize keys: 100 px steps clamped to 100 px and the band, Omarchy's group keys back on exit passed")
+end
+local function testStageReclamp()
+    clock(224);omarchy_xr_controls.refresh();tick(224)
+    local w=find("0x50");w.at={x=19990,y=-10};w.size={x=3000,y=2000};dispatched={}
+    tick(224.1);tick(224.2)
+    w.size={x=3100,y=2000};tick(224.3);tick(224.6)            -- still changing: no fight
+    assert(count("window.move","0x50")==0);assert(count("window.resize","0x50")==0)
+    tick(224.9)
+    assert(last("window.resize").x==2552);assert(last("window.resize").y==1440);assert(w.at.x==20000);assert(w.at.y==0)
+    tick(225.5);assert(count("window.move","0x50")==1)       -- once
+    local fitted=w.size;w.size={x=3000,y=2000};tick(225.52);tick(226.1);assert(count("window.move","0x50")==2)
+    w.size={x=3000,y=2000};tick(226.7);tick(227.3);assert(count("window.move","0x50")==2) -- refused: tried once per geometry
+    w.size=fitted
+    w.at={x=20100,y=50};cursorPos={x=20300,y=300};files["/proc/uptime"]="227.6";bindLists[DRAG][1].callback()
+    tick(227.6);tick(228.3);assert(count("window.move","0x50")==2) -- never during a drag
+    bindLists[DRAG][2].callback();tick(228.4);tick(229)
+    assert(count("window.move","0x50")==3);assert(w.at.x==20000)
+    files["/proc/uptime"]="229";bindLists[DRAG][1].callback();tick(229.5);tick(231.9);assert(select(4,dragFields())=="1")
+    tick(232.1);assert(select(4,dragFields())=="0");assert(bindings["mouse:272"]==nil) -- 3 s without travel end a lost drag
+    clock(233,"monitors");omarchy_xr_controls.refresh()
+    print("Stage re-clamp: back to the origin and the band 0.5 s after the geometry settles, never while changing or dragging passed")
+    print("Drag idle: a drag whose release was missed ends after 3 s without pointer travel passed")
+end
+testConfirmHotkey()
+testTapConfirm()
+testEnsureStaged()
+testStageDrag()
+testResizeKeys()
+testStageReclamp()

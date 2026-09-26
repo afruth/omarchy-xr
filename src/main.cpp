@@ -219,6 +219,7 @@ struct View {
     std::string viewerPath, canvasPath;
     bool offlineCanvas=false;
     std::filesystem::file_time_type windowsVersion{}, canvasVersion{};
+    std::optional<std::filesystem::file_time_type> controlsVersion;
     Uint64 nextWindowsCheck=0;
     double nextCanvasCheck=0;
     unsigned long long windowsSeq=0;
@@ -231,6 +232,10 @@ struct View {
     // Canvas input (§3.4): the explicitly focused window published as .hover v4, the restage asked
     // for and not yet seen in a window list, and the compositor cursor mapped onto the staged window.
     std::string hoverOutput, restageRequested;
+    // M7: SUPER+F with nothing on the stage confirms first and fills when the list shows the window staged
+    // (monotonic expiry, 0 = none); dragHeld: a SUPER+left-drag (.drag) is moving the staged window.
+    double fillAfterStage=0;
+    bool dragHeld=false;
     struct XrCursor { bool valid=false; std::string window; float px=0, py=0; };
     XrCursor xrCursor;
     std::optional<windows::Cursor> lastCursor;
@@ -536,7 +541,9 @@ struct View {
         if (m.verb!=Verb::Switch && m.verb!=Verb::Pin && m.verb!=Verb::Help) explicitMove(now);
         switch (m.verb) {
         case Verb::Search: applyAim(canvas->searchOpen(anchor)); break;
-        case Verb::Fill: applyAim(canvas->fillToggle(anchor)); break;
+        case Verb::Fill:
+            if (const auto* s=canvas->staged(); (!s || !canvas::Scene::onStage(*s)) && canvasFitTarget(now)) { fillAfterStage=now+2; break; }
+            applyAim(canvas->fillToggle(anchor)); break;
         case Verb::Switch:
             if (m.begin) applyAim(canvas->switcherFinish(anchor, m.output=="cancel"));
             else canvas->switcherStep(m.x<0 ? -1 : 1, now);
@@ -564,8 +571,10 @@ struct View {
         canvas->fillRequest.reset();
         syncPrompt();
     }
-    // At the window's buffer centre; a window off the canvas by its list size (Lua adopts it on staging).
+    // At the gaze point when the window is looked at, else at its buffer centre; a window off the canvas
+    // by its list size (Lua adopts it on staging).
     void focusWindow(const std::string& name) {
+        if (gaze.current && gaze.current->output==name && canvas->find(name) && findLayout(name)) { focusHit(*gaze.current); return; }
         if (const auto* w=canvas->find(name)) { explicitFocus(name, w->pixelW/2.f, w->pixelH/2.f); return; }
         for (const auto& r:canvas->lastList.records)
             if (r.name()==name) { explicitFocus(name, canvas->scaled(r.w)/2.f, canvas->scaled(r.h)/2.f); return; }
@@ -606,16 +615,22 @@ struct View {
         if (!l) return std::nullopt;
         return std::pair{l->x+gaze.current->pixelX, l->y+gaze.current->pixelY};
     }
-    // An explicit command lands on what is looked at now, else on the selection; it does not wait for a dwell.
-    void canvasFitTarget(double now) {
-        const std::string name=gaze.current ? gaze.current->output : selection.output;
-        if (name.empty()) { std::cout << "Canvas: nothing gazed; fit ignored" << std::endl; return; }
+    // The gazed window, else the dwell's selection, else the scene's landing target (dwell, staged, MRU).
+    std::string fitTargetName(double now) const {
+        std::string name=gaze.current ? gaze.current->output : selection.output;
+        return name.empty() ? canvas->landingTarget(now) : name;
+    }
+    // An explicit command (the confirm, M7): it does not wait for a dwell.
+    bool canvasFitTarget(double now) {
+        const auto name=fitTargetName(now);
+        if (name.empty()) { std::cout << "Canvas: nothing gazed; fit ignored" << std::endl; return false; }
         explicitMove(now);
         if (gaze.current) focusHit(*gaze.current);
         else if (const auto* l=findLayout(name)) { targeting::Hit centre; centre.output=name; centre.pixelX=l->width/2; centre.pixelY=l->height/2; focusHit(centre); }
         selection.output=name;
         applyAim(canvas->land(name, baseView()));
         std::cout << "Canvas: land on " << name << std::endl;
+        return true;
     }
     // Hyprland focus follows only when the window is mostly out of view; an explicit verb within 0.4 s wins.
     void canvasFollow(const std::string& name, double now) {
@@ -862,11 +877,21 @@ struct View {
             nextLayoutCheck=SDL_GetTicks64()+1000;
         }
     }
-    // Canvas mode polls the window list every 100 ms and canvas.tsv every 250 ms, both by mtime.
+    // Canvas mode polls the window list every 100 ms, canvas.tsv and controls-settings.tsv every 250 ms, all by mtime.
     void reloadCanvas() {
         if (!windowsPath.empty() && SDL_GetTicks64()>=nextWindowsCheck) { nextWindowsCheck=SDL_GetTicks64()+100; pollWindows(); }
         const double now=monotonicSeconds();
-        if (!canvasPath.empty() && now>=nextCanvasCheck) { nextCanvasCheck=now+.25; pollCanvasSettings(); }
+        if (!canvasPath.empty() && now>=nextCanvasCheck) { nextCanvasCheck=now+.25; pollCanvasSettings(); pollConfirmKey(); }
+    }
+    // controls-settings.tsv beside canvas.tsv: a fit_target change in Studio reaches the confirm hint mid-session.
+    void pollConfirmKey() {
+        const auto path=std::filesystem::path(canvasPath).parent_path()/"controls-settings.tsv";
+        std::error_code missing;
+        auto version=std::filesystem::last_write_time(path, missing);
+        if (missing) version={};
+        if (controlsVersion==version) return;
+        controlsVersion=version;
+        canvas->setConfirmKey(canvas::readConfirmKey(path.string()));
     }
     // The .windows file (--canvas-windows-file); a rejected or older list is logged once and the last one stays.
     bool pollWindows() {
@@ -892,6 +917,7 @@ struct View {
         // The mailbox repeats unchanged lists as a heartbeat: log changes only.
         if (stagedChanged || canvas->live()!=loggedLive) std::cout << "Canvas: " << canvas->live() << " windows, staged " << (canvas->stagedName.empty() ? "none" : canvas->stagedName) << std::endl;
         loggedLive=canvas->live();
+        stagedLanding(stagedChanged);
         // A window brought from search lands once it is on the canvas.
         if (!canvas->bringRequested.empty() && canvas->find(canvas->bringRequested)) {
             std::cout << "Canvas: brought " << canvas->bringRequested << " to the canvas" << std::endl;
@@ -901,6 +927,18 @@ struct View {
         // mailbox, which the mailbox path follows (it leaves out XR's own staging, §4.2).
         if (!windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
         return true;
+    }
+    // M7: a newly staged window (Lua stages quietly at entry and after a close) lands the camera when
+    // nothing has landed yet or the landed window is gone while working; no focus (the keyboard stays).
+    // A pending SUPER+F fills once the confirmed window is on the stage.
+    void stagedLanding(bool stagedChanged) {
+        const auto* s=canvas->staged();
+        if (stagedChanged && s && (canvas->landed.empty() || (!canvas->find(canvas->landed) && canvas->working())))
+            applyAim(canvas->land(canvas->stagedName, baseView()));
+        if (!fillAfterStage || !restageRequested.empty() || !s || !canvas::Scene::onStage(*s)) return;
+        const bool due=monotonicSeconds()<fillAfterStage;
+        fillAfterStage=0;
+        if (due) navigate({Verb::Fill});
     }
     // A missing canvas.tsv keeps the current settings; an invalid one is logged once.
     void pollCanvasSettings() {
@@ -1006,6 +1044,8 @@ struct View {
         panGestureActive=controls->panActive;
         if (controls->panStarted || controls->panX || controls->panY) interactionUntil=monotonicSeconds()+.4;
         if (controls->panStarted || controls->panX || controls->panY) navigate({Verb::Pan, float(controls->panX), float(controls->panY), controls->panStarted});
+        if (canvas && (controls->dragStarted || controls->dragX || controls->dragY || dragHeld!=controls->dragActive))
+            stageDrag(controls->dragX, controls->dragY, controls->dragStarted, controls->dragActive);
         sampleTarget();
         if (canvas) updateVirtualCursor();
         if (controls->zoom) navigate({Verb::ZoomBy, float(controls->zoom)});
@@ -1026,7 +1066,8 @@ struct View {
         if (canvas) steerCanvas(); else tracking.clearCanvasVerbs();
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
     }
-    // The canvas key set (§5.5, modes 8-17); 11/12 with the token "release" end the switcher.
+    // The canvas key set (§5.5, modes 8-18); 11/12 with the token "release" end the switcher; 18 is the
+    // confirm (M7: the fit_target hotkey and the three-finger tap), which lands on and focuses the target.
     void canvasKey(int mode, const std::string& token) {
         switch (mode) {
         case 8: navigate({Verb::Fit}); break;
@@ -1038,6 +1079,7 @@ struct View {
         case 15: navigate({.verb=Verb::Nudge, .output=token}); break;
         case 16: navigate({Verb::Pin}); break;
         case 17: navigate({Verb::Help}); break;
+        case 18: std::cout << "Canvas: confirm " << fitTargetName(monotonicSeconds()) << std::endl; navigate({Verb::FitTarget}); break;
         default: break;
         }
     }
@@ -1074,11 +1116,30 @@ struct View {
         if (!key.empty() && key!="-") { explicitMove(monotonicSeconds()); applyAim(canvas->searchKey(key, anchor)); }
         afterCanvasVerb();
     }
-    // The .windows mailbox (without --canvas-windows-file); the first list lands on its staged window.
+    // The .windows mailbox (without --canvas-windows-file); stagedLanding lands on the first staged window.
     void adoptMailbox() {
-        if (!windowsPath.empty() || !controls->windows) return;
-        const bool first=windowsSeq==0;
-        if (adoptList(*controls->windows) && first && canvas->staged()) applyAim(canvas->land(canvas->stagedName, baseView()));
+        if (windowsPath.empty() && controls->windows) adoptList(*controls->windows);
+    }
+    // SUPER+left-drag in the glasses (M7): Lua's .drag travel (canvas-output logical px, the confinement
+    // overflow included) moves the staged window along the ring with M6's drag (snap, row band, undo
+    // checkpoint, memory); the real window stays at the stage origin. Only in Work/Fill on the stage.
+    void stageDrag(double dx, double dy, bool started, bool active) {
+        const double now=monotonicSeconds();
+        if (started) {
+            if (dragHeld) canvas->dragEnd();
+            const auto* s=canvas->staged();
+            dragHeld=canvas->working() && s && canvas::Scene::onStage(*s);
+            if (dragHeld) { canvas->dragBegin(canvas->stagedName); std::cout << "Canvas: drag " << canvas->stagedName << std::endl; }
+        }
+        if (!dragHeld) return;
+        interactionUntil=now+.4;
+        const float k=canvas->settings.outputScale/std::max(canvas->camera.zoom, .05f);
+        if (dx || dy) canvas->dragBy(float(dx)*k, float(dy)*k);
+        if (active) return;
+        dragHeld=false;
+        const auto name=canvas->dragName;
+        canvas->dragEnd();
+        if (const auto* w=canvas->find(name)) applyAim(canvas->chase(*w, baseView()));
     }
     // §3.4: inside the staged window the compositor cursor maps 1:1 onto its quad (the XR cursor); the
     // overflow the adapter carried beyond its edge moves on over the canvas, and a fresh line whose
@@ -1111,7 +1172,7 @@ struct View {
     // The search closes first (keeping the camera), so the keyboard goes to the window.
     void explicitFocus(const std::string& name, float px, float py) {
         if (canvas->search.open) { canvas->searchClose(false, baseView()); syncPrompt(); }
-        selection.output=name; hoverOutput=name; ++pointerSerial; pointerX=px; pointerY=py;
+        selection.output=name; hoverOutput=name; ++pointerSerial; pointerX=px; pointerY=py; canvas->noteConfirm();
         restageRequested=name==canvas->stagedName ? std::string() : name;
     }
     // A hit's projected px into window-buffer px (§3.4 step 2).
@@ -1361,7 +1422,7 @@ struct View {
     }
     // Overview labels over everything on the ring, before the HUD: depth test off, premultiplied blend.
     void drawCanvasLabels() {
-        const auto quads=canvas->labelQuads();
+        const auto quads=canvas->labelQuads(48, monotonicSeconds());
         if (quads.empty()) return;
         const auto c=sceneCylinder();
         glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_TEXTURE_BIT|GL_CURRENT_BIT|GL_TRANSFORM_BIT);
@@ -1370,7 +1431,9 @@ struct View {
         for (const auto& q:quads) {
             // A label wider than its window shows its left part: scale u instead of squashing the text.
             glLoadIdentity(); glScalef(q.u, 1, 1);
-            glBindTexture(GL_TEXTURE_2D, q.texture); glColor4f(q.alpha, q.alpha, q.alpha, q.alpha);
+            // The confirm hint takes the halo's accent (premultiplied: rgb scaled by alpha).
+            const theme::Rgb tint=q.accent ? accent.rgb : theme::Rgb{1, 1, 1};
+            glBindTexture(GL_TEXTURE_2D, q.texture); glColor4f(q.alpha*tint[0], q.alpha*tint[1], q.alpha*tint[2], q.alpha);
             const float w=q.layout.width/900, h=q.layout.height/900;
             surface(c.pose(q.layout), -w/2, -h/2, w, h, .01f);
         }
@@ -1809,6 +1872,7 @@ struct View {
     // else the overview) without easing.
     void startCanvas() {
         canvas->setFov(canvasFov());
+        controlsVersion.reset(); pollConfirmKey();
         pollCanvasSettings();
         if (!windowsPath.empty()) pollWindows();
         canvas->tick(monotonicSeconds(), 0);
@@ -1849,7 +1913,7 @@ struct View {
     void resetNavigation() {
         selection={}; gaze.current.reset(); zoomGaze.reset();
         focusOutput.clear(); panOutput.clear(); levelOutput.clear(); level=Level::Overview;
-        panCamera=panGestureActive=focusFromGaze=false; hoverOutput.clear(); restageRequested.clear();
+        panCamera=panGestureActive=focusFromGaze=dragHeld=false; hoverOutput.clear(); restageRequested.clear(); fillAfterStage=0;
         xrCursor={}; lastCursor.reset(); dwellOutput.clear(); mousePanning=false; drag={};
         panX=panY=panZ=targetPanX=targetPanY=targetPanZ=0; navigationRotation=targetRotation={};
         recenterUntil=0; interactionUntil=monotonicSeconds()+.4;

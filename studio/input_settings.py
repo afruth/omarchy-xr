@@ -22,10 +22,11 @@ def chord(value):
     else:raise ValueError('Use a letter, digit, F1–F35, or a navigation key')
     mods=[m for m in MODS if m in mods]
     return ' + '.join(mods+[key]),sum(MODS[m] for m in mods),key.lower()
-# Window canvas chords (config/xr-controls.lua: SUPER+F, CANVAS_KEYS, TAKEOVER_KEYS). They are bound only while
-# the canvas runs, with 'XR:' descriptions the binding check skips, so they are reserved in every mode.
+# Window canvas chords (config/xr-controls.lua: SUPER+F, CANVAS_KEYS with the SUPER+CTRL+arrow resize keys,
+# TAKEOVER_KEYS). They are bound only while the canvas runs, with 'XR:' descriptions the binding check skips,
+# so they are reserved in every mode.
 CANVAS_CHORDS=('SUPER + F','SUPER + CTRL + G','SUPER + ALT + P','SUPER + Tab','ALT + Tab','ALT + SHIFT + Tab')+tuple(
-    mods+key for mods in ('SUPER + ','SUPER + SHIFT + ') for key in ('Left','Right','Up','Down'))
+    mods+key for mods in ('SUPER + ','SUPER + SHIFT + ','SUPER + CTRL + ') for key in ('Left','Right','Up','Down'))
 RESERVED={chord(c)[1:] for c in CANVAS_CHORDS}
 def validate_controls(value,bindings=(),reserve=True):
     if not isinstance(value,dict):raise ValueError('Invalid control settings')

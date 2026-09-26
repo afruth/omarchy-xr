@@ -15,8 +15,10 @@
 #include "window_list.hpp"
 #include <SDL_opengl.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -108,6 +110,21 @@ inline const char* placeName(windows::Place place) {
     default: return "off";
     }
 }
+// The fit_target chord (line 3) of controls-settings.tsv, validated like the Lua adapter's settingKeys:
+// 6 lines, a finger count 3-5, chords of at most 100 characters from [A-Za-z0-9_ +]. "" = no key;
+// a missing or invalid file keeps the adapter's default.
+inline std::string readConfirmKey(const std::string& path) {
+    const std::string fallback="CTRL + Down";
+    std::ifstream file(path);
+    std::vector<std::string> lines; std::string line;
+    while (std::getline(file, line)) lines.push_back(line);
+    if (lines.size()!=6 || lines[0].size()!=1 || lines[0][0]<'3' || lines[0][0]>'5') return fallback;
+    for (size_t i=1;i<lines.size();++i) {
+        if (lines[i].size()>100) return fallback;
+        for (const unsigned char c:lines[i]) if (!std::isalnum(c) && c!='_' && c!=' ' && c!='+') return fallback;
+    }
+    return lines[2];
+}
 class Scene {
 public:
     Ring ring;
@@ -128,6 +145,12 @@ public:
     int outputX=0, outputY=0;
     // Navigation: the landed window, Hyprland's focused one, the View's selection and last settled dwell.
     std::string landed, focusedName, selected, lastDwell;
+    // The confirm hint (M7): shown under the first three dwells of a session, never after a confirm.
+    // confirmKey is the fit_target chord from controls-settings.tsv ("" = none configured).
+    std::string confirmKey="CTRL + Down", hintFor;
+    unsigned hintsShown=0;
+    bool confirmed=false;
+    double hintUntil=0;
     Fov fov;
     Labels labels;
     tracking::Quaternion panAnchor;
@@ -579,7 +602,19 @@ public:
         camera.targetFocusX=ring.unwrap(memory.camera->focusX); camera.targetFocusY=memory.camera->focusY; camera.targetZoom=memory.camera->zoom;
         return aim(camera.targetFocusX, camera.targetFocusY, ring.radius, anchor);
     }
-    void noteDwell(const std::string& name, double now) { lastDwell=name; lastDwellAt=now; }
+    void noteDwell(const std::string& name, double now) {
+        lastDwell=name; lastDwellAt=now;
+        // One hint per distinct dwell target; the staged window already has the keys.
+        if (confirmed || hintsShown>=3 || name==stagedName || (name==hintFor && now<=hintUntil)) return;
+        hintFor=name; hintUntil=now+2.5; ++hintsShown;
+    }
+    void setConfirmKey(const std::string& key) {
+        if (key==confirmKey) return;
+        confirmKey=key;
+        if (auto it=labels.atlas.find("hint"); it!=labels.atlas.end()) { if (it->second.texture) glDeleteTextures(1, &it->second.texture); labels.atlas.erase(it); }
+    }
+    void noteConfirm() { confirmed=true; hintFor.clear(); }
+    std::string hintText() const { return confirmKey.empty() ? "Three-finger tap to focus" : confirmKey+" or a three-finger tap to focus"; }
     // The window a dwell settled on within 2 s, else the staged one, else the most recently focused.
     std::string landingTarget(double now) const {
         if(now-lastDwellAt<=2 && find(lastDwell)) return lastDwell;
@@ -589,8 +624,14 @@ public:
         for(const auto& w:windows) if(!w.gone && (!best || w.record.focusHistoryID<best->record.focusHistoryID)) best=&w;
         return best ? best->name : std::string();
     }
+    // A landing from Overview is explicit (M7): the View focuses the window (land itself stays focus-free,
+    // so XR's own staging and focus follow never loop).
+    Aim landFocused(const std::string& name, const tracking::Quaternion& anchor) {
+        if(find(name)) focusRequest=name;
+        return land(name, anchor);
+    }
     Aim toggleOverview(const tracking::Quaternion& anchor, double now) {
-        return zoomedOut() ? land(landingTarget(now), anchor) : overview(anchor);
+        return zoomedOut() ? landFocused(landingTarget(now), anchor) : overview(anchor);
     }
     // Flick out: Fill -> Work (restore) -> Overview. Flick in: Overview/Search -> Work (land) -> Fill.
     Aim flickOut(const tracking::Quaternion& anchor) {
@@ -598,7 +639,7 @@ public:
         return state==State::Work ? overview(anchor) : Aim{};
     }
     Aim flickIn(const tracking::Quaternion& anchor, double now) {
-        if(zoomedOut()) return land(landingTarget(now), anchor);
+        if(zoomedOut()) return landFocused(landingTarget(now), anchor);
         return state==State::Work ? fillToggle(anchor) : Aim{};
     }
     // A zoom gesture latches its anchor at the first step after 0.4 s idle: the gazed point (projected
@@ -938,8 +979,12 @@ public:
         if(!inBand(r, metrics)) return {};
         history.checkpoint(snapshot());
         moveTo(*w, r); refresh(clock);
-        if(!working() || visibleShare(*w)>=.9f) return {};
-        camera.targetFocusX=ring.unwrap(r.cx()); camera.targetFocusY=r.cy();
+        return chase(*w, anchor);
+    }
+    // After a move in Work the camera follows a window that left the view (under 90 % visible).
+    Aim chase(const CanvasWindow& w, const tracking::Quaternion& anchor) {
+        if(!working() || visibleShare(w)>=.9f) return {};
+        camera.targetFocusX=ring.unwrap(w.rect.cx()); camera.targetFocusY=w.rect.cy();
         return aim(camera.targetFocusX, camera.targetFocusY, depth, anchor);
     }
     // The Overview mouse drag (SDL window): the window follows the pointer, the camera stays. The end snaps
@@ -1005,10 +1050,10 @@ public:
         return true;
     }
     unsigned pinnedCount() const { return unsigned(std::count_if(windows.begin(), windows.end(), [](const CanvasWindow& w) { return !w.gone && w.pinned; })); }
-    struct LabelQuad { PanelLayout layout; GLuint texture=0; float u=1, alpha=1; };
+    struct LabelQuad { PanelLayout layout; GLuint texture=0; float u=1, alpha=1; bool accent=false; };
     // Labels at a constant angular height (labelDeg x-height) above each drawn window: always in
     // Overview, in Work only on windows at least 6° tall. Long labels are cropped to the window width.
-    std::vector<LabelQuad> labelQuads(int px=48) {
+    std::vector<LabelQuad> labelQuads(int px=48, double now=-1) {
         std::vector<LabelQuad> out;
         const float height=settings.labelDeg*ring.pxPerDeg()/.6f;
         for(auto i:candidates) {
@@ -1018,8 +1063,23 @@ public:
             const float width=height*float(item.width)/float(std::max(item.height, 1)), shown=std::min(p.width, width);
             out.push_back({{w.name, p.x, p.y-height-8, shown, height}, item.texture, shown/width, p.brightness/100});
         }
+        hintQuad(out, height, px, now<0 ? clock : now);
         labels.trim();
         return out;
+    }
+    // The confirm hint just under the dwelled window's label (inside its top edge), at the label size,
+    // accent-tinted like the halo; it fades over its last 0.3 s.
+    void hintQuad(std::vector<LabelQuad>& out, float height, int px, double now) {
+        if (hintFor.empty() || now>=hintUntil) return;
+        for (auto i:candidates) {
+            const auto& w=windows[i]; const auto& p=projected[i];
+            if (w.name!=hintFor || !w.visible || w.gone) continue;
+            const auto& item=labels.item("hint", "", hintText(), px);
+            const float width=height*float(item.width)/float(std::max(item.height, 1)), shown=std::min(p.width, width);
+            const float fade=float(std::min(1., (hintUntil-now)/.3));
+            out.push_back({{w.name, p.x, p.y+8, shown, height}, item.texture, shown/width, fade*p.brightness/100, true});
+            return;
+        }
     }
     // Body-locked overlays (§4.5 item 3, §5.4, §5.8), in draw order: pinned windows, radar, palette,
     // switcher, help. Berths follow the head lazily at 0.9 of the ring reach (pinned 0.85); sizes are
