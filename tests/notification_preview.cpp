@@ -82,6 +82,13 @@ void run(View& view,const std::filesystem::path& directory,bool video){
     assert(!view.notificationHud->highlight().empty());
     assert(view.notificationHud->flick(view.notificationHud->highlight(),false));
     capture("cycled.png");
+    std::vector<unsigned char> withCard(width*height*3),withoutCard(withCard.size());
+    view.renderScene(width,height,false,true,width*2,height);
+    glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,withCard.data());
+    view.notificationHud->release();
+    view.renderScene(width,height,false,true,width*2,height);
+    glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,withoutCard.data());
+    assert(withCard!=withoutCard);
 }
 }
 int main(int argc,char** argv){
