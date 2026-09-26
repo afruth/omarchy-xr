@@ -11,7 +11,7 @@
 #include <vector>
 
 // Window canvas model (docs/infinite-canvas-plan.md §4.3): a 2D pixel plane wrapped on the
-// shared cylinder. Camera math adapted from phantomat (BSD-3-Clause, see THIRD_PARTY_NOTICES.md).
+// shared cylinder, periodic in x, unbounded in y, translated by the scroll. Camera math adapted from phantomat (BSD-3-Clause, see THIRD_PARTY_NOTICES.md).
 namespace canvas {
 // Canvas pixels, y down like PanelLayout (up is negative).
 struct Rect {
@@ -47,6 +47,8 @@ inline float ease(float value, float target, float dt) { return value+(target-va
 struct Camera {
     float focusX=0, focusY=0, zoom=1;
     float targetFocusX=0, targetFocusY=0, targetZoom=1;
+    // Projected px the cylinder is translated up by (M8): eye level is y' = 0.
+    float scrollY=0, targetScrollY=0;
     float anchorX=0, anchorY=0, targetAnchorX=0, targetAnchorY=0;
     bool anchored=false;
     // A period eases x along the shorter way round the ring.
@@ -57,18 +59,23 @@ struct Camera {
             v=ease(v,v+d,dt);
         };
         along(focusX,targetFocusX); focusY=ease(focusY,targetFocusY,dt); zoom=ease(zoom,targetZoom,dt);
+        scrollY=ease(scrollY,targetScrollY,dt);
         along(anchorX,targetAnchorX); anchorY=ease(anchorY,targetAnchorY,dt);
     }
     bool moving() const {
-        return std::abs(targetFocusX-focusX)>.5f || std::abs(targetFocusY-focusY)>.5f || std::abs(targetZoom-zoom)>1e-3f;
+        return std::abs(targetFocusX-focusX)>.5f || std::abs(targetFocusY-focusY)>.5f || std::abs(targetZoom-zoom)>1e-3f ||
+            std::abs(targetScrollY-scrollY)>.5f;
     }
 };
 // Wrapping the centre keeps a window whole on one side of the focus.
 inline Rect project(const Rect& r, const Camera& c, const Ring& ring) {
     const float w=r.w*c.zoom, h=r.h*c.zoom;
-    const float x=c.focusX+ring.wrap(r.cx()-c.focusX)*c.zoom, y=c.focusY+(r.cy()-c.focusY)*c.zoom;
+    const float x=c.focusX+ring.wrap(r.cx()-c.focusX)*c.zoom, y=c.focusY+(r.cy()-c.focusY)*c.zoom-c.scrollY;
     return {x-w/2, y-h/2, w, h};
 }
+// The canvas x and y under a projected point (the inverse of project).
+inline float unprojectX(const Camera& c, const Ring& ring, float projectedX) { return ring.unwrap(c.focusX+ring.wrap(projectedX-c.focusX)/std::max(c.zoom,.01f)); }
+inline float unprojectY(const Camera& c, float projectedY) { return c.focusY+(projectedY+c.scrollY-c.focusY)/std::max(c.zoom,.01f); }
 inline PanelLayout toLayout(const std::string& output, const Rect& projected, float brightness=100) {
     return {output, projected.x, projected.y, projected.w, projected.h, 0, brightness};
 }
@@ -99,7 +106,8 @@ inline Arc usedArc(const std::vector<Rect>& rects, const Ring& ring) {
     if(bestGap<=0) return {spans[0].first, p};
     return {bestStart, p-bestGap};
 }
-struct Fit { float focusX=0, focusY=0, zoom=1; bool wide=false; };
+// scrollY: the focus at eye level (M8).
+struct Fit { float focusX=0, focusY=0, zoom=1; bool wide=false; float scrollY=0; };
 inline float median(std::vector<float> v) {
     if(v.empty()) return 0;
     std::nth_element(v.begin(), v.begin()+v.size()/2, v.end());
@@ -126,6 +134,7 @@ inline Fit fitBounds(const std::vector<Rect>& rects, const Ring& ring, const Met
         const float wide=std::min({wanted, 90*ring.pxPerDeg()/spanX, vertical, 1.f});
         if(wide>fit.zoom) { fit.zoom=wide; fit.wide=true; }
     }
+    fit.scrollY=fit.focusY;
     return fit;
 }
 // Keeps the anchor's projected position fixed under the target camera: F2 = (A(z-z2) + F(1-z)) / (1-z2).
@@ -140,22 +149,26 @@ inline void zoomAt(Camera& c, float anchorX, float anchorY, float factor, const 
     }
     c.targetZoom=z2;
 }
-inline int rowFor(float y, const Metrics& m) { return std::clamp(int(std::lround(y/std::max(m.rowHeight,1.f))),-1,1); }
-// Angular cull against the heading, on the circle.
-inline std::vector<size_t> visibleIndices(const std::vector<PanelLayout>& projected, float headingDeg, float halfSpanDeg, const Ring& ring) {
+// The arrange grid row (M8: unbounded; nothing else clamps y).
+inline int rowFor(float y, const Metrics& m) { return int(std::lround(y/std::max(m.rowHeight,1.f))); }
+// Angular cull against the heading, on the circle, and against a projected height band around centreY.
+inline std::vector<size_t> visibleIndices(const std::vector<PanelLayout>& projected, float headingDeg, float halfSpanDeg, const Ring& ring,
+                                          float centreY=0, float halfHeightPx=INFINITY) {
     std::vector<size_t> out;
     for(size_t i=0;i<projected.size();++i) {
         const auto& p=projected[i];
         const float half=ring.heading(p.width)/2;
         float d=std::fmod(ring.heading(p.x+p.width/2)-headingDeg,360.f);
         if(d>180) d-=360; else if(d<=-180) d+=360;
-        if(std::abs(d)<=halfSpanDeg+half) out.push_back(i);
+        if(std::abs(d)<=halfSpanDeg+half && std::abs(p.y+p.height/2-centreY)<=halfHeightPx+p.height/2) out.push_back(i);
     }
     return out;
 }
-// A projected window fully outside the view around the heading (the new-window edge cue).
-inline bool offView(const Rect& projected, float headingDeg, float halfSpanDeg, const Ring& ring) {
-    return std::abs(std::remainder(ring.heading(projected.cx())-headingDeg, 360.f)) > halfSpanDeg+ring.heading(projected.w)/2;
+// A projected window fully outside the view around the heading, or above or below it (the new-window edge cue).
+inline bool offView(const Rect& projected, float headingDeg, float halfSpanDeg, const Ring& ring,
+                    float centreY=0, float halfHeightPx=INFINITY) {
+    return std::abs(std::remainder(ring.heading(projected.cx())-headingDeg, 360.f)) > halfSpanDeg+ring.heading(projected.w)/2 ||
+        std::abs(projected.cy()-centreY) > halfHeightPx+projected.h/2;
 }
 // Canvas px per viewport px at the camera zoom (the Overview mouse drag).
 inline float dragScale(const Metrics& m, float viewportPx, float zoom) { return m.viewW/std::max(viewportPx, 1.f)/std::max(zoom, .01f); }

@@ -18,7 +18,7 @@ static void constants() {
     const float p=ring.period();
     assert(ring.wrap(p/2)==p/2 && near(ring.wrap(-p/2), p/2, .01f) && near(ring.wrap(p+10), 10, .01f) && near(ring.wrap(-p-10), -10, .01f));
     assert(ring.wrap(0)==0 && near(ring.wrap(3*p-1), -1, .05f) && near(ring.unwrap(-1), p-1, .01f) && ring.unwrap(p)==0);
-    assert(rowFor(0,m)==0 && rowFor(900,m)==1 && rowFor(-900,m)==-1 && rowFor(5000,m)==1 && rowFor(-300,m)==0);
+    assert(rowFor(0,m)==0 && rowFor(900,m)==1 && rowFor(-900,m)==-1 && rowFor(5000,m)==6 && rowFor(-5000,m)==-6 && rowFor(-300,m)==0);   // unbounded (M8)
 }
 static bool periodicOverlap(const Rect& a, const Rect& b, float period) {
     for(float s:{-period, 0.f, period})
@@ -187,7 +187,61 @@ static void offViewAndDrag() {
     assert(near(dragScale(m, 1920, 1), m.viewW/1920, 1e-5f) && near(dragScale(m, 1920, .25f), 4*m.viewW/1920, 1e-4f));
     assert(std::isfinite(dragScale(m, 0, 0)));
 }
+// M8: the scroll translates the projected canvas; culling and the off-view cue gain a vertical band.
+static void scrolling() {
+    const Rect r{300, 2000, 800, 600};
+    for(float zoom:{1.f, .5f}) {
+        Camera c; c.focusX=c.targetFocusX=500; c.focusY=c.targetFocusY=400; c.zoom=c.targetZoom=zoom;
+        const auto still=project(r, c, ring);
+        c.scrollY=300; const auto scrolled=project(r, c, ring);
+        assert(near(scrolled.y, still.y-300, 1e-3f) && scrolled.x==still.x && scrolled.w==still.w && scrolled.h==still.h);
+        assert(near(unprojectY(c, scrolled.cy()), r.cy(), 1e-2f));
+    }
+    for(float factor:{.6f, 1.5f}) {   // the zoom anchor stays put under a scroll
+        Camera c; c.focusX=c.targetFocusX=500; c.focusY=c.targetFocusY=400; c.zoom=c.targetZoom=.5f;
+        c.scrollY=c.targetScrollY=900;
+        const Rect anchor{1700, -1200, 0, 0};
+        const auto before=project(anchor, c, ring);
+        zoomAt(c, anchor.x, anchor.y, factor, ring);
+        for(int i=0;i<300;++i) c.tick(1/60.f, ring.period());
+        const auto after=project(anchor, c, ring);
+        assert(near(after.x, before.x, .5f) && near(after.y, before.y, .5f) && near(c.zoom, .5f*factor, 1e-3f));
+        assert(near(unprojectX(c, ring, after.x), anchor.x, .5f) && near(unprojectY(c, after.y), anchor.y, .5f));
+    }
+    std::vector<Rect> rects{{0,-2000,800,600}, {1000,3000,800,600}};   // 5600 px tall
+    const auto fit=fitBounds(rects, ring, m);
+    assert(fit.scrollY==fit.focusY && near(fit.focusY, 800, .01f));
+    assert(near(fit.zoom, std::max(.08f, std::min(1.f, .9f*m.viewH/5600)), 1e-4f) && 5600*fit.zoom<=.9f*m.viewH+.01f);
+    std::mt19937 rng(13);
+    std::vector<PanelLayout> layouts;
+    for(int i=0;i<80;++i)
+        layouts.push_back({"w", std::uniform_real_distribution<float>(-8000, 20000)(rng), std::uniform_real_distribution<float>(-6000, 6000)(rng),
+                           std::uniform_real_distribution<float>(100, 3000)(rng), std::uniform_real_distribution<float>(100, 2000)(rng)});
+    for(int trial=0;trial<200;++trial) {
+        const float heading=std::uniform_real_distribution<float>(-400, 400)(rng), half=30;
+        const float centreY=std::uniform_real_distribution<float>(-3000, 3000)(rng), halfH=m.viewH;
+        std::vector<size_t> brute;
+        for(size_t i=0;i<layouts.size();++i) {
+            const auto& l=layouts[i];
+            const float a=ring.heading(l.x), b=ring.heading(l.x+l.width);
+            bool hit=false;
+            for(int k=-3;k<=3;++k) hit|=a+360*k<=heading+half && b+360*k>=heading-half;
+            if(hit && l.y<=centreY+halfH && l.y+l.height>=centreY-halfH) brute.push_back(i);
+        }
+        assert(visibleIndices(layouts, heading, half, ring, centreY, halfH)==brute);
+        assert(visibleIndices(layouts, heading, half, ring).size()>=brute.size());
+    }
+    const float halfH=m.viewH/2;
+    const Rect above{-400, -2*m.viewH-300, 800, 600}, straddling{-400, -halfH-300, 800, 600};
+    assert(offView(above, 0, 24, ring, 0, halfH) && !offView(above, 0, 24, ring));   // two view heights up
+    assert(!offView(straddling, 0, 24, ring, 0, halfH));                              // half in view
+    assert(!offView(above, 0, 24, ring, -2*m.viewH, halfH));                           // centred on the view
+    Camera c; c.targetScrollY=400;
+    assert(c.moving());
+    for(int i=0;i<200;++i) c.tick(1/60.f);
+    assert(!c.moving() && near(c.scrollY, 400, .5f));
+}
 int main() {
-    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing(); berths(); offViewAndDrag();
-    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling, settings, overlay berths, the off-view cue and the drag scale passed\n";
+    constants(); projection(); ringCentre(); zooming(); fitting(); culling(); parsing(); berths(); offViewAndDrag(); scrolling();
+    std::cout<<"Canvas model: ring constants, wrap, projection, ring centre, zoom anchor, overview fit, culling, settings, overlay berths, the off-view cue, the drag scale and the vertical scroll passed\n";
 }

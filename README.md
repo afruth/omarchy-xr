@@ -102,13 +102,14 @@ the selected Omarchy theme.
 **Window canvas** is the second mode. Choose **Window canvas** above the Start buttons on
 **Controls**, before starting or while stereo or a preview runs: a running session switches in
 place, keeping the glasses in stereo (if the renderer does not confirm within 3 s, Studio restarts
-XR in the new mode; the switch is refused while the laptop display is off). Each application window then gets its own panel on a ring
-around you, instead of sitting on a virtual monitor. At start Studio moves your windows to one
+XR in the new mode; the switch is refused while the laptop display is off). Each application window then gets its own panel on a cylinder
+around you (beside, above and below), instead of sitting on a virtual monitor. At start Studio moves your windows to one
 hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
 SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
 and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
 SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
-F1 lists every canvas key. New windows pulse briefly, and one placed outside your view gets an edge
+SUPER+wheel or SUPER+CTRL+Page_Up/Down scroll the cylinder up and down; new windows open next to where
+you look. F1 lists every canvas key. New windows pulse briefly, and one placed outside your view gets an edge
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas

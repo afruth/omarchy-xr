@@ -10,17 +10,23 @@ static void roundTrip() {
     Memory memory;
     memory.note("foot", "tab\there\nnext \\t literal", {100.5f, -200, 1920, 1080}, 1000);
     memory.note("fire\tfox", "", {-40, 20, 800, 600}, 1001.25);
-    memory.camera=Fit{1234.5f, -10, .25f};
+    memory.camera=Fit{1234.5f, -10, .25f, false, -2550};
     assert(memory.dirty && memory.dirtySince==1000);
     const auto text=memory.serialize();
+    assert(text.find("camera\t1234.5\t-10\t0.25\t-2550\n")!=std::string::npos);
     assert(text.find("window\tfoot\ttab\\there\\nnext \\\\t literal\t100.5\t-200\t1920\t1080\t1000") != std::string::npos);
     Memory loaded; std::istringstream in(text+"window\tbad\trow\n\ngarbage\ncamera\t1\t2\t9\nwindow\tx\ty\tnan\t0\t1\t1\t0\n");
     loaded.read(in);
-    assert(loaded.entries.size()==2 && loaded.camera && loaded.camera->focusX==1234.5f && loaded.camera->zoom==.25f);
+    assert(loaded.entries.size()==2 && loaded.camera && loaded.camera->focusX==1234.5f && loaded.camera->zoom==.25f && loaded.camera->scrollY==-2550);
     const auto& a=loaded.entries[0];
     assert(a.cls=="foot" && a.title=="tab\there\nnext \\t literal" && a.rect.x==100.5f && a.rect.w==1920 && a.seen==1000 && !a.claimed);
     assert(loaded.entries[1].cls=="fire\tfox" && loaded.entries[1].title.empty() && loaded.entries[1].seen==1001.25);
     assert(loaded.serialize()==text);
+    // A camera row from before M8 (four fields) scrolls its focus to eye level; a non-finite scroll is skipped.
+    std::istringstream old("camera\t10\t-850\t0.5\n"); loaded.read(old);
+    assert(loaded.camera && loaded.camera->focusY==-850 && loaded.camera->scrollY==-850);
+    std::istringstream bad("camera\t10\t-850\t0.5\tnan\n"); loaded.read(bad);
+    assert(!loaded.camera);
 }
 static void files() {
     const auto dir=std::filesystem::temp_directory_path()/("omxr-canvas-memory-"+std::to_string(getpid()));

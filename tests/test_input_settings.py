@@ -19,7 +19,9 @@ class InputSettingsTests(unittest.TestCase):
             with self.subTest(chord=text),self.assertRaisesRegex(ValueError,'reserved for the window canvas'):
                 validate_controls(dict(DEFAULTS,recenter=text))
         # The resize keys (M7): SUPER+CTRL+Up/Down are free in Omarchy, so only the reservation stops them.
-        for text in ('SUPER + CTRL + Down','SUPER + CTRL + Up','SUPER + CTRL + Left','SUPER + CTRL + Right'):
+        # The scroll keys (M8) are free in Omarchy too.
+        for text in ('SUPER + CTRL + Down','SUPER + CTRL + Up','SUPER + CTRL + Left','SUPER + CTRL + Right',
+                     'SUPER + CTRL + Page_Up','ctrl + super + page_down'):
             with self.subTest(chord=text),self.assertRaisesRegex(ValueError,'reserved for the window canvas'):
                 validate_controls(dict(DEFAULTS,fit_target=text))
         self.assertEqual(validate_controls(dict(DEFAULTS,recenter='SUPER + CTRL + P'))['recenter'],'CTRL + SUPER + P')

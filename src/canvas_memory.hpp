@@ -12,7 +12,8 @@
 
 // <state>/canvas-memory.tsv: where windows were, so they come back there. Format and claim()
 // rules from phantomat's Memory.cpp (BSD-3-Clause, see THIRD_PARTY_NOTICES.md).
-//   window\t<class>\t<title>\tx\ty\tw\th\tseen      camera\tx\ty\tzoom
+//   window\t<class>\t<title>\tx\ty\tw\th\tseen      camera\tx\ty\tzoom\tscroll
+// The scroll field is M8's; a four-field camera row (before M8) loads with scroll = y.
 namespace canvas {
 inline std::string escapeField(const std::string& text) {
     std::string out;
@@ -58,9 +59,10 @@ struct Memory {
                 if(f.size()==8 && f[0]=="window") {
                     Entry e{unescapeField(f[1]), unescapeField(f[2]), {std::stof(f[3]), std::stof(f[4]), std::stof(f[5]), std::stof(f[6])}, std::stod(f[7])};
                     if(finite({e.rect.x, e.rect.y, e.rect.w, e.rect.h, e.seen}) && e.rect.w>=1 && e.rect.h>=1) entries.push_back(std::move(e));
-                } else if(f.size()==4 && f[0]=="camera") {
+                } else if((f.size()==4 || f.size()==5) && f[0]=="camera") {
                     Fit c{std::stof(f[1]), std::stof(f[2]), std::stof(f[3])};
-                    if(finite({c.focusX, c.focusY, c.zoom}) && c.zoom>0 && c.zoom<=1) camera=c;
+                    c.scrollY=f.size()==5 ? std::stof(f[4]) : c.focusY;
+                    if(finite({c.focusX, c.focusY, c.zoom, c.scrollY}) && c.zoom>0 && c.zoom<=1) camera=c;
                 }
             } catch(const std::exception&) {}
         }
@@ -72,7 +74,7 @@ struct Memory {
         for(const auto& e:entries)
             out<<"window\t"<<escapeField(e.cls)<<'\t'<<escapeField(e.title)<<'\t'<<e.rect.x<<'\t'<<e.rect.y<<'\t'<<e.rect.w<<'\t'<<e.rect.h
                <<'\t'<<std::setprecision(17)<<e.seen<<std::setprecision(9)<<'\n';
-        if(camera) out<<"camera\t"<<camera->focusX<<'\t'<<camera->focusY<<'\t'<<camera->zoom<<'\n';
+        if(camera) out<<"camera\t"<<camera->focusX<<'\t'<<camera->focusY<<'\t'<<camera->zoom<<'\t'<<camera->scrollY<<'\n';
         return out.str();
     }
     void save(const std::string& path) { AsyncFile::instance().write(path, serialize()); dirty=false; }
