@@ -67,6 +67,11 @@ struct CanvasWindow {
     // (drawn by the overlay pass); they keep their rect as their place on the ring.
     std::optional<Rect> beforeFill;
     Rect filledRect;
+    // The neighbours Fill pushed aside (M9): their rect before and after, so a restore lets them flow back,
+    // and the layout when Fill began.
+    struct Pushed { std::string name; Rect before, after; };
+    std::vector<Pushed> fillPushed;
+    Snapshot fillLayout;
     bool pinned=false;
 };
 // One body-locked quad for this frame (§4.5 item 3), in draw order; sizes are world units.
@@ -343,6 +348,7 @@ public:
         w.sized=true;
         if(w.pixelW==w.sourceWidth && w.pixelH==w.sourceHeight) return;
         w.pixelW=w.sourceWidth; w.pixelH=w.sourceHeight; w.rect.w=float(w.pixelW); w.rect.h=float(w.pixelH);
+        makeRoom(w);
     }
     void tick(double now, float dt) {
         clock=now;
@@ -913,8 +919,11 @@ public:
         const Rect cur=w->rect, f=w->filledRect;
         if(std::abs(cur.w-f.w)>=2 || std::abs(cur.h-f.h)>=2) return fill(*w, anchor);
         Rect back=*w->beforeFill;
-        if(std::abs(ring.wrap(cur.x-f.x))>=2 || std::abs(cur.y-f.y)>=2) { back.x=ring.unwrap(cur.cx()-back.w/2); back.y=cur.cy()-back.h/2; }
+        const bool moved=std::abs(ring.wrap(cur.x-f.x))>=2 || std::abs(cur.y-f.y)>=2;
+        if(moved) { back.x=ring.unwrap(cur.cx()-back.w/2); back.y=cur.cy()-back.h/2; }
         w->beforeFill.reset(); w->rect=back; filled.clear();
+        flowBack(*w);
+        if(moved) makeRoom(*w);   // untouched, the layout before Fill is back as it was
         requestSize(*w);
         memory.note(w->record.cls, w->record.title, back, clock);
         refresh(clock);
@@ -924,11 +933,11 @@ public:
     // again keeps the first rect before Fill: a client or Lua clamp that missed the size is not a restore point.
     Aim fill(CanvasWindow& w, const tracking::Quaternion& anchor) {
         const Rect f=fillSize(metrics, settings.outputScale);
-        if(!w.beforeFill) w.beforeFill=w.rect;
+        if(!w.beforeFill) { w.beforeFill=w.rect; w.fillLayout=snapshot(); }
         w.sized=true;
         w.filledRect={ring.unwrap(w.rect.cx()-f.w/2), w.rect.cy()-f.h/2, f.w, f.h};
         w.rect=w.filledRect;
-        requestSize(w); refresh(clock);
+        makeRoom(w); requestSize(w); refresh(clock);
         return land(w.name, anchor);
     }
     // .fill carries logical px of the canvas output.
@@ -971,6 +980,41 @@ public:
         return s;
     }
     void moveTo(CanvasWindow& w, const Rect& r) { w.rect=r; memory.note(w.record.cls, w.record.title, r, clock); }
+    // The fluid canvas (M9): the mover's neighbours make room (canvas::displace), remembered unless a drag
+    // is still live. Pinned windows neither push nor move. A filled window notes whom it pushed (each
+    // one's first rect before), so its restore lets them flow back.
+    void makeRoom(CanvasWindow& mover, bool remember=true) {
+        for(const auto& [name, r]:canvas::displace(arrangeable(), mover.name, ring, settings.gapPx)) {
+            auto* o=findMutable(name);
+            if(!o) continue;
+            if(remember && mover.beforeFill) {
+                const auto it=std::find_if(mover.fillPushed.begin(), mover.fillPushed.end(), [&](const auto& p) { return p.name==name; });
+                if(it==mover.fillPushed.end()) mover.fillPushed.push_back({name, o->rect, r}); else it->after=r;
+            }
+            if(remember) moveTo(*o, r); else o->rect=r;
+        }
+    }
+    // After a Fill restore the pushed neighbours still where Fill left them return together. A window
+    // that stays blocks a return only where it has moved since Fill began (the restored window included,
+    // when it was moved), so closeness the layout had before Fill comes back as it was; rounds until the
+    // returning set is settled.
+    void flowBack(CanvasWindow& restored) {
+        auto back=std::move(restored.fillPushed); restored.fillPushed.clear();
+        const auto layout=std::move(restored.fillLayout); restored.fillLayout={};
+        std::erase_if(back, [&](const auto& p) { const auto* o=find(p.name); return !o || o->pinned || !sameRect(o->rect, p.after); });
+        const auto returning=[&](const std::string& name) { return std::any_of(back.begin(), back.end(), [&](const auto& p) { return p.name==name; }); };
+        const auto unmoved=[&](const Placed& t) {
+            return std::any_of(layout.rects.begin(), layout.rects.end(), [&](const auto& l) { return l.first==t.name && sameRect(l.second, t.rect); });
+        };
+        for(size_t size=0;size!=back.size();) {
+            size=back.size();
+            auto moved=taken();
+            std::erase_if(moved, [&](const Placed& t) { return returning(t.name) || unmoved(t); });
+            std::erase_if(back, [&](const auto& p) { return !freeAt(p.before, moved, settings.gapPx, ring.period()); });
+        }
+        for(const auto& p:back) moveTo(*findMutable(p.name), p.before);
+    }
+    static bool sameRect(const Rect& a, const Rect& b) { return a.x==b.x && a.y==b.y && a.w==b.w && a.h==b.h; }
     // Windows closed since the snapshot are skipped.
     void applySnapshot(const Snapshot& s) {
         for(const auto& [name, rect]:s.rects) if(auto* w=findMutable(name)) moveTo(*w, rect);
@@ -1042,13 +1086,13 @@ public:
         focusRequest=*target;
         return land(*target, anchor);
     }
-    // One grid step, overlap allowed (phantomat); the camera chases only a window leaving the view.
+    // One grid step, neighbours make room; the camera chases only a window leaving the view.
     Aim nudgeBy(Direction dir, const tracking::Quaternion& anchor) {
         auto* w=findMutable(current());
         if(!w || w->pinned) return {};
         Rect r=canvas::snap(canvas::nudge(w->rect, dir, nudgeStep)); r.x=ring.unwrap(r.x);
         history.checkpoint(snapshot());
-        moveTo(*w, r); refresh(clock);
+        moveTo(*w, r); makeRoom(*w); refresh(clock);
         return chase(*w, anchor);
     }
     // After a move in Work the camera follows a window that left the view (under 90 % visible).
@@ -1057,9 +1101,9 @@ public:
         focusOn(w.rect.cx(), w.rect.cy());
         return aim(camera.targetFocusX, 0, depth, anchor);
     }
-    // The Overview mouse drag (SDL window): the window follows the pointer, the camera stays. The end snaps
-    // like nudge (overlap allowed), free in y (M8) and is one undo checkpoint; a pinned window
-    // does not drag.
+    // The Overview mouse drag (SDL window): the window follows the pointer, the camera stays, and the
+    // neighbours make room live from where they were when it began (they flow back as it passes). The end
+    // snaps like nudge, free in y (M8) and is one undo checkpoint; a pinned window does not drag.
     void dragBegin(const std::string& name) {
         const auto* w=find(name);
         if(!w || w->pinned) { dragName.clear(); return; }
@@ -1069,10 +1113,15 @@ public:
         auto* w=findMutable(dragName);
         if(!w) return;
         w->rect.x=ring.unwrap(w->rect.x+dx); w->rect.y+=dy;
+        restoreOthers(); makeRoom(*w, false);
         refresh(clock);
     }
+    // The other windows back where the drag began.
+    void restoreOthers() {
+        for(const auto& [name, rect]:dragStart.rects) if(name!=dragName) if(auto* o=findMutable(name)) o->rect=rect;
+    }
     void dragCancel() {
-        if(auto* w=findMutable(dragName)) { w->rect=dragFrom; refresh(clock); }
+        if(auto* w=findMutable(dragName)) { w->rect=dragFrom; restoreOthers(); refresh(clock); }
         dragName.clear();
     }
     bool dragEnd() {
@@ -1080,7 +1129,7 @@ public:
         if(!w) { dragName.clear(); return false; }
         Rect r=canvas::snap(w->rect); r.x=ring.unwrap(r.x);
         history.checkpoint(dragStart);
-        moveTo(*w, r); refresh(clock);
+        restoreOthers(); moveTo(*w, r); makeRoom(*w); refresh(clock);
         std::cout << "Canvas: moved " << dragName << " to " << r.x << "," << r.y << std::endl;
         dragName.clear();
         return true;

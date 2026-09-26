@@ -175,6 +175,43 @@ static void grouping() {
     const auto packed=arrange(three, 2000, 0, ring, m, gap, {"0x1", "0x2", "0x3"}, twoLevel);
     assert(packed[0].name=="0x1" && packed[1].name=="0x3" && packed[2].name=="0x2");
 }
+// M9: the mover stays; neighbours move out of its way along the shorter axis and push on in a chain;
+// pinned-out or unreached windows keep their place, across the seam too.
+static void displacing() {
+    const float p=ring.period();
+    const auto apply=[](std::vector<Placed> w, const std::vector<std::pair<std::string,Rect>>& moved) {
+        for(const auto& [name, r]:moved) for(auto& x:w) if(x.name==name) x.rect=r;
+        return w;
+    };
+    // A widened mover pushes a row to the right, one after another; a window above is not touched.
+    std::vector<Placed> row{{"m", {0, 0, 900, 500}}, {"a", {860, 0, 400, 500}}, {"b", {1320, 0, 400, 500}}, {"c", {1780, 0, 400, 500}},
+                            {"up", {0, -800, 400, 300}}};
+    const auto moved=displace(row, "m", ring, gap);
+    assert(moved.size()==3);
+    const auto out=apply(row, moved);
+    assertApart(out);
+    assert(out[0].rect.x==0 && out[4].rect.x==0 && out[4].rect.y==-800);
+    for(size_t i=1;i<=3;++i) assert(out[i].rect.y==0 && out[i].rect.x>row[i].rect.x);
+    assert(out[1].rect.x<=900+gap+1);
+    // Mostly below: pushed down, not sideways.
+    const auto down=displace({{"m", {0, 0, 800, 600}}, {"d", {100, 550, 800, 400}}}, "m", ring, gap);
+    assert(down.size()==1 && down[0].second.x==100 && down[0].second.y>=600+gap && down[0].second.y<=600+gap+1);
+    // Across the seam the push goes left, around the ring.
+    const auto seam=displace({{"m", {50, 0, 400, 400}}, {"s", {p-300, 0, 400, 400}}}, "m", ring, gap);
+    assert(seam.size()==1 && !overlaps(seam[0].second, {50, 0, 400, 400}, gap, p) && seam[0].second.x<p-300 && seam[0].second.x>=0);
+    // Nothing near, nothing moves; an unknown mover moves nothing; a pre-existing overlap elsewhere stays.
+    assert(displace({{"m", {0, 0, 100, 100}}, {"x", {500, 0, 100, 100}}, {"y", {520, 0, 100, 100}}}, "m", ring, gap).empty());
+    assert(displace(row, "zz", ring, gap).empty());
+    // A crowd around the mover: whatever the chain, no overlap is left.
+    std::mt19937 rng(9);
+    for(int t=0;t<50;++t) {
+        auto crowd=sequence(unsigned(100+t), 40);
+        crowd.push_back({"m", {std::uniform_real_distribution<float>(0, p)(rng), 0, 2400, 1400}});
+        auto after=apply(crowd, displace(crowd, "m", ring, gap));
+        assertApart(after);
+        assert(after.back().rect.x==crowd.back().rect.x && after.back().rect.y==0);
+    }
+}
 static Snapshot snapshotOf(float x) { return {{{"a", Rect{x, 0, 10, 10}}}}; }
 static void undoing() {
     Undo u;
@@ -207,6 +244,6 @@ static void summoning() {
     assert(nudge({0,0,1,1}, Direction::Right, nudgeStep).x==100 && nudgeStep==5*20);
 }
 int main() {
-    placement(); dialogs(); arranging(); neighbours(); grouping(); undoing(); summoning();
-    std::cout<<"Canvas placement: periodic no-overlap on the cylinder, determinism, the 2D spiral, dialog start, block arrange, groups, neighbours, undo and summon passed\n";
+    placement(); dialogs(); arranging(); neighbours(); grouping(); undoing(); summoning(); displacing();
+    std::cout<<"Canvas placement: periodic no-overlap on the cylinder, determinism, the 2D spiral, dialog start, block arrange, groups, neighbours, undo, summon and displacement passed\n";
 }

@@ -191,8 +191,55 @@ inline Rect nudge(Rect r, Direction dir, float step) {
     else if(dir==Direction::Up) r.y-=step; else r.y+=step;
     return r;
 }
-// One nudge step: 5 snap cells, about 2.7 degrees at R 2.4. A nudge may overlap (phantomat).
+// One nudge step: 5 snap cells, about 2.7 degrees at R 2.4. Neighbours make room (displace).
 inline constexpr float nudgeStep=100;
+// How far b must move in dir to clear a by gap; b's image nearest a on the ring counts.
+inline float wayOut(const Rect& a, const Rect& b, Direction dir, const Ring& ring, float gap) {
+    const float bx=a.cx()+ring.wrap(b.cx()-a.cx())-b.w/2;
+    if(dir==Direction::Right) return a.x+a.w+gap-bx;
+    if(dir==Direction::Left) return bx+b.w+gap-a.x;
+    if(dir==Direction::Down) return a.y+a.h+gap-b.y;
+    return b.y+b.h+gap-a.y;
+}
+// The fluid canvas (M9): the mover stays where it was put; a window closer to it than gap moves out of
+// the way, away from it along the axis with the shorter way out, and pushes on in turn. A window keeps
+// the direction of its first push and never pushes one pushed before it, so a chain only moves outward
+// and ends (at most 64 passes). Overlaps no chain reaches are left alone. Returns the windows that
+// moved, with their new rects.
+inline std::vector<std::pair<std::string,Rect>> displace(const std::vector<Placed>& windows, const std::string& mover,
+                                                         const Ring& ring, float gap) {
+    const auto first=std::find_if(windows.begin(), windows.end(), [&](const Placed& p) { return p.name==mover; });
+    if(first==windows.end()) return {};
+    const float period=ring.period();
+    const size_t n=windows.size();
+    std::vector<Rect> rects;
+    for(const auto& w:windows) rects.push_back(w.rect);
+    std::vector<size_t> order{size_t(first-windows.begin())};
+    std::vector<long> rank(n, -1); rank[order[0]]=0;
+    std::vector<std::optional<Direction>> heading(n);
+    for(int pass=0, moved=1;moved && pass<64;++pass) {
+        moved=0;
+        for(size_t i=0;i<order.size();++i) {
+            const Rect a=rects[order[i]];
+            for(size_t b=0;b<n;++b) {
+                if((rank[b]>=0 && rank[b]<=long(i)) || !overlaps(a, rects[b], gap, period)) continue;
+                if(!heading[b]) {
+                    const Rect& r=rects[b];
+                    const Direction h=ring.wrap(r.cx()-a.cx())>=0 ? Direction::Right : Direction::Left;
+                    const Direction v=r.cy()>=a.cy() ? Direction::Down : Direction::Up;
+                    heading[b]=wayOut(a, r, v, ring, gap)<wayOut(a, r, h, ring, gap) ? v : h;
+                }
+                rects[b]=nudge(rects[b], *heading[b], std::ceil(std::max(wayOut(a, rects[b], *heading[b], ring, gap), 0.f)+.5f));
+                rects[b].x=ring.unwrap(rects[b].x);
+                if(rank[b]<0) { rank[b]=long(order.size()); order.push_back(b); }
+                moved=1;
+            }
+        }
+    }
+    std::vector<std::pair<std::string,Rect>> out;
+    for(size_t i=1;i<order.size();++i) out.push_back({windows[order[i]].name, rects[order[i]]});
+    return out;
+}
 // Summon: centred at the heading (and y), snapped; a taken spot resolves like a new window from there.
 inline Rect summonRect(const Rect& r, float headingX, float y, const std::vector<Placed>& others, const Ring& ring, float gap) {
     Rect at=snap({headingX-r.w/2, y-r.h/2, r.w, r.h}); at.x=ring.unwrap(at.x);

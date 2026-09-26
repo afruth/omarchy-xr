@@ -1131,7 +1131,7 @@ struct View {
     }
     // SUPER+left-drag in the glasses (M7): Lua's .drag travel (canvas-output logical px, the confinement
     // overflow included) moves the staged window over the cylinder with M6's drag (snap, free in y since
-    // M8, undo checkpoint, memory); the real window stays at the stage origin. Only in Work/Fill on the stage.
+    // M8, neighbours making room since M9, undo checkpoint, memory); the real window stays at the stage origin. Only in Work/Fill on the stage.
     void stageDrag(double dx, double dy, bool started, bool active) {
         const double now=monotonicSeconds();
         if (started) {

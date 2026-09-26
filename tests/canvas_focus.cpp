@@ -419,6 +419,42 @@ void sceneMemory(const std::string& temp) {
     s.adopt(listOf({record(0x9005, "notes", 1280, 720, 0, 5)}), 30);
     assert(sameRect(s.find("0x9005")->rect, notes));
 }
+// M9, the fluid canvas: a drag pushes its neighbours live and they flow back as it passes; the drop keeps
+// the pushes in one undo step; a cancel restores all; a nudge and a buffer resize push; pinned windows stay.
+void fluidCanvas() {
+    canvas::Scene s(canvas::Ring{}, canvas::Settings{}, "", true);
+    s.adopt(listOf({record(0xb001, "a", 800, 600, 0, 1), record(0xb002, "b", 800, 600, 1, 2), record(0xb003, "c", 800, 600, 2, 3)}), 1);
+    const float gap=s.settings.gapPx;
+    auto& a=*s.findMutable("0xb001"); auto& b=*s.findMutable("0xb002"); auto& c=*s.findMutable("0xb003");
+    a.rect={1000, 0, 800, 600}; b.rect={1800+gap, 0, 800, 600}; c.rect={2600+2*gap, 0, 800, 600}; s.refresh(1);
+    const auto layout=s.snapshot();
+    const auto apart=[&] {
+        for (const auto& x:s.windows) for (const auto& y:s.windows)
+            if (&x!=&y && !x.pinned && !y.pinned) assert(!canvas::overlaps(x.rect, y.rect, gap, s.ring.period()));
+    };
+    const auto at=[&](const canvas::CanvasWindow& w) { return sameRect(w.rect, std::find_if(layout.rects.begin(), layout.rects.end(), [&](const auto& p) { return p.first==w.name; })->second); };
+    s.dragBegin("0xb001"); s.dragBy(300, 0);
+    apart(); assert(b.rect.x>=1800+gap+300 && c.rect.x>b.rect.x && b.rect.y==0 && c.rect.y==0);   // a chain
+    s.dragBy(0, 1200);                                    // past them, below: they flow back
+    apart(); assert(at(b) && at(c));
+    s.dragBy(0, -1200); s.dragCancel(); assert(at(a) && at(b) && at(c));
+    const auto undos=s.history.undo.size();
+    s.dragBegin("0xb001"); s.dragBy(500, 0); assert(s.dragEnd());
+    apart(); assert(!at(b) && s.history.undo.size()==undos+1);
+    assert(std::any_of(s.memory.entries.begin(), s.memory.entries.end(), [&](const auto& e) { return e.title=="b" && sameRect(e.rect, b.rect); }));
+    s.applySnapshot(layout);
+    const tracking::Quaternion anchor{};
+    s.landed="0xb001";
+    for (int i=0;i<3;++i) s.nudgeBy(canvas::Direction::Right, anchor);
+    apart(); assert(!at(b));
+    s.applySnapshot(layout);
+    a.sourceWidth=1400; a.sourceHeight=900; s.sizeFromBuffer(a);   // a user resize grows a to the right and down
+    apart(); assert(a.rect.x==1000 && a.rect.y==0 && b.rect.x>=1000+1400+gap);
+    // A pinned window neither pushes nor moves.
+    s.applySnapshot(layout); a.rect.w=800; a.rect.h=600; b.pinned=true;
+    s.dragBegin("0xb001"); s.dragBy(300, 0); assert(at(b) && s.dragEnd());
+    b.pinned=false;
+}
 // The buffer size wins over later list sizes; a dialog starts at its tiled window, other floating
 // windows at the focus.
 void sizeAndParent() {
@@ -838,21 +874,30 @@ void fillThreeCase(View& v) {
     work(v); landOn(v, "0x5005");
     auto& w=*v.canvas->findMutable("0x5005"); assert(canvas::Scene::onStage(w));
     const auto before=w.rect; const auto f=canvas::fillSize(v.canvas->metrics, v.canvas->settings.outputScale);
+    const auto layout=v.canvas->snapshot();
+    const auto sameLayout=[&] {
+        return std::all_of(layout.rects.begin(), layout.rects.end(), [&](const auto& p) { return sameRect(v.canvas->find(p.first)->rect, p.second); });
+    };
     v.navigate({View::Verb::Fill});
     assert(v.canvas->state==State::Fill && v.canvas->filled=="0x5005" && w.rect.w==f.w && w.rect.h==f.h);
+    // M9: the neighbours make room for the filled window and flow back on the restore.
+    assert(!w.fillPushed.empty() && !sameLayout());
+    for (const auto& o:v.canvas->windows) assert(&o==&w || o.pinned || !canvas::overlaps(w.rect, o.rect, v.canvas->settings.gapPx, v.canvas->ring.period()));
     assert(std::abs(v.canvas->ring.wrap(w.rect.cx()-before.cx()))<1 && std::abs(w.rect.cy()-before.cy())<1);
     auto line=fillFields(v); const auto seq=std::stoull(line[2]);
     assert(line[3]=="0x5005" && line[4]==logical(v, f.w) && line[5]==logical(v, f.h));
     ease(v, 120); panInsideRing(v);
     v.navigate({View::Verb::Fill});
-    assert(sameRect(w.rect, before) && v.canvas->state==State::Work && !w.beforeFill);
+    for (const auto& p:layout.rects) { const auto& r=v.canvas->find(p.first)->rect; if(!sameRect(r,p.second)) fprintf(stderr,"DIFF %s %g,%g %gx%g was %g,%g %gx%g\n",p.first.c_str(),r.x,r.y,r.w,r.h,p.second.x,p.second.y,p.second.w,p.second.h); }
+    fprintf(stderr,"A %d %d %d %d\n", sameRect(w.rect, before), v.canvas->state==State::Work, !w.beforeFill, w.fillPushed.empty());
+    assert(sameRect(w.rect, before) && v.canvas->state==State::Work && !w.beforeFill && w.fillPushed.empty() && sameLayout());
     line=fillFields(v);
     assert(std::stoull(line[2])==seq+1 && line[4]==logical(v, before.w) && line[5]==logical(v, before.h));
     v.navigate({View::Verb::Fill}); v.navigate({.verb=View::Verb::Nudge, .output="right"});
     const auto moved=w.rect; v.navigate({View::Verb::Fill});
     assert(v.canvas->state==State::Work && w.rect.w==before.w && w.rect.h==before.h);
     assert(std::abs(v.canvas->ring.wrap(w.rect.cx()-moved.cx()))<1 && std::abs(w.rect.cy()-moved.cy())<1);
-    w.rect=before; v.canvas->refresh(monotonicSeconds());
+    v.canvas->applySnapshot(layout);   // a neighbour the moved window now crowds stayed pushed
     // Resized since (a user resize, or a client or Lua clamp that missed the fill size): fill again, and the
     // restore point stays the rect before the first Fill.
     v.navigate({View::Verb::Fill}); w.sourceWidth=1200; w.sourceHeight=700; v.canvas->sizeFromBuffer(w);
@@ -864,12 +909,12 @@ void fillThreeCase(View& v) {
     w.sourceWidth=unsigned(f.w); v.canvas->sizeFromBuffer(w);
     v.navigate({View::Verb::Fill});
     assert(v.canvas->state==State::Work && w.rect.w==before.w && w.rect.h==before.h);
-    w.rect=before; w.pixelW=unsigned(before.w); w.pixelH=unsigned(before.h); w.sourceWidth=w.sourceHeight=0; w.sized=false;
+    v.canvas->applySnapshot(layout); w.pixelW=unsigned(before.w); w.pixelH=unsigned(before.h); w.sourceWidth=w.sourceHeight=0; w.sized=false;
     v.canvas->refresh(monotonicSeconds());
     v.navigate({View::Verb::FlickIn}); assert(v.canvas->state==State::Fill);
     ease(v, 120); panInsideRing(v);
     v.navigate({View::Verb::FlickOut});
-    assert(v.canvas->state==State::Work && sameRect(w.rect, before));
+    assert(v.canvas->state==State::Work && sameRect(w.rect, before) && sameLayout());
     ease(v, 120); assert(v.monitorMathCalls==0);
 }
 // (q) Alt-Tab: held steps reveal the list after 0.2 s and never move the camera; the finish lands with
@@ -1134,7 +1179,7 @@ void newWindowCues(View& v) {
     assert(fresh.primed && fresh.live()==2);
     for (const auto& w:fresh.windows) assert(w.pulseUntil==0 && w.cueUntil==0);
 }
-// (x) The Overview mouse drag: snapped, overlap allowed, free in y (M8), remembered and undoable; a
+// (x) The Overview mouse drag: snapped, neighbours make room (M9), free in y (M8), remembered and undoable; a
 // press without motion is a click, and in Work a press never drags.
 void overviewDrag(View& v) {
     using V=View::Verb;
@@ -1690,8 +1735,8 @@ int main() {
         v.finishCanvas();
     }
     firstMailboxLands(window, temp); ladder(window, temp);
-    sceneMemory(temp); sizeAndParent(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
+    sceneMemory(temp); sizeAndParent(); fluidCanvas(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
+    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
 }

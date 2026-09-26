@@ -94,15 +94,20 @@ to the canvas at start, and a canvas you switch to, show neither.
 ## Moving windows
 
 In the glasses, **SUPER+left-drag** moves the window you work in, in any direction, snapped to 20 px:
-it follows the pointer's travel (also past the edge of the window), may overlap other windows (like a
-nudge), and the new place is remembered for the next start. Letting go of SUPER before the button also drops it, and a drag that
+it follows the pointer's travel (also past the edge of the window), and the new place is remembered for
+the next start. Windows never overlap: the ones in the way slide aside as you drag, pushing their own
+neighbours on in turn, and flow back to where they were once the dragged window has passed. What is
+still pushed aside when you let go stays there, and **Ctrl+Z** puts everything back in one step. Letting go of SUPER before the button also drops it, and a drag that
 holds still for 3 s ends there. **Ctrl+Z** undoes it. Only the panel moves: the real window stays where
 the canvas keeps it, so the pointer, menus and the native cursor stay right. When the window leaves your
 view, the camera follows it after the drop.
 
 **SUPER+right-drag** resizes the window you work in, from any corner; the panel follows. Half a second
 after you let go, the window is put back at the stage origin and trimmed to the canvas output, so a
-top-left corner drag cannot leave it misplaced. **SUPER+CTRL+arrows** resize it in 100 px steps.
+top-left corner drag cannot leave it misplaced. **SUPER+CTRL+arrows** resize it in 100 px steps. A
+window that grows pushes its neighbours aside the same way; they do not come back when it shrinks.
+**SUPER+F** (Fill) pushes them aside too, and restoring the window lets them flow back, unless you moved
+it into their old places in between.
 **SUPER+SHIFT+arrows** nudges it by 100 px, **Shift+Enter** in the search summons a window next to
 you, and **Ctrl+A** arranges the windows (see **Keys**).
 
@@ -204,7 +209,7 @@ These are the canvas keys; **F1** shows the same table in the glasses (and in th
 | **SUPER+wheel** | Scroll the cylinder up or down, a fifth of the view per notch. A takeover of Omarchy's workspace scroll. |
 | **SUPER+CTRL+Page_Up / Page_Down** | Scroll the cylinder a page up or down. |
 | **4-finger pan** | Sideways turns the view along the ring; up and down scrolls the cylinder. |
-| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px, also up and down (it may overlap others). |
+| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px, also up and down; the windows in the way slide aside. |
 | **SUPER+left-drag** | Move the window you work in, in any direction (20 px steps, **Ctrl+Z** undoes it, the place is remembered). |
 | **SUPER+right-drag** | Resize it; the panel follows. When the drag ends the window is put back at the stage origin. |
 | **SUPER+CTRL+arrows** | Resize it by 100 px: Left/Right narrower/wider, Up/Down shorter/taller. |
@@ -540,3 +545,11 @@ Copied from the plan (§7 M8).
 - [ ] Windows scrolled out of view above or below go idle (`Capture:` lines) and come back when scrolled in.
 - [ ] Stop: `hyprctl binds -j` shows Omarchy's *Scroll active workspace forward/backward* on SUPER+mouse_down/up again and no SUPER+CTRL+Page binds.
 - [ ] A `canvas-memory.tsv` from before M8 restores the layout unchanged.
+
+### M9 glasses PR checklist
+
+- [ ] SUPER+left-drag a window into its neighbour: the neighbour slides aside (and pushes the next one on), then flows back as the dragged window passes; after the drop no two windows overlap; Ctrl+Z restores all of them.
+- [ ] SUPER+SHIFT+Right into a neighbour pushes it right; SUPER+SHIFT+Down into one below pushes it down.
+- [ ] SUPER+right-drag and SUPER+CTRL+Right/Down grow the window into its neighbours: they move aside while it grows; the pushed places survive a restart.
+- [ ] SUPER+F pushes the neighbours out of the filled window's way; SUPER+F again brings them back where they were.
+- [ ] A pinned window neither pushes nor moves.
