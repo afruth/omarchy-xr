@@ -1,8 +1,8 @@
 # Omarchy XR — Universal XR controls: design and implementation plan
 
-Status: **design agreed, not implemented** (2026-09-27). Supersedes the per-mode key sets in
-[`window-canvas.md`](window-canvas.md) § Keys and README § Touchpad and keyboard camera controls
-once shipped.
+Status: **implemented** (2026-09-27, controls v7), work packages K1–K8 below. It supersedes the
+per-mode key sets and takeovers of controls v6. Where the implementation settled a detail differently
+from the first draft, this document describes what was built.
 
 ## 1. Goal
 
@@ -47,7 +47,7 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 
 ### 3.1 Keyboard
 
-| Action id | Default | Virtual monitors | Window canvas | Status today |
+| Action id | Default | Virtual monitors | Window canvas | Before controls v7 |
 |---|---|---|---|---|
 | **View** |||||
 | `recenter` | XR + `space` | Recenter | Recenter | mode 3 in both |
@@ -94,8 +94,8 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 {
   "version": 2,
   "modifier": "CTRL + ALT",
-  "keys": {"recenter": "space", "zoom_in": "equal", "nudge_left": "SHIFT + Left", "…": "…"},
-  "gestures": {"fingers": 3}
+  "fingers": 3,
+  "keys": {"recenter": "space", "zoom_in": "equal", "nudge_left": "SHIFT + Left", "…": "…"}
 }
 ```
 
@@ -132,47 +132,52 @@ action table and a character whitelist, and it ignores unknown action ids so old
 
 ### 4.3 Effective-keys mailbox (`pose.sock.keys`, new)
 
-Lua writes the bindings it actually installed (action id, chord, and whether the action is live in
-the current mode). The renderer's help overlay (`help`) and Studio's key reference both read it.
+Lua writes the modifier (a `modifier<TAB>…` row) and the bindings it actually installed (action id,
+chord, and whether the action is live in the current mode). The renderer's help overlay (`help`) and Studio's key reference both read it.
 This guarantees the displayed keys match the real ones even if an edit was refused.
 
 ## 5. Behaviour details
 
 ### 5.1 Shared action codes
 
-The `.fit` mailbox codes (`publish(0, mode, token)`) stay the transport. Renderer dispatch changes
-from `if (canvas && fit>=8) canvasKey(...)` to one `sceneKey(mode, token)` that routes to the canvas
-or to the monitor scene. New codes:
+The `.controls` codes (`publish(0, mode, token)`) stay the transport. Every action publishes **one code in
+both scenes**, and the renderer's `sceneKey(mode, token)` gives it the scene's meaning: the canvas keeps
+`canvasKey`, the monitor scene has `monitorKey`. Notification keys and grab are scene-independent.
 
-| Code | Action | Token |
-|---|---|---|
-| 20 | `notification_dismiss` | gazed card target or `-` (front card) |
-| 21 | `notification_next` | same |
-| 22 | `previous` / `next` | `prev` / `next` |
-| 23 | `focus` in monitors mode (fit gazed window) | window address from gaze (§5.2) |
-| 24 | `fill` in monitors mode | — |
-| 25 | `help` in monitors mode | — |
-| 26 | `grab` | `begin` / `end` (§5.7) |
+| Code | Action | Token | Virtual monitors | Window canvas |
+|---|---|---|---|---|
+| 3, 4, 5 | recenter, zoom in, zoom out | — | as before | as before |
+| 8 | `overview` | — | fit every monitor | Overview on/off |
+| 9 | `search` | — | search (§5.5) | search |
+| 10 | `fill` | — | frame the gazed monitor (Lua maximized the window, §5.3) | Fill / restore |
+| 13, 15, 16, 19 | arrange, nudge, pin, scroll | direction / scroll token | — | as before |
+| 17 | `help` | — | help card | help card |
+| 18 | `focus` | — | frame the gazed window (§5.3) | confirm |
+| 20 / 21 | `notification_dismiss` / `notification_next` | gazed card or `-` (front card) | same | same |
+| 22 | `previous` / `next` | `prev` / `next` | frame the pane Lua published (§5.4) | ring order, wrapping |
+| 26 | `grab` | `begin` / `end` | §5.7 | §5.7 |
+| 27 / 28 | `undo` / `redo` | — | — | undo / redo |
 
-`pointer_home` stays in Lua (`releasePointer()` already exists). The canvas keeps codes 8–19.
-`overview` maps to 1 in monitors mode and 8 in canvas mode, and `focus` to 23 / 18. Lua picks the
-code from `canvasMode`, as it does for `fit_target` today.
+`pointer_home` stays in Lua (`releasePointer()`, now for any XR monitor). In virtual monitors mode Lua
+runs `fill`, `previous`/`next` and `search` itself first (maximize, focus and pane, window list) and then
+publishes the code. The renderer and Studio require controls v7 for the canvas.
 
 ### 5.2 Window awareness in virtual monitors mode (new)
 
-Monitors mode knows monitors, not windows. To make windows known there, Lua publishes a
-`pose.sock.clients` mailbox while the viewer runs in monitors mode. It holds the visible clients on
-each XR monitor: address, monitor, rect in monitor pixels, title, class and focus history. It uses the
-same row format and heartbeat rules as the canvas `.windows` mailbox, with the monitor name added.
-The renderer maps the gaze hit (monitor + uv, already computed by `targeting`) to the window whose
-rect contains it. That window becomes the "gazed window" for `focus`, `fill` and the halo.
+Monitors mode knows monitors, not windows, and the controls adapter already maps a look pixel to the
+window under it (the dwell's pointer warp) and publishes a window's rectangle on its monitor (`.pane`,
+for the flick-in pane fit). The XR layer builds on both instead of a new client mailbox: the renderer
+asks for the gazed window with a new pointer serial at the current look pixel, the adapter focuses the
+window there and republishes `.pane`, and the camera frames that pane. For search, the adapter
+publishes every regular window in `.windows` (the canvas row format with the 4-field header, no canvas
+output).
 
 ### 5.3 `focus` and `fill` in monitors mode
 
-- `focus`: the camera fits the gazed window's rect on its monitor, face-on with a 4 % margin. This is
-  the existing `FitTarget` geometry applied to a sub-rect of the monitor quad. Lua focuses the window
-  and moves the pointer into it, as the canvas confirm does. With no window under the gaze, it falls
-  back to today's monitor fit.
+- `focus`: the camera fits the gazed window's rect on its monitor (the pane fit). A pane that already
+  holds the look point is framed at once; otherwise the renderer waits up to 0.5 s for the adapter's
+  new pane and then falls back to the monitor fit (no window there, or a presentation without gaze
+  pointer control, where the adapter does not act on pointer serials).
 - `fill`: Lua makes the selected window fill its monitor with Hyprland fullscreen mode 1
   ("maximize": the bar stays, the other windows stay visible elsewhere), and the camera fits that
   monitor. Pressing it again restores the window. Unlike the canvas, fullscreen is harmless here,
@@ -186,19 +191,23 @@ rect contains it. That window becomes the "gazed window" for `focus`, `fill` and
   from left to right and top to bottom, wrapping. Each step focuses the window and runs `focus` on
   it, so the camera follows.
 - Only windows on visible workspaces take part. Search (§5.5) reaches the others.
+- The adapter focuses the window, points at its centre and publishes its pane with the code; the
+  renderer frames that pane (or, after 0.5 s without a new one, the last pane).
 
 ### 5.5 Search in monitors mode
 
 - Reuses the canvas search engine (`src/canvas_search.hpp`: fuzzy title/class/category with
   recency ranking) and the Quickshell search field (`studio/SearchPrompt.qml` /
   `SearchPromptWindow.qml`, `.search` mailbox) unchanged.
-- The candidates are all clients from `hyprctl clients`, including other workspaces. Lua adds them
-  to `.clients` while the search is open.
-- The overlay lists results. The camera previews the best match only when it is on a visible
-  workspace.
-- `Enter` lands: Lua switches the owning XR monitor to the window's workspace (a workspace on a
-  non-XR monitor is left in place, and only focus moves), focuses the window, and the camera runs
-  `focus`. `Esc` restores the camera and focus as in the canvas.
+- The candidates are every regular window, including other workspaces, from the adapter's `.windows`
+  (refreshed every second while XR runs, and at once when the search key is pressed).
+- The monitor scene has no palette of its own: the renderer ranks the windows (most recently focused
+  first for an empty query) and writes the top eight rows to `.results`, which the prompt lists under
+  its field. The prompt sits on the gazed XR monitor, so the list shows in the glasses. The camera does
+  not move while searching.
+- `Enter` (or Ctrl+1…8) lands through `.land`: the adapter focuses the window, which brings its
+  workspace up on its monitor, points at it and publishes its pane; the camera frames that pane.
+  `Esc` closes the search; nothing moved, so nothing is restored.
 
 ### 5.6 Held keys
 
@@ -301,10 +310,10 @@ It replaces **Shortcuts & gestures** on the Controls tab. It's one screen, reada
 | K1 | Settings v2: schema, validation, conflict report, migration, allowed keys | `studio/input_settings.py`, `studio/backend.py` (`save_controls`, a new `controls_conflicts` query) | `tests/test_input_settings.py` (new): uniqueness, Omarchy collisions, VT keys, migration, round trip |
 | K2 | Lua XR layer: bind the table from the TSV, `repeating`, the press/release `grab` pair, the mouse binds, drop every takeover and `SUPER+F`, `pointer_home`, write `.keys`, `CONTROLS_VERSION = 7` | `config/xr-controls.lua` | `tests/controls.lua`: every action publishes its code in both modes, no takeover remains, rebinding on a settings change, the expired-handle rule still holds |
 | K3 | Renderer: `sceneKey` dispatch, codes 20–26, keyboard notification actions, canvas previous/next wrapping, `grab` (heading follow, canvas pitch scroll, the safety ends) | `src/main.cpp`, `src/live_controls.hpp`, `src/notification_hud.hpp`, `src/tracking.hpp` | unit tests for the dispatch, the notification target fallback, and a `grab` test (a yaw sweep keeps the view offset, release keeps the new heading, stale tracking and timeout end it) |
-| K4 | Monitors-mode windows: the `.clients` mailbox, gaze-to-window, `focus` sub-rect fit, `fill`, previous/next order | `config/xr-controls.lua`, `src/targeting.hpp`, `src/main.cpp`, new `src/monitor_windows.hpp` | window hit-testing, ordering and fit geometry units; a Lua mailbox test |
-| K5 | Monitors-mode search: candidates from all clients, overlay in the monitor scene, landing across workspaces | `src/canvas_search.hpp` (reuse), `src/main.cpp`, `config/xr-controls.lua`, `studio/SearchPromptWindow.qml` | a landing-flow test with a fake client list |
-| K6 | Studio key map (§8), the Keys card, gestures shown only with a touchpad, requiring controls v7 | `studio/MonitorStudio.qml`, a new `studio/KeyMap.qml` / `studio/KeyCapture.qml` | `tests/qml/tst_key_map.qml`: capture, clear, conflict display, modifier change, keyboard navigation |
-| K7 | Help overlay from `.keys` in both modes; remove the preview interactions (§6) | `src/canvas_overlay.hpp`, `src/notification_hud.hpp` or a new HUD panel, `src/main.cpp` | `make check-preview` baselines updated |
+| K4 | Monitors-mode windows: gaze-to-window through a pointer serial and `.pane`, `focus` pane fit, `fill` (maximize), previous/next order | `config/xr-controls.lua`, `src/live_controls.hpp`, `src/main.cpp` | `tests/controls.lua` monitor windows, `tests/workspace_focus.cpp` layer keys |
+| K5 | Monitors-mode search: `.windows` in monitors mode, ranking in the renderer, `.results` listed by the prompt, landing through `.land` | `config/xr-controls.lua`, `src/live_controls.hpp`, `src/main.cpp`, `studio/SearchPrompt.qml`, `studio/SearchPromptWindow.qml` | `tests/workspace_focus.cpp` search, `tests/qml/tst_search_prompt.qml`, `tests/controls.lua` |
+| K6 | Studio key map (§8), the Keys card, gestures shown only with a touchpad, requiring controls v7 | `studio/MonitorStudio.qml`, new `studio/KeyMap.qml`, `studio/backend.py`, `studio/canvas.py` | `tests/qml/tst_key_map.qml`: capture, clear, conflict display, modifier change, keyboard navigation |
+| K7 | Help overlay from `.keys` in both modes; remove the preview interactions (§6) | `src/help_keys.hpp`, `src/canvas_overlay.hpp`, `src/canvas_scene.hpp`, `src/main.cpp` | `tests/window_list.cpp` layer keys, `tests/canvas_preview.cpp` help card |
 | K8 | Docs and release | `README.md`, `docs/window-canvas.md`, `docs/architecture.md`, release notes | — |
 
 Order: K1 → K2 → K3 give a working keyboard layer for today's actions in both modes. K4 and K5 add

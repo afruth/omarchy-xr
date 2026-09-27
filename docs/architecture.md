@@ -79,24 +79,36 @@ adapter to resize the staged window.
 
 M3 made the canvas a Studio mode: `config/xr-controls.lua` v6 publishes `.windows` and
 `.cursor`, stages the window the eye lands on (the staged window lives on the visible
-`omxr-canvas` workspace, the others on the hidden `omxr-park`), guards fullscreen and
-takes SUPER+F over; the renderer writes the `.mode` heartbeat (`v1 <pid> canvas|monitors
-<takeover> <stamp>`) that switches the adapter's canvas branch on and off, and
+`omxr-canvas` workspace, the others on the hidden `omxr-park`) and guards fullscreen (a
+compositor fullscreen is reverted and becomes Fill); the renderer writes the `.mode` heartbeat
+(`v1 <pid> canvas|monitors <takeover> <stamp>`; the takeover field is always 0 since controls v7) that switches the adapter's canvas branch on and off, and
 `RegionSource` captures the staged window's rectangle of the canvas output so menus,
 tooltips and the native cursor show. `studio/canvas.py` (`CanvasSession`) creates the
 canvas output, journals every window's origin to `canvas-session.json` before moving it,
 and restores window by window before the output is removed.
 
 M7 made gaze focus *dwell + confirm*: dwell only selects; a confirm (mode 18 from the
-`fit_target` hotkey or a three-finger single tap, the pose verb `fit_target`, or a landing from
+XR layer's focus key or a three-finger single tap, the pose verb `fit_target`, or a landing from
 Overview) stages, raises and focuses the window and warps the pointer to the gaze point through
 `.hover` v4. The adapter keeps a window staged whenever the canvas has members (`ensureStaged`,
 the most recent member, quietly: no keyboard focus, no pointer move), and the renderer lands on it.
-SUPER+left-drag is taken over by the adapter, which publishes the pointer travel in the `.drag`
+XR+left-drag (SUPER+left-drag before controls v7) makes the adapter publish the pointer travel in the `.drag`
 mailbox (the `.pan` codec, `v2 owner seq id dx dy active stamp`); the renderer moves the staged
 window's panel with M6's `dragBegin`/`dragBy`/`dragEnd`, while the real window stays at the stage
-origin. SUPER+right-drag resizes the real window and the adapter re-clamps it 0.5 s after it settles;
-SUPER+CTRL+arrows resize by 100 px in Lua.
+origin. XR+right-drag resizes the real window and the adapter re-clamps it 0.5 s after it settles;
+the XR layer's narrower/wider/shorter/taller keys resize by 100 px in Lua.
+
+Controls v7 replaced the per-mode key sets and every takeover of Omarchy chords with the XR key
+layer ([`xr-controls-plan.md`](xr-controls-plan.md)): one held modifier plus a key per action, bound only
+while the viewer runs, read from `controls-settings.tsv` v2 (`studio/input_settings.py`). Each action
+publishes one `.controls` code in both scenes and the renderer's `sceneKey` gives it the scene's meaning
+(8 overview, 9 search, 10 fill, 17 help, 18 focus, 19 scroll, 20/21 notification dismiss/next, 22
+previous/next, 26 grab begin/end, 27/28 undo/redo). The adapter lists the bound chords in `.keys`, from
+which the renderer builds the headset help in both scenes. In virtual monitors mode the adapter also
+publishes every regular window in `.windows` (the 4-field header without a canvas output) for search;
+the renderer ranks it with the canvas search, lists the rows in `.results` for the Quickshell prompt,
+and asks the adapter to land on a window through `.land`; previous/next and focus republish `.pane`
+for the camera. Grab keeps `tracking::Camera::neutralYaw` at a fixed offset from the head yaw while held.
 
 M5 replaced the fixed profile with the pixel-budget ladder (`governor::Ladder`, plan
 §4.4): rates from `60 › 40 › 30 › 24 › 20 › 15 › 10 › 6` Hz filled tier by tier
@@ -335,18 +347,19 @@ There is no closest-monitor fallback, automatic activation, or dwell delay;
 future dwell actions can consume the same tracker without changing hit testing.
 A fit action samples the current ray at execution, latches the output identity,
 and fits that monitor's projected vertical bounds in the current viewing frame.
-It does not recenter head tracking or switch targets while animating. Ctrl+Down
-and Studio's Fit looked-at monitor use this same action (`fit_target`); the old
+It does not recenter head tracking or switch targets while animating. Studio's Fit
+looked-at monitor uses this action (`fit_target`); the XR layer's focus key frames the
+gazed window instead (mode 18, `monitorKey`); the old
 renderer socket command `fit_center` is retained as an alias for compatibility.
-In canvas mode the adapter publishes canvas mode 18 (*confirm*) for the Ctrl+Down
-hotkey instead of 2, and for a three-finger single tap (resolved 400 ms after the tap
+In canvas mode mode 18 (*confirm*) comes from the XR layer's focus key and from a three-finger
+single tap (resolved 400 ms after the tap
 when no second tap followed); the renderer maps it to the same `fit_target` verb,
 which lands on and focuses the gazed window (`.hover` v4) instead of fitting a monitor.
 
 
 ### Gaze selection and independent pointer
 
-The ray query supplies one looked-at output for halos, Ctrl+Down, and workspace
+The ray query supplies one looked-at output for halos, the focus key, and workspace
 selection. The renderer publishes this exact target through `.controls.hover`.
 The Lua adapter dispatches `hl.dsp.focus({workspace=monitor.active_workspace.config_name})`
 only on target entry/change. No dwell, readability threshold, mouse override timer,
@@ -372,7 +385,7 @@ workload dependent, not a full end-to-end latency benchmark.
 
 `targeting::Selection` retains the last hit output through gaps and stale tracking,
 separately from transient `Tracker::current`. A new hit replaces it; removal from
-the layout clears it. Halos, workspace selection, Ctrl+Down, and swipe zoom consume
+the layout clears it. Halos, workspace selection, the focus key, and zoom consume
 the retained identity. The head-view anchor is captured on selection, so looking
 at the keyboard before zoom does not anchor the monitor at the keyboard.
 
@@ -388,7 +401,7 @@ depth. Fit-target still faces the selected monitor's center; `frontFocus` aligns
 that center normal with the anchored camera. Intrinsic monitor curvature is
 preserved; front-facing height fit includes its edge depth.
 Rotation and translation ease together. Live head tracking remains relative to the
-anchor. Zoom stays in front of curved edges; Ctrl+Up restores workspace overview.
+anchor. Zoom stays in front of curved edges; the overview key (XR+Up) restores workspace overview.
 Tests cover side-monitor normals, projected fit bounds, curved surfaces, retained
 selection, and deletion. `python3 tests/live_focus.py` tests looking down followed
 by another fit/zoom in an isolated preview.
@@ -539,9 +552,9 @@ The flick gestures step through three zoom levels. Flick in: workspace overview 
 monitor face-on -> the active window on that monitor, fitted to the eye (`fitPane`, from the
 `.controls.pane` mailbox the adapter writes with the active window's rectangle on its XR output).
 Flick out: pane -> monitor -> overview. A flick in on a different monitor than the current level's
-restarts at the monitor level. The socket commands `fit` and `fit_target` (Studio buttons, Ctrl+Up
-and Ctrl+Down) stay direct: overview and monitor.
-In canvas mode Ctrl+Down arrives as mode 18 (see above), so the flick gesture keeps mode 2.
+restarts at the monitor level. The socket commands `fit` and `fit_target` (Studio buttons) stay
+direct: overview and monitor. The XR layer's overview and focus keys arrive as modes 8 and 18, so the
+flick gesture keeps modes 1 and 2.
 
 Each dwell increments a pointer serial on the `.controls.hover` mailbox (`v3 … <serial> <px> <py>`).
 The Lua adapter warps the desktop pointer to that monitor pixel once per serial and focuses the
