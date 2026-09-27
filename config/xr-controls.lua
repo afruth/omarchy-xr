@@ -382,6 +382,15 @@ local function logicalSize(m)
     local scale=m.scale or 1
     return (m.width or 0)/scale,(m.height or 0)/scale
 end
+-- The stage band: the output's usable area (inside what layer surfaces reserve, such as Omarchy's bar, which
+-- is drawn on every output and would otherwise cover the staged window's top in its region capture) minus
+-- the sliver strip. Returns its origin and size in logical px.
+local function stageBand(m)
+    local width,height=logicalSize(m)
+    local r=type(m.reserved)=="table" and m.reserved or {}
+    local top,left=math.floor(r.top or 0),math.floor(r.left or 0)
+    return m.x+left,m.y+top,width-left-math.floor(r.right or 0)-SLIVER_PX,height-top-math.floor(r.bottom or 0)
+end
 local function onMonitor(m,x,y)
     local w,h=logicalSize(m)
     return x>=m.x and x<m.x+w and y>=m.y and y<m.y+h
@@ -522,16 +531,16 @@ local function stageWindow(address,mon,quiet)
     dropSliver(address)
     enforce(w)
     -- The stage band is the output minus the sliver strip: the window sits at its origin, clamped to it.
-    local maxW,maxH=logicalSize(mon)
+    local bandX,bandY,maxW,maxH=stageBand(mon)
     local width,height=pair(w.size)
-    width,height=math.floor(math.min(width,maxW-SLIVER_PX)),math.floor(math.min(height,maxH))
+    width,height=math.floor(math.min(width,maxW)),math.floor(math.min(height,maxH))
     windowDispatch("move",address,{workspace="name:"..CANVAS_WS,follow=false})
     windowDispatch("resize",address,{x=width,y=height})
-    windowDispatch("move",address,{x=mon.x,y=mon.y})
+    windowDispatch("move",address,{x=bandX,y=bandY})
     windowDispatch("bring_to_top",address)
     if not quiet then hl.dispatch(hl.dsp.focus({window="address:"..address})) end
     canvas.staged=address;overflowX,overflowY=0,0;windowsDirty=true
-    snapshot[address]={x=mon.x,y=mon.y,w=width,h=height}
+    snapshot[address]={x=bandX,y=bandY,w=width,h=height}
     return true
 end
 -- Stage the window if needed, then land the pointer on the buffer pixel the renderer chose.
@@ -626,8 +635,8 @@ local function resizeStaged(step)
     local mon=canvasMonitor()
     local rect=canvas.staged and snapshot[canvas.staged]
     if not (mon and rect) then return end
-    local maxW,maxH=logicalSize(mon)
-    local width=math.floor(math.max(100,math.min(maxW-SLIVER_PX,rect.w+(step.dw or 0))))
+    local _,_,maxW,maxH=stageBand(mon)
+    local width=math.floor(math.max(100,math.min(maxW,rect.w+(step.dw or 0))))
     local height=math.floor(math.max(100,math.min(maxH,rect.h+(step.dh or 0))))
     windowDispatch("resize",canvas.staged,{x=width,y=height})
     rect.w,rect.h=width,height;windowsDirty=true
@@ -640,10 +649,10 @@ end
 -- The renderer owns the Fill size and the restore rule; Lua only resizes the staged window, and the
 -- cursor confinement follows the new size.
 local function applyFill(mon,address,width,height)
-    local maxW,maxH=logicalSize(mon)
-    width,height=math.max(1,math.min(width,math.floor(maxW-SLIVER_PX))),math.max(1,math.min(height,math.floor(maxH)))
+    local bandX,bandY,maxW,maxH=stageBand(mon)
+    width,height=math.max(1,math.min(width,math.floor(maxW))),math.max(1,math.min(height,math.floor(maxH)))
     windowDispatch("resize",address,{x=width,y=height})
-    local rect=snapshot[address] or {x=mon.x,y=mon.y}
+    local rect=snapshot[address] or {x=bandX,y=bandY}
     rect.w,rect.h=width,height;snapshot[address]=rect
     windowsDirty=true
 end
@@ -740,8 +749,8 @@ do
         return seen and seen.address==address and seen.x==x and seen.y==y and seen.w==width and seen.h==height
     end
     local function onStage(mon,x,y,width,height)
-        local maxW,maxH=logicalSize(mon)
-        return x==mon.x and y==mon.y and width<=maxW-SLIVER_PX and height<=maxH
+        local bandX,bandY,maxW,maxH=stageBand(mon)
+        return x==bandX and y==bandY and width<=maxW and height<=maxH
     end
     reclampStage=function(mon,now)
         local address=canvas.staged
@@ -753,11 +762,11 @@ do
         if now-stageSeen.at<.5 or onStage(mon,x,y,width,height) then return end
         -- One try per geometry: a window that refuses the clamp (a minimum size) is not retried.
         stageSeen.at=math.huge
-        local maxW,maxH=logicalSize(mon)
-        width,height=math.floor(math.min(width,maxW-SLIVER_PX)),math.floor(math.min(height,maxH))
+        local bandX,bandY,maxW,maxH=stageBand(mon)
+        width,height=math.floor(math.min(width,maxW)),math.floor(math.min(height,maxH))
         windowDispatch("resize",address,{x=width,y=height})
-        windowDispatch("move",address,{x=mon.x,y=mon.y})
-        snapshot[address]={x=mon.x,y=mon.y,w=width,h=height};windowsDirty=true
+        windowDispatch("move",address,{x=bandX,y=bandY})
+        snapshot[address]={x=bandX,y=bandY,w=width,h=height};windowsDirty=true
     end
 end
 local function canvasTick()

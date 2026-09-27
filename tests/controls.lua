@@ -820,7 +820,13 @@ local function testStageBand()
     assert(d.workspace.name=="omxr-canvas");assert(followProp("0xd","1")==1);assert(omarchy_xr_canvas.slivers["0xd"])
     assert(d.at.x==22552);assert(d.at.y==0)
     tick(190.4);assert(row("0xd")[9]=="sliver");assert(row("0xc")[9]=="stage");assert(moves("0xd")==1) -- staged there, not moved again
-    print("Stage band: output minus the strip for staging and Fill, a staged sliver loses no_follow_mouse, a demoted window in the set becomes a sliver passed")
+    -- Omarchy's bar reserves the output's top 26 px: the stage starts below it, and the band is that much shorter.
+    canvasOutput.reserved={top=26,right=0,bottom=0,left=0}
+    window("0xe","omxr-park",{size={x=1000,y=1440}});hoverV4("0xe",23,10,10)
+    local e=find("0xe");assert(omarchy_xr_canvas.staged=="0xe" and e.at.x==20000 and e.at.y==26 and e.size.y==1414)
+    fillLine(9,"0xe",2600,1500,189);tick(190.6);assert(e.size.x==2552 and e.size.y==1414)
+    canvasOutput.reserved=nil
+    print("Stage band: output minus the strip and the reserved bar for staging and Fill, a staged sliver loses no_follow_mouse, a demoted window in the set becomes a sliver passed")
 end
 local function testTiersLeave()
     clock(191);omarchy_xr_controls.refresh();dispatched={}
