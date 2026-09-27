@@ -11,13 +11,13 @@ from studio import install_runtime
 
 class RuntimeInstallTests(unittest.TestCase):
     def test_release_pin_matches_published_package(self):
-        self.assertEqual(install_runtime.PACKAGE, 'omarchy-xr-bin-0.3.1-1-x86_64.pkg.tar.zst')
+        self.assertEqual(install_runtime.PACKAGE, 'omarchy-xr-bin-0.4.0-1-x86_64.pkg.tar.zst')
         self.assertEqual(install_runtime.URL,
-                         'https://github.com/afruth/omarchy-xr/releases/download/v0.3.1/'
+                         'https://github.com/afruth/omarchy-xr/releases/download/v0.4.0/'
                          + install_runtime.PACKAGE)
-        self.assertEqual(install_runtime.PACKAGE_SIZE, 2_933_400)
+        self.assertEqual(install_runtime.PACKAGE_SIZE, 5_638_571)
         self.assertEqual(install_runtime.SHA256,
-                         'e1e7f5eae86b63b9ec3fd8e3c4b697bf99e1110a5506d12ecbd08915bb49816f')
+                         '5da8d235b7ff58e3a51ae033ff5339562647cef9e76f07cf6a3ccc6eda05aeb2')
 
     def test_verified_package_installs_before_user_setup(self):
         payload = b'complete application package'
