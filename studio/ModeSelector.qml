@@ -8,10 +8,13 @@ Item {
     property string mode: "monitors"
     property bool locked: false
     property string hint: ""
+    // Optional fix-it button under the hint, e.g. installing the controls canvas mode needs.
+    property string actionText: ""
     property color accent: palette.highlight
     property color foreground: palette.text
     readonly property var options: [{value:"monitors",label:"Virtual monitors"},{value:"canvas",label:"Window canvas"}]
     signal picked(string mode)
+    signal actionRequested()
     implicitWidth: layout.implicitWidth
     implicitHeight: layout.implicitHeight
     activeFocusOnTab: true
@@ -76,6 +79,32 @@ Item {
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: Qt.alpha(root.foreground, .68)
+        }
+        AbstractButton {
+            id: action
+            objectName: "mode-action"
+            visible: root.hint !== "" && root.actionText !== ""
+            enabled: !root.locked
+            opacity: enabled ? 1 : .4
+            implicitWidth: actionLabel.implicitWidth + 28
+            implicitHeight: actionLabel.implicitHeight + 16
+            Accessible.role: Accessible.Button
+            Accessible.name: root.actionText
+            Accessible.onPressAction: if (enabled) clicked()
+            onClicked: root.actionRequested()
+            background: Rectangle {
+                color: Qt.alpha(root.accent, action.down ? .28 : .18)
+                border.width: 1
+                border.color: root.accent
+            }
+            contentItem: Text {
+                id: actionLabel
+                text: root.actionText
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: root.foreground
+            }
         }
     }
 }

@@ -103,6 +103,8 @@ Item {
     property int activeTab: 0
     property var history: []
     readonly property var sdk: glasses.sdk || ({})
+    // A source build ships its own helper; the package keeps them in step itself.
+    readonly property bool helperOutdated: loaded && !!glasses.helperAvailable && glasses.helperCurrent === false && !sdk.packaged
     readonly property bool canStart: loaded && !busy && !glasses.recovering && !!glasses.runtimeInstalled && !!sdk.available && !!glasses.helperAvailable && (directOutput || (!!glasses.displays && glasses.displays.length === 1))
     function selectTab(index) {
         activeTab = Math.max(0, Math.min(3, Number(index)));
@@ -911,21 +913,22 @@ Item {
                             Layout.fillWidth: true
                             spacing: 12
                             Card {
-                                visible: root.loaded && (!root.glasses.runtimeInstalled || !root.sdk.available || !root.glasses.helperAvailable)
+                                visible: root.loaded && (!root.glasses.runtimeInstalled || !root.sdk.available || !root.glasses.helperAvailable || root.helperOutdated)
                                 color: Qt.alpha(Color.accent, .08)
                                 border.color: Qt.alpha(Color.accent, .55)
                                 Heading {
-                                    text: !root.glasses.runtimeInstalled || !root.sdk.available ? "XR runtime required" : "Stereo setup incomplete"
+                                    text: !root.glasses.runtimeInstalled || !root.sdk.available ? "XR runtime required" : root.helperOutdated ? "Stereo helper out of date" : "Stereo setup incomplete"
                                 }
                                 Label {
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
                                     text: !root.glasses.runtimeInstalled || !root.sdk.available
                                         ? "Install the XR software before starting stereo. The installer verifies the download and includes everything needed to use the glasses."
+                                        : root.helperOutdated ? "This version of Studio comes with an updated stereo helper. Update it so stereo starts reliably on this computer."
                                         : "One system component needed for stereo is missing. Install it once, then try again."
                                 }
                                 Action {
-                                    text: !root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged ? "Install XR runtime" : "Install stereo helper"
+                                    text: !root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged ? "Install XR runtime" : root.helperOutdated ? "Update stereo helper" : "Install stereo helper"
                                     selected: true
                                     helpText: !root.glasses.runtimeInstalled || !root.sdk.available || root.sdk.packaged
                                         ? "Open a terminal, verify the download, and ask before installing it"
@@ -955,10 +958,12 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 6 ? "Window canvas needs XR controls v6 - open Utilities -> Setup & integrations and reinstall the controls" : ""
+                                    hint: root.loaded && root.controlsVersion < 6 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v6 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v6.") + " A terminal opens to install them." : ""
+                                    actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground
                                     onPicked: function(m) { root.requestedMode = m; root.send("set_render_mode"); }
+                                    onActionRequested: root.runSetupAction("controls")
                                 }
                                 Flow {
                                     Layout.fillWidth: true
@@ -2078,10 +2083,18 @@ Item {
                                     Layout.fillWidth: true
                                     spacing: 8
                                     Action {
-                                        text: !root.glasses.runtimeInstalled || !sdkControls.sdk.available ? "Install XR runtime" : sdkControls.sdk.licenseAccepted === false ? "Finish XR setup" : !root.glasses.helperAvailable ? (sdkControls.sdk.packaged ? "Repair XR runtime" : "Install stereo helper") : "XR runtime installed"
+                                        readonly property bool runtimeReady: !!root.glasses.runtimeInstalled && !!sdkControls.sdk.available && sdkControls.sdk.licenseAccepted !== false
+                                        text: "Set up everything"
+                                        selected: true
+                                        helpText: runtimeReady ? "Install or update the stereo helper, shortcuts & gestures and XR notifications in one terminal" : "Install the XR runtime first"
+                                        enabled: runtimeReady
+                                        onClicked: root.runSetupAction("all")
+                                    }
+                                    Action {
+                                        text: !root.glasses.runtimeInstalled || !sdkControls.sdk.available ? "Install XR runtime" : sdkControls.sdk.licenseAccepted === false ? "Finish XR setup" : !root.glasses.helperAvailable ? (sdkControls.sdk.packaged ? "Repair XR runtime" : "Install stereo helper") : root.helperOutdated ? "Update stereo helper" : "XR runtime installed"
                                         helpText: "Install the XR software or finish its one-time setup"
-                                        enabled: !root.glasses.runtimeInstalled || !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false || !root.glasses.helperAvailable
-                                        onClicked: root.glasses.runtimeInstalled && !root.glasses.helperAvailable && sdkControls.sdk.available && !sdkControls.sdk.packaged
+                                        enabled: !root.glasses.runtimeInstalled || !sdkControls.sdk.available || sdkControls.sdk.licenseAccepted === false || !root.glasses.helperAvailable || root.helperOutdated
+                                        onClicked: root.glasses.runtimeInstalled && sdkControls.sdk.available && !sdkControls.sdk.packaged && (!root.glasses.helperAvailable || root.helperOutdated)
                                             ? root.runSetupAction("helper") : root.installRuntime()
                                     }
                                     Action {

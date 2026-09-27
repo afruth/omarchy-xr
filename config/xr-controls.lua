@@ -17,6 +17,12 @@ local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, a
 local setHoverTimer, updateCanvas, releasePointer
 local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
+-- A keybind handle is a weak reference: unbind, a reload, or remove() of any bind on the same chord
+-- (Hyprland erases them all) expires it, and remove()/set_enabled() on an expired handle segfault
+-- Hyprland 0.56 (pcall cannot catch that). Its __tostring is the one safe probe.
+local function bindingLive(binding) return binding~=nil and tostring(binding)~="HL.Keybind(expired)" end
+local function removeBinding(binding) if bindingLive(binding) then binding:remove() end end
+local function enableBinding(binding,enabled) if bindingLive(binding) then binding:set_enabled(enabled) end end
 local function retireHoverTimer()
     local timer=omarchy_xr_controls.hover_timer
     if not timer then return end
@@ -51,7 +57,7 @@ end
 local function retireFill()
     local binding=canvas.fill
     if not binding then return false end
-    pcall(function() binding:remove() end)
+    removeBinding(binding)
     canvas.fill=nil
     return true
 end
@@ -67,11 +73,11 @@ end
 local DRAG_CHORD="SUPER + mouse:272"
 local function retireDragRelease()
     local binding=canvas.dragRelease
-    if binding then pcall(function() binding:remove() end) end
+    removeBinding(binding)
     canvas.dragRelease=nil
 end
 local function retireDragBinds()
-    for _,binding in ipairs(canvas.dragBinds) do pcall(function() binding:remove() end) end
+    for _,binding in ipairs(canvas.dragBinds) do removeBinding(binding) end
     canvas.dragBinds={}
     retireDragRelease()
 end
@@ -125,8 +131,7 @@ directionKeys("DOWN","down","d","Focus on below window","Swap window down")
 -- Our binds go; a taken-over chord gets every Omarchy default back (ALT+TAB has two).
 local function retireKeys(list)
     for _,key in ipairs(list or {}) do
-        local binding=key.binding
-        pcall(function() binding:remove() end)
+        removeBinding(key.binding)
         if key.restore then
             hl.unbind(key.chord)
             for _,original in ipairs(key.restore) do hl.bind(key.chord,original.dsp(),{description=original.desc}) end
@@ -303,7 +308,7 @@ if ok and #touchpads>0 then
         recordTap(now)
     end,
         {description="XR: three-finger double tap recenter",device={inclusive=true,list=touchpads}})
-    taps[1]:set_enabled(false)
+    enableBinding(taps[1],false)
 end
 local keys={"CTRL + Up","CTRL + Down","","",""}
 local descriptions={"fit all monitors","fit selected monitor","recenter","zoom in","zoom out"}
@@ -312,7 +317,7 @@ local settingsText
 local function configure(nextFingers,nextKeys)
     if active then registerVertical(false) end
     swipe=nil;cancelTap()
-    for _,binding in ipairs(bindings) do binding:remove() end
+    for _,binding in ipairs(bindings) do removeBinding(binding) end
     bindings={};keys=nextKeys;fingers=nextFingers==4 and 3 or nextFingers
     for mode,key in ipairs(keys) do
         if key~="" then
@@ -320,7 +325,7 @@ local function configure(nextFingers,nextKeys)
             -- In canvas mode fit_target confirms the gazed window; the flick-in gesture keeps mode 2.
             local binding=hl.bind(key,function() publish(0,(action==2 and canvasMode) and CANVAS_MODES.confirm or action) end,
                 {description="XR: "..descriptions[mode]})
-            binding:set_enabled(active);bindings[#bindings+1]=binding
+            enableBinding(binding,active);bindings[#bindings+1]=binding
         end
     end
     if active then registerVertical(true) end
@@ -376,8 +381,8 @@ local function applyLive(live)
     swipe=nil;panActive=false;cancelTap()
     if active then publishPan() end
     hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
-    for _,binding in ipairs(taps) do binding:set_enabled(active) end
-    for _,binding in ipairs(bindings) do binding:set_enabled(active) end
+    for _,binding in ipairs(taps) do enableBinding(binding,active) end
+    for _,binding in ipairs(bindings) do enableBinding(binding,active) end
     registerVertical(active)
 end
 local function writeControlsVersion()
