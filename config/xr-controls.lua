@@ -979,6 +979,39 @@ local function monitorCycle(step)
     writePane(paneFor(entry))
     publish(0,CANVAS_MODES.cycle,hexToken(step>0 and "next" or "prev"))
 end
+-- Search outside the canvas (§5.5): the renderer ranks every regular window from `.windows` (the 4-field header,
+-- no canvas output), refreshed every second while XR runs and at once when search opens. Enter comes back as
+-- `.land` (v1 <owner> <seq> <address> <stamp>): focus the window, which brings its workspace up on its monitor,
+-- point at it and publish its pane for the camera.
+local monitorSearch={seq=0,written=-math.huge,landSeq=0,landOwner=nil}
+function monitorSearch.publish(now)
+    local rows=windowRows(listWindows())
+    monitorSearch.seq=monitorSearch.seq+1;monitorSearch.written=now
+    rows[#rows+1]=""
+    writeMailbox(".windows",string.format("v1 %s %d %d",session,monitorSearch.seq,math.floor(now)).."\n"..table.concat(rows,"\n"))
+end
+function monitorSearch.tick(now)
+    if now-monitorSearch.written>=1 then monitorSearch.publish(now) end
+    local file=io.open(path..".land","r")
+    if not file then return end
+    local line=file:read("*l") or "";file:close()
+    local owner,seqText,address,stamp=line:match("^v1 (%d+) (%d+) (0x%x+) (%d+)%s*$")
+    if owner~=session then return end
+    if monitorSearch.landOwner~=owner then monitorSearch.landOwner,monitorSearch.landSeq=owner,0 end
+    local seq=tonumber(seqText)
+    if seq<=monitorSearch.landSeq then return end
+    monitorSearch.landSeq=seq
+    if not fresh(tonumber(stamp)) then return end
+    address=address:lower()
+    local fine,w=pcall(hl.get_window,"address:"..address)
+    if not fine or not w then return end
+    local x,y=pair(w.at);local width,height=pair(w.size)
+    gazeDispatch=true
+    hl.dispatch(hl.dsp.focus({window="address:"..address}))
+    hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+width/2),y=math.floor(y+height/2)}))
+    gazeDispatch=false
+    for _,entry in ipairs(monitorWindows()) do if entry.window.address==address then writePane(paneFor(entry)) end end
+end
 -- XR fill outside the canvas: toggle maximize on the window focused on the gazed XR monitor, then code 10
 -- so the renderer fits that monitor. Unlike the canvas, fullscreen is harmless here: every monitor is its
 -- own output.
@@ -1026,7 +1059,7 @@ local LAYER_ACTIONS={
     {"next",key="Right",code=CANVAS_MODES.cycle,token="next",repeating=true,monitors=function() monitorCycle(1) end},
     {"scroll_up",key="Page_Up",code=CANVAS_MODES.scroll,token="pageup",canvas=true,repeating=true},
     {"scroll_down",key="Page_Down",code=CANVAS_MODES.scroll,token="pagedown",canvas=true,repeating=true},
-    {"search",key="slash",code=CANVAS_MODES.search},
+    {"search",key="slash",code=CANVAS_MODES.search,monitors=function() monitorSearch.publish(bootSeconds());publish(0,CANVAS_MODES.search) end},
     {"nudge_left",key="SHIFT + Left",code=CANVAS_MODES.nudge,token="left",canvas=true,repeating=true},
     {"nudge_right",key="SHIFT + Right",code=CANVAS_MODES.nudge,token="right",canvas=true,repeating=true},
     {"nudge_up",key="SHIFT + Up",code=CANVAS_MODES.nudge,token="up",canvas=true,repeating=true},
@@ -1174,7 +1207,10 @@ local function switchCanvas()
 end
 updateCanvas=function()
     switchCanvas()
-    if not canvasMode then return end
+    if not canvasMode then
+        if active then monitorSearch.tick(bootSeconds()) end
+        return
+    end
     local now=bootSeconds()
     local mon=now-lastWindowsWrite>=1 and canvasMonitor()
     if mon then readCanvasSettings();publishWindows(now,mon) end
@@ -1331,7 +1367,7 @@ local function updatePointer()
     gazeDispatch=false
     if not success then error(message) end
     publishPane(hoverName)
-    if canvasMode then settleTap(tapTime());canvasTick() end
+    if canvasMode then settleTap(tapTime());canvasTick() elseif active then monitorSearch.tick(bootSeconds()) end
 end
 local hoverTimer
 setHoverTimer = function(enabled)

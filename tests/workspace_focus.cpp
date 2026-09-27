@@ -81,6 +81,47 @@ void exerciseLayerKeys(View& view, const std::string& pose) {
     assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-left");
 }
 
+// Monitor-scene search (docs/xr-controls-plan.md §5.5) through the real mailboxes: the prompt opens on the gazed
+// monitor, .results lists the ranked windows (recent first, then the query), keys move the selection, Enter
+// asks the adapter to land (.land) and closes the prompt, Esc closes it.
+void exerciseSearch(View& view, const std::string& pose) {
+    const auto base=pose+".controls";
+    const auto read=[](const std::string& file) { AsyncFile::instance().flush(); std::ifstream in(file); return std::string((std::istreambuf_iterator<char>(in)), {}); };
+    const auto lines=[&](const std::string& file) { std::vector<std::string> out; std::istringstream in(read(file)); for (std::string l; std::getline(in, l);) out.push_back(l); return out; };
+    const auto row=[](const char* address,const char* cls,const char* title,int focus) {
+        return std::string(address)+' '+hextoken::encodeHex(cls)+' '+hextoken::encodeHex(title)+" 800 600 0 0 "+std::to_string(focus)+" off 0 100 0 0";
+    };
+    {std::ofstream file(base+".windows");file<<"v1 "<<getpid()<<" 1 "<<std::time(nullptr)<<'\n'<<row("0xa1","firefox","Docs - Mozilla Firefox",2)<<'\n'
+        <<row("0xb2","foot","build: make check",0)<<'\n'<<row("0xc3","code","main.cpp - omarchy-xr",1)<<'\n';}
+    usleep(2000);view.controls->update();assert(view.controls->windows && view.controls->windows->records.size()==3);
+    view.gaze.current=targeting::Hit{};view.gaze.current->output="OMXR-right";
+    view.monitorKey(9,"");
+    assert(view.monitorSearch.open && read(base+".prompt").find(" 1 OMXR-right ")!=std::string::npos);
+    auto results=lines(base+".results");
+    assert(results.size()==4 && results[1]=="1 "+hextoken::encodeHex("foot")+' '+hextoken::encodeHex("build: make check")); // most recent first, selected
+    assert(results[2].starts_with("0 "+hextoken::encodeHex("code")) && results[3].starts_with("0 "+hextoken::encodeHex("firefox")));
+    const auto prompt=[&]{ std::istringstream in(read(base+".prompt")); std::string v,o; unsigned long long seq; in>>v>>o>>seq; return seq; }();
+    int edit=0;
+    const auto type=[&](const std::string& text,const std::string& keys,bool open=true) {
+        std::ofstream file(base+".search");
+        edit+=keys=="-" ? 1 : int(std::count(keys.begin(), keys.end(), ',')+1); // the prompt counts every key
+        file<<"v1 "<<getpid()<<' '<<prompt<<' '<<edit<<' '<<hextoken::encodeHex(text)<<' '<<(open?1:0)<<' '<<keys<<' '<<std::time(nullptr)<<'\n';
+        file.close();usleep(2000);view.steer();
+    };
+    type("fire","-");results=lines(base+".results");
+    assert(results.size()==2 && results[1].starts_with("1 "+hextoken::encodeHex("firefox")));
+    type("","-");type("","down,down");results=lines(base+".results");
+    assert(results[3].starts_with("1 "+hextoken::encodeHex("firefox")));     // two down: the third row
+    type("","up,enter");
+    assert(!view.monitorSearch.open && read(base+".prompt").find(" 0 - ")!=std::string::npos);
+    assert(read(base+".land").find(" 0xc3 ")!=std::string::npos);                // the row above: code
+    assert(lines(base+".results").size()==1 && view.paneFallback==View::PaneFallback::None && view.paneWaitUntil>0);
+    view.monitorKey(9,"");assert(view.monitorSearch.open);
+    const auto again=[&]{ std::istringstream in(read(base+".prompt")); std::string v,o; unsigned long long seq; in>>v>>o>>seq; return seq; }();
+    std::ofstream(base+".search")<<"v1 "<<getpid()<<' '<<again<<" 1 - 0 esc "<<std::time(nullptr)<<'\n';usleep(2000);view.steer();
+    assert(!view.monitorSearch.open);
+}
+
 int main() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     SDL_Window* window=SDL_CreateWindow("XR camera test",0,0,1280,720,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);
@@ -93,7 +134,8 @@ int main() {
         view.window=window;
         exerciseFocus(view,pose);
         exerciseLayerKeys(view,pose);
+        exerciseSearch(view,pose);
     }
     SDL_DestroyWindow(window);SDL_Quit();std::filesystem::remove_all(temp);
-    std::cout<<"Workspace mailbox targets the requested monitor with flick-equivalent fit and smooth camera motion; XR focus, previous/next and fill frame the right window passed\n";
+    std::cout<<"Workspace mailbox targets the requested monitor with flick-equivalent fit and smooth camera motion; XR focus, previous/next and fill frame the right window; search lists, filters, selects, lands and closes passed\n";
 }

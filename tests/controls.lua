@@ -1011,7 +1011,7 @@ local function testMonitorWindows()
     hl.get_monitors=function() return {right,laptop,left,canvasOutput} end
     local ws=function(id) return {id=id,name=tostring(id)} end
     local list={
-        {address="0x1",at={x=960,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=2,monitor="OMXR-a"},
+        {address="0x1",at={x=960,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=2,monitor="OMXR-a",mapped=true,class="firefox",title="Docs"},
         {address="0x2",at={x=0,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=1,monitor="OMXR-a"},
         {address="0x3",at={x=1920,y=0},size={x=1920,y=1080},workspace=ws(5),focus_history_id=0,monitor="OMXR-b"},
         {address="0x4",at={x=0,y=0},size={x=500,y=500},workspace=ws(9),focus_history_id=3,monitor="OMXR-a"}, -- another workspace
@@ -1034,7 +1034,19 @@ local function testMonitorWindows()
     files[path..".hover"]="v3 42 7000 1 OMXR-a 0 0 0 100 100";omarchy_xr_controls.hover()
     dispatched={};mode=press("CTRL + ALT + Return");assert(mode=="10")
     local fill=last("window.fullscreen");assert(fill.window=="address:0x2" and fill.mode=="maximized")
-    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window passed")
+    -- Search: the window list (4-field header) and code 9; Enter comes back as .land.
+    for _,w in ipairs(list) do w.mapped=true;w.class=w.class or "foot";w.title=w.title or ("t "..w.address) end
+    hl.get_window=function(selector) for _,w in ipairs(list) do if "address:"..w.address==selector then return w end end end
+    mode=press("CTRL + ALT + slash");assert(mode=="9")
+    local header=files[path..".windows"]:match("^([^\n]*)\n")
+    assert(header:match("^v1 42 %d+ 240$"))
+    assert(files[path..".windows"]:match("\n0x1 "..hex("firefox").." "..hex("Docs").." "))
+    files[path..".land"]="v1 42 1 0x3 240\n";dispatched={};tick(240.1)
+    assert(last("focus").window=="address:0x3" and cursorPos.x==2880 and cursorPos.y==540)
+    assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
+    dispatched={};tick(240.2);assert(#dispatched==0)                  -- each landing once
+    files[path..".land"]="v1 42 2 0x1 200\n";tick(240.3);assert(#dispatched==0) -- stale
+    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window, search lists every window and lands once passed")
 end
 testMonitorWindows()
 assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")

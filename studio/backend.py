@@ -951,7 +951,7 @@ class Manager:
     def set_render_mode(self, mode, layout=None):
         if mode not in ("monitors", "canvas"):
             raise ValueError("Choose Virtual monitors or Window canvas")
-        if mode == "canvas" and self.controls_version() < 6:
+        if mode == "canvas" and self.controls_version() < 7:
             raise RuntimeError(CONTROLS_HINT)
         if mode == self.render_mode:
             return
@@ -1117,7 +1117,7 @@ class Manager:
     def controls_hint(self):
         if not self.viewer or self.viewer.poll() is not None:
             return ""
-        return CONTROLS_HINT if self.controls_version() < 6 else ""
+        return CONTROLS_HINT if self.controls_version() < 7 else ""
 
     def reconcile_status(self, monitors):
         if (self.applied or self.canvas.active) and monitors is not None:

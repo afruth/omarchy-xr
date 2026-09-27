@@ -1074,7 +1074,12 @@ struct View {
         if (tracking.recenterRequested) { navigate({Verb::Recenter}); tracking.recenterRequested=false; }
         if (tracking.fitRequested) { navigate({Verb::Fit}); tracking.fitRequested=false; }
         if (tracking.fitTargetRequested) { navigate({Verb::FitTarget}); tracking.fitTargetRequested=false; }
-        if (canvas) steerCanvas(); else tracking.clearCanvasVerbs();
+        if (canvas) steerCanvas();
+        else {
+            if (std::exchange(tracking.searchRequested, false)) monitorSearchOpen();   // Studio's Search
+            if (std::exchange(tracking.helpRequested, false)) monitorKey(17, "");
+            tracking.clearCanvasVerbs(); steerMonitorSearch();
+        }
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
     }
     // XR key layer codes (docs/xr-controls-plan.md §5.1): notifications and grab in every scene, the rest by scene.
@@ -1093,8 +1098,87 @@ struct View {
         case 8: navigate({Verb::FlickOut}); break;
         case 10: selectGazed(); fitTarget(); break;             // the adapter maximized the window: frame its monitor
         case 18: focusGazedWindow(); break;
+        case 9: monitorSearchOpen(); break;
         case 22: awaitPane(PaneFallback::Pane, controls->paneChanged); break;
         default: break;
+        }
+    }
+    // Monitor-scene search (docs/xr-controls-plan.md §5.5): the prompt opens on the gazed XR monitor and lists
+    // the ranked windows (every regular window from the adapter's list, the canvas ranking, most recently
+    // focused first for an empty query); Enter lands through the adapter, which focuses the window (its
+    // workspace comes up) and publishes its pane; the camera frames that pane.
+    struct MonitorSearch { bool open=false; std::string query, selectedName; size_t selected=0;
+                           std::vector<windows::Record> records; std::vector<canvas::Result> results; } monitorSearch;
+    static constexpr size_t searchRows=8;
+    void monitorSearchOpen() {
+        if (!controls) return;
+        selectGazed();
+        const std::string output=!selection.output.empty() ? selection.output : geometry.empty() ? std::string() : geometry.front().output;
+        auto& m=monitorSearch;
+        m.open=true; m.query.clear(); m.selectedName.clear(); m.selected=0;
+        if (controls->windows) m.records=controls->windows->records;
+        controls->publishPrompt(true, output);
+        rankMonitorSearch();
+        std::cout << "Search: open on " << output << " with " << m.records.size() << " windows" << std::endl;
+    }
+    void monitorSearchClose() {
+        monitorSearch.open=false;
+        controls->publishPrompt(false, "");
+        controls->publishResults({});
+    }
+    void rankMonitorSearch() {
+        auto& m=monitorSearch;
+        std::vector<std::string> order;
+        auto byRecency=m.records;
+        std::stable_sort(byRecency.begin(), byRecency.end(), [](const auto& a, const auto& b) { return a.focusHistoryID<b.focusHistoryID; });
+        for (const auto& r:byRecency) order.push_back(r.name());
+        m.results=canvas::rank(m.query, m.records, order, "");
+        m.selected=m.results.empty() ? 0 : canvas::keepSelection(m.results, m.selectedName);
+        m.selectedName=m.results.empty() ? std::string() : m.results[m.selected].name;
+        publishMonitorResults();
+    }
+    // At most searchRows rows, a window around the selection.
+    void publishMonitorResults() {
+        const auto& m=monitorSearch;
+        const size_t first=m.selected<searchRows ? 0 : m.selected-searchRows+1;
+        std::vector<LiveControls::ResultRow> rows;
+        for (size_t i=first; i<m.results.size() && rows.size()<searchRows; ++i) {
+            const auto found=std::find_if(m.records.begin(), m.records.end(), [&](const auto& r) { return r.name()==m.results[i].name; });
+            if (found==m.records.end()) continue;
+            rows.push_back({i==m.selected, found->cls.substr(0, 64), found->title.substr(0, 200)});
+        }
+        controls->publishResults(rows);
+    }
+    void monitorSearchLand(size_t index) {
+        auto& m=monitorSearch;
+        if (index>=m.results.size()) return;
+        const auto address=windows::parseAddress(m.results[index].name);
+        monitorSearchClose();
+        if (!address) return;
+        controls->publishLand(*address);
+        awaitPane(PaneFallback::None, false);
+        std::cout << "Search: land on " << m.results[index].name << std::endl;
+    }
+    void steerMonitorSearch() {
+        auto& m=monitorSearch;
+        if (!m.open || !controls) return;
+        if (controls->windows) { m.records=controls->windows->records; rankMonitorSearch(); }
+        if (!controls->search) return;
+        const auto& line=*controls->search;
+        if (!line.open) { monitorSearchClose(); return; }
+        if (line.text!=m.query) { m.query=line.text; m.selectedName.clear(); rankMonitorSearch(); }
+        for (const auto& key:line.keys) {
+            if (!m.open) break;
+            const size_t n=m.results.size();
+            if ((key=="up" || key=="shift-tab") && m.selected>0) --m.selected;
+            else if ((key=="down" || key=="tab") && m.selected+1<n) ++m.selected;
+            else if (key=="enter" || key=="shift-enter") { monitorSearchLand(m.selected); break; }
+            else if (key.starts_with("ctrl-") && key.size()==6 && key[5]>='1' && key[5]<='8') {
+                const size_t first=m.selected<searchRows ? 0 : m.selected-searchRows+1;
+                monitorSearchLand(first+size_t(key[5]-'1')); break;
+            } else continue;
+            m.selectedName=n ? m.results[m.selected].name : std::string();
+            publishMonitorResults();
         }
     }
     void selectGazed() {
@@ -1114,7 +1198,7 @@ struct View {
             && pointerY>=c.paneY && pointerY<c.paneY+c.paneH;
         awaitPane(PaneFallback::Monitor, inside);
     }
-    enum class PaneFallback { Monitor, Pane };
+    enum class PaneFallback { Monitor, Pane, None };
     double paneWaitUntil=0; unsigned paneWaitSeen=0; PaneFallback paneFallback=PaneFallback::Monitor;
     void awaitPane(PaneFallback fallback, bool ready) {
         paneWaitUntil=monotonicSeconds()+.5; paneWaitSeen=controls->paneUpdates; paneFallback=fallback;
@@ -1134,7 +1218,8 @@ struct View {
         if (controls->paneUpdates!=paneWaitSeen && controls->paneValid) { framePane(); return; }
         if (now<paneWaitUntil) return;
         paneWaitUntil=0;
-        if (paneFallback==PaneFallback::Pane && controls->paneValid) framePane(); else fitTarget();
+        if (paneFallback==PaneFallback::Pane && controls->paneValid) framePane();
+        else if (paneFallback==PaneFallback::Monitor) fitTarget();
     }
     // Grab (§5.7): the camera carries the heading; in the canvas head pitch also scrolls the cylinder by the
     // same share of the view. A second press, any other action, stale tracking or 30 s end it.
@@ -2000,8 +2085,9 @@ struct View {
         else if (!windowsPath.empty()) why="--canvas-windows-file run";
         else if (next==SceneMode::Canvas && canvasPath.empty()) why="no canvas.tsv path (start with --layout or --canvas)";
         else if (next==SceneMode::Canvas && !offlineCanvas && !controlsVersionOk(posePath, why))
-            why="Window canvas needs XR controls version 6 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
+            why="Window canvas needs XR controls version 7 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
         if (!why.empty()) { std::cerr << "Scene: switch to " << name << " refused: " << why << std::endl; return false; }
+        if (monitorSearch.open) monitorSearchClose();   // the canvas has its own search
         if (next==SceneMode::Canvas ? !enterCanvasScene() : !enterMonitorScene()) return false;
         // The next recordWork() reports at once, so the backend sees the new mode within a frame.
         reportDue=true;
@@ -2078,14 +2164,14 @@ bool controlsVersionOk(const std::string& posePath, std::string& why) {
     std::ifstream in(file); int version=0;
     if (!in) { why=file.string()+" missing"; return false; }
     if (!(in>>version)) { why=file.string()+" unreadable"; return false; }
-    if (version<6) { why="found version "+std::to_string(version); return false; }
+    if (version<7) { why="found version "+std::to_string(version); return false; }
     return true;
 }
 // Window canvas mode: no monitor panels; the capture connection must work before any window opens.
 int canvasPreview(bool smoke, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& canvasPath, const std::string& windowsPath, int fps, bool spectatorEnabled) {
     std::string why;
     if (windowsPath.empty() && !controlsVersionOk(posePath, why))
-        throw std::runtime_error("Window canvas needs XR controls version 6 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
+        throw std::runtime_error("Window canvas needs XR controls version 7 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
     const auto memory=(std::filesystem::path(canvasPath).parent_path()/"canvas-memory.tsv").string();
     auto scene=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, memory);
     std::string error;
@@ -2114,7 +2200,7 @@ int main(int argc,char** argv) {
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit (monitors); R: recenter; Esc: exit\n"
-                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 6 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nCanvas keys (windowed): /: search; F: fill; O: overview; P: pin; R: recenter; Tab: switch (Return lands);\nAlt+arrows: neighbour; Alt+Shift+arrows: nudge; Ctrl+A: arrange; Ctrl+Z / Ctrl+Shift+Z: undo / redo; F1: help;\nPageUp/PageDown: scroll; Esc: close the overlay, then exit\n"; return 0; }
+                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 7 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nCanvas keys (windowed): /: search; F: fill; O: overview; P: pin; R: recenter; Tab: switch (Return lands);\nAlt+arrows: neighbour; Alt+Shift+arrows: nudge; Ctrl+A: arrange; Ctrl+Z / Ctrl+Shift+Z: undo / redo; F1: help;\nPageUp/PageDown: scroll; Esc: close the overlay, then exit\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.4.0\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;

@@ -129,9 +129,10 @@ class LiveControls {
         std::ifstream in(file);
         return std::string((std::istreambuf_iterator<char>(in)), {});
     }
-    // The adapter's window list (§3.1): this session's, strictly newer and fresh; canvas mode only.
+    // The adapter's window list (§3.1): this session's, strictly newer and fresh. The canvas adopts it; the
+    // monitor scene searches it (docs/xr-controls-plan.md §5.5).
     void updateWindows() {
-        if (!canvasMode || !newer(path + ".windows", windowsStamp)) return;
+        if (!newer(path + ".windows", windowsStamp)) return;
         auto list = ::windows::parse(readAll(path + ".windows"));
         if (!list || list->owner != session || list->seq <= windowsSeq || !stampFresh(list->stamp)) return;
         windowsSeq = list->seq; windows = std::move(*list);
@@ -143,11 +144,11 @@ class LiveControls {
         if (!line || line->owner != session || line->seq <= cursorSeq || !stampFresh(line->stamp)) return;
         cursorSeq = line->seq; cursor = *line;
     }
-    // This session's prompt, answering the current .prompt request with a newer edit, fresh; canvas only.
+    // This session's prompt, answering the current .prompt request with a newer edit, fresh; both scenes.
     // Lines overwritten between two polls are not lost keys: the key log keeps the keys this reader has
     // not seen (editSeq beyond the last one read), oldest first.
     void updateSearch() {
-        if (!canvasMode || !newer(path + ".search", searchStamp)) return;
+        if (!newer(path + ".search", searchStamp)) return;
         auto line = ::windows::parseSearch(readAll(path + ".search"));
         if (!line || line->owner != session || !promptSeq || line->promptSeq != promptSeq || line->editSeq <= searchSeq || !stampFresh(line->stamp)) return;
         const auto unseen = line->editSeq - searchSeq;
@@ -256,6 +257,21 @@ public:
         promptOpen = open; promptOutput = output; ++promptSeq; searchSeq = 0;
         writePrompt();
     }
+    // Monitor-scene search (docs/xr-controls-plan.md §5.5). `.results` lists the ranked rows for the prompt, which
+    // shows them under its field: v1 <pid> <promptSeq> <seq> <stamp>, then "<selected 0/1> <hex class|-> <hex title|->"
+    // per row. `.land` asks the adapter to land on a window: v1 <pid> <seq> <address> <stamp>.
+    struct ResultRow { bool selected=false; std::string cls, title; };
+    void publishResults(const std::vector<ResultRow>& rows) {
+        if (path.empty()) return;
+        std::string text="v1 "+std::to_string(getpid())+' '+std::to_string(promptSeq)+' '+std::to_string(++resultsSeq)+' '+std::to_string(bootSeconds())+'\n';
+        for (const auto& r:rows) text+=std::string(r.selected ? "1 " : "0 ")+hextoken::encodeHex(r.cls)+' '+hextoken::encodeHex(r.title)+'\n';
+        writeFile(path+".results", text);
+    }
+    void publishLand(std::uint64_t address) {
+        if (path.empty()) return;
+        writeFile(path+".land", "v1 "+std::to_string(getpid())+' '+std::to_string(++landSeq)+' '+::windows::addressToken(address)+' '+std::to_string(bootSeconds())+'\n');
+    }
+    unsigned long long resultsSeq=0, landSeq=0;
     // Logical px of the canvas output for the staged window (Fill and its restore).
     void publishFill(const std::string& address, unsigned w, unsigned h) {
         const auto parsed = ::windows::parseAddress(address);

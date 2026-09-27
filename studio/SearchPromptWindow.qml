@@ -20,7 +20,7 @@ WlrLayershell {
     anchors.top: true
     margins.top: 200
     implicitWidth: 720
-    implicitHeight: 72
+    implicitHeight: field.implicitHeight
     color: "transparent"
     screen: screenNamed(request ? request.output : "")
     visible: field.open
@@ -35,7 +35,7 @@ WlrLayershell {
         var next = field.parsePrompt(text);
         if (!next || !next.open || field.bootOffset <= 0 || field.stale(next)) { request = next; field.open = false; return; }
         request = next;
-        if (!field.open || field.owner !== next.owner || field.promptSeq !== next.seq) field.begin(next.owner, next.seq);
+        if (!field.open || field.owner !== next.owner || field.promptSeq !== next.seq) { field.begin(next.owner, next.seq); results.reload(); }
     }
 
     SearchPrompt {
@@ -54,6 +54,15 @@ WlrLayershell {
         watchChanges: true
         printErrors: false
         onLoaded: host.take(text())
+        onFileChanged: reload()
+    }
+    // Virtual monitors mode: the renderer's ranked windows for this prompt (docs/xr-controls-plan.md §5.5).
+    FileView {
+        id: results
+        path: host.ready ? host.xrRuntime + "/pose.sock.controls.results" : ""
+        watchChanges: true
+        printErrors: false
+        onLoaded: field.results = field.parseResults(text(), field.owner, field.promptSeq)
         onFileChanged: reload()
     }
     FileView { id: answer; path: host.ready ? host.xrRuntime + "/pose.sock.controls.search" : ""; atomicWrites: true; printErrors: false }

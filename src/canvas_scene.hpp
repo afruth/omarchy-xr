@@ -120,17 +120,26 @@ inline const char* placeName(windows::Place place) {
 // The fit_target chord (line 3) of controls-settings.tsv, validated like the Lua adapter's settingKeys:
 // 6 lines, a finger count 3-5, chords of at most 100 characters from [A-Za-z0-9_ +]. "" = no key;
 // a missing or invalid file keeps the adapter's default.
+// The XR layer's focus chord from controls-settings.tsv v2 (studio/input_settings.py tsv()): the modifier
+// plus the `focus` key, "" when focus is disabled, the default for a missing, older or malformed file.
 inline std::string readConfirmKey(const std::string& path) {
-    const std::string fallback="CTRL + Down";
+    const std::string fallback="CTRL + ALT + Down";
     std::ifstream file(path);
-    std::vector<std::string> lines; std::string line;
-    while (std::getline(file, line)) lines.push_back(line);
-    if (lines.size()!=6 || lines[0].size()!=1 || lines[0][0]<'3' || lines[0][0]>'5') return fallback;
-    for (size_t i=1;i<lines.size();++i) {
-        if (lines[i].size()>100) return fallback;
-        for (const unsigned char c:lines[i]) if (!std::isalnum(c) && c!='_' && c!=' ' && c!='+') return fallback;
+    std::string line, modifier="CTRL + ALT", key="Down";
+    if (!std::getline(file, line) || line!="v2") return fallback;
+    const auto clean=[](const std::string& value) {
+        if (value.size()>100) return false;
+        for (const unsigned char c:value) if (!std::isalnum(c) && c!='_' && c!=' ' && c!='+') return false;
+        return true;
+    };
+    while (std::getline(file, line)) {
+        const auto tab=line.find('\t');
+        if (tab==std::string::npos) return fallback;
+        const auto kind=line.substr(0, tab), rest=line.substr(tab+1);
+        if (kind=="modifier") { if (rest.empty() || !clean(rest)) return fallback; modifier=rest; }
+        else if (kind=="key" && rest.starts_with("focus\t")) { key=rest.substr(6); if (!clean(key)) return fallback; }
     }
-    return lines[2];
+    return key.empty() ? std::string() : modifier+" + "+key;
 }
 class Scene {
 public:
@@ -153,8 +162,8 @@ public:
     // Navigation: the landed window, Hyprland's focused one, the View's selection and last settled dwell.
     std::string landed, focusedName, selected, lastDwell;
     // The confirm hint (M7): shown under the first three dwells of a session, never after a confirm.
-    // confirmKey is the fit_target chord from controls-settings.tsv ("" = none configured).
-    std::string confirmKey="CTRL + Down", hintFor;
+    // confirmKey is the XR layer's focus chord from controls-settings.tsv ("" = none configured).
+    std::string confirmKey="CTRL + ALT + Down", hintFor;
     unsigned hintsShown=0;
     bool confirmed=false;
     double hintUntil=0;

@@ -368,14 +368,15 @@ void clickPath(View& v) {
     restagedByXr(v, name);
     restagedByXr(v, "0x5005");
 }
-// (j) The renderer's controls version gate: v6 or newer beside the pose socket.
+// (j) The renderer's controls version gate: v7 (the XR key layer) or newer beside the pose socket.
 void versionGate(const std::string& temp) {
     const std::string dir=temp+"/gate", pose=dir+"/pose.sock"; std::filesystem::create_directories(dir);
     std::string why;
     assert(!controlsVersionOk(pose, why) && why.find("missing")!=std::string::npos);
     std::ofstream(dir+"/controls.version") << "5\n"; assert(!controlsVersionOk(pose, why) && why=="found version 5");
-    std::ofstream(dir+"/controls.version") << "6\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "6\n"; assert(!controlsVersionOk(pose, why) && why=="found version 6"); // before the XR layer
     std::ofstream(dir+"/controls.version") << "7\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "8\n"; assert(controlsVersionOk(pose, why));
     std::ofstream(dir+"/controls.version") << "six\n"; assert(!controlsVersionOk(pose, why));
     assert(!controlsVersionOk("", why));
 }
@@ -1422,23 +1423,25 @@ void confirmHint(View& v, const std::string& temp) {
     assert(s.hintFor.empty());
     // The chord: the configured one, none, or the default for a missing or malformed file.
     const auto settings=temp+"/controls-settings.tsv";
-    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n");
-    assert(canvas::readConfirmKey(settings)=="CTRL + Down");
-    write(settings, "4\nSUPER + Up\nSUPER + F5\n\n\n\n");
-    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + F5 or a three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\n\n\n\n\n");
+    const std::string head="v2\nmodifier\tCTRL + ALT\nfingers\t3\n";
+    write(settings, head+"key\tfocus\tDown\n");
+    assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
+    write(settings, "v2\nmodifier\tSUPER + ALT\nkey\trecenter\tspace\nkey\tfocus\tF5\n");
+    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + ALT + F5 or a three-finger tap to focus");
+    write(settings, head+"key\tfocus\t\n");
     s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="Three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\nCTRL;Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + Down");
+    write(settings, head+"key\tfocus\tCTRL;Down\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
+    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down"); // v1
     std::filesystem::remove(settings); s.setConfirmKey(canvas::readConfirmKey(settings));
-    assert(s.hintText().find("CTRL + Down")==0 && !s.labels.atlas.count("hint"));
-    // A fit_target change in Studio mid-session: the renderer's poll picks up the rewritten file.
-    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
-    write(settings, "3\nCTRL + Up\nSUPER + F7\n\n\n\n"); v.pollConfirmKey();
-    assert(s.hintText()=="SUPER + F7 or a three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\n\n\n\n\n");   // a later mtime even on a coarse clock
+    assert(s.hintText().find("CTRL + ALT + Down")==0 && !s.labels.atlas.count("hint"));
+    // A focus key change in Studio mid-session: the renderer's poll picks up the rewritten file.
+    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
+    write(settings, head+"key\tfocus\tF7\n"); v.pollConfirmKey();
+    assert(s.hintText()=="CTRL + ALT + F7 or a three-finger tap to focus");
+    write(settings, head+"key\tfocus\t\n");   // a later mtime even on a coarse clock
     std::filesystem::last_write_time(settings, std::filesystem::last_write_time(settings)+std::chrono::seconds(2));
     v.pollConfirmKey(); assert(s.hintText()=="Three-finger tap to focus");
-    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
+    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
     ease(v, 120); v.interactionUntil=0; inRing(v);
 }
 // M8 full cylinder. The landed window's projected centre under the target camera (0 = eye level).
