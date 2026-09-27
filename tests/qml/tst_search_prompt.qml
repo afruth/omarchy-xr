@@ -93,6 +93,32 @@ TestCase {
         compare(prompt.parsePrompt("v1 123 4 2 - " + now), null);
         verify(!prompt.stale(p));
     }
+    // Monitors mode: the renderer's ranked rows for this prompt only, decoded from hex UTF-8, at most 8.
+    function test_parse_results() {
+        var hex = function(t) { return prompt.hexOf(t); };
+        var text = "v1 123 4 9 5000\n1 " + hex("foot") + " " + hex("build: make") + "\n0 - " + hex("Dokumente – Übersicht") + "\n";
+        var rows = prompt.parseResults(text, "123", 4);
+        compare(rows.length, 2);
+        compare([rows[0].selected, rows[0].cls, rows[0].title], [true, "foot", "build: make"]);
+        compare([rows[1].selected, rows[1].cls, rows[1].title], [false, "", "Dokumente – Übersicht"]);
+        compare(prompt.parseResults(text, "123", 5).length, 0);        // another prompt
+        compare(prompt.parseResults(text, "999", 4).length, 0);        // another renderer
+        compare(prompt.parseResults("v1 123 4 9 5000\n2 - -\n", "123", 4).length, 0);
+        compare(prompt.parseResults("", "123", 4).length, 0);
+        compare(prompt.textOf("zz"), "");
+    }
+    function test_results_list_under_the_field() {
+        prompt.begin("123", 4);
+        var height = prompt.implicitHeight;
+        prompt.results = [{selected: false, cls: "code", title: "main.cpp"}, {selected: true, cls: "foot", title: "build"}];
+        compare(prompt.implicitHeight, height + 2 * prompt.rowHeight + 12);
+        waitForRendering(prompt);
+        var second = findChild(prompt, "search-result-1");
+        verify(second && second.color.a > 0 && findChild(prompt, "search-result-0").color.a === 0);
+        prompt.reset();
+        compare(prompt.results.length, 0);
+        compare(prompt.implicitHeight, height);
+    }
     function test_stale() {
         var now = Date.now() / 1000;
         verify(prompt.stale({stamp: Math.floor(now) - 10}));

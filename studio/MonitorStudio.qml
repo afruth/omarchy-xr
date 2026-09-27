@@ -24,7 +24,22 @@ Item {
     property int selected: 0
     property int dragIndex: -1
     property var dragSnap: null
-    property var controlDraft: ({fingers:3,fit_all:"CTRL + Up",fit_target:"CTRL + Down",recenter:"",zoom_in:"",zoom_out:""})
+    // The XR key layer profile (studio/input_settings.py) and, from the backend, the action table, the
+    // defaults, Omarchy's bindings for conflict checks and whether a touchpad was found.
+    property var controlDraft: ({version:2,modifier:"CTRL + ALT",fingers:3,keys:{}})
+    property var controlsMeta: ({actions:[],defaults:null,desktopBindings:[],touchpad:false})
+    function chordOf(id) { var key=(controlDraft.keys||{})[id]; return key ? controlDraft.modifier+" + "+key : ""; }
+    function keySuffix(id) { var chord=chordOf(id); return chord ? " · "+chord : ""; }
+    function cheatSheet() {
+        var lines=["Omarchy XR keys — hold "+controlDraft.modifier,""], actions=controlsMeta.actions||[], group="";
+        for (var i=0;i<actions.length;++i) {
+            if (actions[i].group!==group) { group=actions[i].group; lines.push("",group); }
+            var chord=chordOf(actions[i].id)||"off";
+            lines.push("  "+(actions[i].title+(actions[i].scope==="canvas"?" (canvas)":"")+" ".repeat(40)).slice(0,40)+chord);
+        }
+        lines.push("","Mouse (hold "+controlDraft.modifier+"): wheel zoom · Shift+wheel scroll the canvas · drag move · right-drag resize · middle button held grabs");
+        return lines.join("\n");
+    }
     property bool controlsDirty: false
     function setControl(key,value) {
         var copy=Object.assign({},controlDraft);copy[key]=value;controlDraft=copy;controlsDirty=true;
@@ -411,6 +426,7 @@ Item {
                         if(picked) root.setupName=picked.name;
                     }
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
+                    if (response.controlsMeta) root.controlsMeta=response.controlsMeta;
                     if (replyAction === "set_render_mode") root.requestedMode = "";
                     if (replyAction === "set_canvas_settings" && response.ok) root.canvasDirty = false;
                     if (response.canvas) root.adoptCanvas(response.canvas);
@@ -961,7 +977,7 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 6 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v6 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v6.") + " A terminal opens to install them." : ""
+                                    hint: root.loaded && root.controlsVersion < 7 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v7 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v7.") + " A terminal opens to install them." : ""
                                     actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground
@@ -1013,35 +1029,35 @@ Item {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: "Recenter"
-                                        helpText: "Set the direction you are looking as forward"
+                                        helpText: "Set the direction you are looking as forward" + root.keySuffix("recenter")
                                         onClicked: root.send("recenter")
                                     }
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: root.renderMode === "canvas" ? "Overview" : "Fit workspace"
-                                        helpText: root.renderMode === "canvas" ? "Zoom out to see every window on the canvas, or back in" : "Bring the whole workspace into view"
+                                        helpText: (root.renderMode === "canvas" ? "Zoom out to see every window on the canvas, or back in" : "Bring the whole workspace into view") + root.keySuffix("overview")
                                         onClicked: root.send(root.renderMode === "canvas" ? "overview" : "fit")
                                     }
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: root.renderMode === "canvas" ? "Land on window" : "Fit monitor"
-                                        helpText: (root.renderMode === "canvas" ? "Land on and focus the window you are looking at (stage, keyboard, pointer)" : "Fit the monitor selected by your head direction by height") + (root.controlDraft.fit_target ? " · " + root.controlDraft.fit_target : "")
+                                        helpText: (root.renderMode === "canvas" ? "Land on and focus the window you are looking at (stage, keyboard, pointer)" : "Fit the monitor selected by your head direction by height") + root.keySuffix("focus")
                                         onClicked: root.send("fit_target")
                                     }
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: "Zoom out"
-                                        helpText: "Move the workspace farther away"
+                                        helpText: "Move the workspace farther away" + root.keySuffix("zoom_out")
                                         onClicked: root.send("zoom_out")
                                     }
                                     Action {
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         text: "Zoom in"
-                                        helpText: "Bring the workspace closer"
+                                        helpText: "Bring the workspace closer" + root.keySuffix("zoom_in")
                                         onClicked: root.send("zoom_in")
                                     }
                                     Action {
@@ -1049,7 +1065,7 @@ Item {
                                         Layout.preferredWidth: 1
                                         visible: root.renderMode === "canvas"
                                         text: "Search"
-                                        helpText: "Find a window by title, class or kind · SUPER + CTRL + G"
+                                        helpText: "Find a window by title, class or kind" + root.keySuffix("search")
                                         onClicked: root.send("search")
                                     }
                                     Action {
@@ -1057,7 +1073,7 @@ Item {
                                         Layout.preferredWidth: 1
                                         visible: root.renderMode === "canvas"
                                         text: "Fill"
-                                        helpText: "Make the current window fill your view, or restore its size · SUPER + F"
+                                        helpText: "Make the current window fill your view, or restore its size" + root.keySuffix("fill")
                                         onClicked: root.send("fill")
                                     }
                                     Action {
@@ -1065,7 +1081,7 @@ Item {
                                         Layout.preferredWidth: 1
                                         visible: root.renderMode === "canvas"
                                         text: "Arrange"
-                                        helpText: "Tidy the canvas: group windows by kind without overlap"
+                                        helpText: "Tidy the canvas: group windows by kind without overlap" + root.keySuffix("arrange")
                                         onClicked: root.send("arrange")
                                     }
                                     Action {
@@ -1073,55 +1089,73 @@ Item {
                                         Layout.preferredWidth: 1
                                         visible: root.renderMode === "canvas"
                                         text: "Undo"
-                                        helpText: "Undo the last arrange, nudge or summon"
+                                        helpText: "Undo the last arrange, nudge or summon" + root.keySuffix("undo")
                                         onClicked: root.send("undo")
                                     }
                                 }
                             }
-                            Disclosure {
-                                title: root.controlsDirty ? "Shortcuts & gestures · Unsaved" : "Shortcuts & gestures"
-                                helpText: "Apply shortcuts without restarting XR. Leave a shortcut blank to disable it."
+                            Card {
+                                Heading {
+                                    text: "Keys"
+                                    helpText: "Hold " + root.controlDraft.modifier + " for the XR keys; they work only while XR runs"
+                                }
                                 Label {
-                                    text: "Zoom gesture"
-                                    helpText: "Flick up to fit the selected monitor; flick down to fit the workspace. Hold a swipe to zoom. Double tap with three fingers to recenter; swipe with four fingers to pan the selected monitor."
+                                    objectName: "keys-summary"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: ["recenter","grab","zoom_in","zoom_out","overview","focus","fill","previous","next","search"].filter(function(id) { return root.chordOf(id); })
+                                        .map(function(id) { var a=(root.controlsMeta.actions||[]).find(function(x) { return x.id===id; }); return (a ? a.title : id) + "  " + keyMap.display(root.controlDraft.keys[id]); }).join("   ·   ")
+                                }
+                                Action {
+                                    text: "Show and edit all keys"
+                                    helpText: "Open the XR key map below"
+                                    onClicked: keysDisclosure.expanded = true
+                                }
+                            }
+                            Disclosure {
+                                id: keysDisclosure
+                                title: root.controlsDirty ? "XR keys · Unsaved" : "XR keys"
+                                helpText: "One held modifier plus a key for every XR action, the same in both modes. Click a key and press the new one."
+                                KeyMap {
+                                    id: keyMap
+                                    Layout.fillWidth: true
+                                    actions: root.controlsMeta.actions || []
+                                    profile: root.controlDraft
+                                    bindings: root.controlsMeta.desktopBindings || []
+                                    locked: root.busy || !root.loaded
+                                    accent: Color.accent
+                                    foreground: Color.foreground
+                                    onEdited: function(next) { root.controlDraft = next; root.controlsDirty = true; }
+                                }
+                                Label {
+                                    visible: !root.controlsMeta.touchpad
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: "Touchpad gestures need a multitouch touchpad; none was found, and every action has a key."
                                 }
                                 BoundDropdown {
-                                    label: "Swipe fingers"
+                                    visible: !!root.controlsMeta.touchpad
+                                    label: "Zoom swipe fingers"
                                     options: ["3", "5"]
                                     sourceValue: String(root.controlDraft.fingers)
                                     onChanged: function(picked) {root.setControl("fingers",Number(picked));}
                                 }
-                                Repeater {
-                                    model: [{key:"recenter",title:"Recenter camera"},{key:"fit_all",title:"Fit workspace"},{key:"fit_target",title:"Fit selected monitor / focus window"},{key:"zoom_in",title:"Zoom in"},{key:"zoom_out",title:"Zoom out"}]
-                                    delegate: RowLayout {
-                                        required property var modelData
-                                        Layout.fillWidth: true
-                                        Label {
-                                            text: modelData.title
-                                            Layout.preferredWidth: 180
-                                            helpText: "Use a modifier combination such as CTRL + ALT + R. Leave blank to disable this shortcut."
-                                        }
-                                        Ui.TextField {
-                                            Layout.fillWidth: true
-                                            text: root.controlDraft[modelData.key] || ""
-                                            placeholderText: "No shortcut"
-                                            Accessible.name: modelData.title + " hotkey"
-                                            Accessible.description: "Use a modifier combination, for example CTRL + ALT + R. Leave blank to disable."
-                                            onTextEdited: root.setControl(modelData.key,text)
-                                        }
-                                    }
-                                }
                                 RowLayout {
                                     Action {
-                                        text: root.pendingAction === "save_controls" ? "Saving…" : "Save shortcuts"
-                                        helpText: "Apply shortcuts and gestures to the current XR session"
-                                        enabled: root.controlsDirty && !root.busy
+                                        text: root.pendingAction === "save_controls" ? "Saving…" : "Save keys"
+                                        helpText: keyMap.conflictCount > 0 ? "Resolve the conflicts marked in red first" : "Apply the keys to the current XR session"
+                                        enabled: root.controlsDirty && !root.busy && keyMap.conflictCount === 0
                                         onClicked: root.send("save_controls")
                                     }
                                     Action {
-                                        text: "Reset to defaults"
-                                        enabled: !root.busy
-                                        onClicked: {root.controlDraft={fingers:3,fit_all:"CTRL + Up",fit_target:"CTRL + Down",recenter:"",zoom_in:"",zoom_out:""};root.controlsDirty=true;}
+                                        text: "Reset all"
+                                        enabled: !root.busy && !!root.controlsMeta.defaults
+                                        onClicked: {root.controlDraft=JSON.parse(JSON.stringify(root.controlsMeta.defaults));root.controlsDirty=true;}
+                                    }
+                                    Action {
+                                        text: "Print cheat sheet"
+                                        helpText: "Show every key as text in a terminal"
+                                        onClicked: root.openSetupTerminal(["sh", "-c", "printf '%s\\n' \"$1\" | less", "omarchy-xr-keys", root.cheatSheet()])
                                     }
                                 }
                             }
@@ -1727,33 +1761,6 @@ Item {
                                         }
                                     }
                                 }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: "Take over Omarchy window keys in canvas mode"
-                                        helpText: "SUPER + TAB, ALT + TAB, SUPER + arrows, SUPER + SHIFT + arrows and SUPER + wheel drive the canvas while this is on; SUPER + F, SUPER + CTRL + G, SUPER + ALT + P and SUPER + CTRL + Page_Up/Down are always taken"
-                                    }
-                                    Ui.ToggleSwitch {
-                                        checked: root.canvasDraft.takeoverKeys !== false
-                                        enabled: root.loaded && !root.busy
-                                        activeFocusOnTab: true
-                                        Accessible.role: Accessible.CheckBox
-                                        Accessible.name: "Take over Omarchy window keys in canvas mode"
-                                        Accessible.checked: checked
-                                        Keys.onSpacePressed: if (enabled) toggled()
-                                        Accessible.onToggleAction: if (enabled) toggled()
-                                        onToggled: root.setCanvas("takeoverKeys", !checked)
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            anchors.margins: -3
-                                            color: "transparent"
-                                            border.width: parent.activeFocus ? 1 : 0
-                                            border.color: Color.accent
-                                            radius: Style.cornerRadius
-                                        }
-                                    }
-                                }
                                 Label {
                                     text: "Exclusions"
                                     helpText: "App classes or process ids that stay off the canvas, separated by commas"
@@ -2089,7 +2096,7 @@ Item {
                                         readonly property bool runtimeReady: !!root.glasses.runtimeInstalled && !!sdkControls.sdk.available && sdkControls.sdk.licenseAccepted !== false
                                         text: "Set up everything"
                                         selected: true
-                                        helpText: runtimeReady ? "Install or update the stereo helper, shortcuts & gestures and XR notifications in one terminal" : "Install the XR runtime first"
+                                        helpText: runtimeReady ? "Install or update the stereo helper, the XR keys and XR notifications in one terminal" : "Install the XR runtime first"
                                         enabled: runtimeReady
                                         onClicked: root.runSetupAction("all")
                                     }
@@ -2101,8 +2108,8 @@ Item {
                                             ? root.runSetupAction("helper") : root.installRuntime()
                                     }
                                     Action {
-                                        text: "Set up shortcuts & gestures"
-                                        helpText: "Add or refresh the optional touchpad gestures and keyboard shortcuts"
+                                        text: "Set up XR keys"
+                                        helpText: "Add or update the XR keys (and touchpad gestures where a touchpad exists)"
                                         onClicked: root.runSetupAction("controls")
                                     }
                                     Action {

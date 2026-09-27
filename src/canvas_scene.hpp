@@ -120,17 +120,26 @@ inline const char* placeName(windows::Place place) {
 // The fit_target chord (line 3) of controls-settings.tsv, validated like the Lua adapter's settingKeys:
 // 6 lines, a finger count 3-5, chords of at most 100 characters from [A-Za-z0-9_ +]. "" = no key;
 // a missing or invalid file keeps the adapter's default.
+// The XR layer's focus chord from controls-settings.tsv v2 (studio/input_settings.py tsv()): the modifier
+// plus the `focus` key, "" when focus is disabled, the default for a missing, older or malformed file.
 inline std::string readConfirmKey(const std::string& path) {
-    const std::string fallback="CTRL + Down";
+    const std::string fallback="CTRL + ALT + Down";
     std::ifstream file(path);
-    std::vector<std::string> lines; std::string line;
-    while (std::getline(file, line)) lines.push_back(line);
-    if (lines.size()!=6 || lines[0].size()!=1 || lines[0][0]<'3' || lines[0][0]>'5') return fallback;
-    for (size_t i=1;i<lines.size();++i) {
-        if (lines[i].size()>100) return fallback;
-        for (const unsigned char c:lines[i]) if (!std::isalnum(c) && c!='_' && c!=' ' && c!='+') return fallback;
+    std::string line, modifier="CTRL + ALT", key="Down";
+    if (!std::getline(file, line) || line!="v2") return fallback;
+    const auto clean=[](const std::string& value) {
+        if (value.size()>100) return false;
+        for (const unsigned char c:value) if (!std::isalnum(c) && c!='_' && c!=' ' && c!='+') return false;
+        return true;
+    };
+    while (std::getline(file, line)) {
+        const auto tab=line.find('\t');
+        if (tab==std::string::npos) return fallback;
+        const auto kind=line.substr(0, tab), rest=line.substr(tab+1);
+        if (kind=="modifier") { if (rest.empty() || !clean(rest)) return fallback; modifier=rest; }
+        else if (kind=="key" && rest.starts_with("focus\t")) { key=rest.substr(6); if (!clean(key)) return fallback; }
     }
-    return lines[2];
+    return key.empty() ? std::string() : modifier+" + "+key;
 }
 class Scene {
 public:
@@ -153,8 +162,8 @@ public:
     // Navigation: the landed window, Hyprland's focused one, the View's selection and last settled dwell.
     std::string landed, focusedName, selected, lastDwell;
     // The confirm hint (M7): shown under the first three dwells of a session, never after a confirm.
-    // confirmKey is the fit_target chord from controls-settings.tsv ("" = none configured).
-    std::string confirmKey="CTRL + Down", hintFor;
+    // confirmKey is the XR layer's focus chord from controls-settings.tsv ("" = none configured).
+    std::string confirmKey="CTRL + ALT + Down", hintFor;
     unsigned hintsShown=0;
     bool confirmed=false;
     double hintUntil=0;
@@ -190,6 +199,10 @@ public:
     std::optional<FillRequest> fillRequest;
     std::string filled, bringRequested, focusRequest;
     bool helpOpen=false;
+    // The latest window that opened while the canvas runs; the renderer lands on it (centred, focused).
+    std::string arrived;
+    // The help card's rows (help_keys.hpp), set by the renderer from the controls adapter's `.keys`.
+    std::vector<helpkeys::Row> helpRows=helpkeys::rows({}, true);
     Overlays overlays;
     // primed: the first list was adopted, so later windows are new (pulse and cue). The Overview mouse
     // drag: the window, its rect and the layout when it started.
@@ -265,7 +278,7 @@ public:
         w.rect=place(r, float(w.pixelW), float(w.pixelH), now);
         memory.note(r.cls, r.title, w.rect, now);
         if(primed) {
-            w.pulseUntil=now+.3;
+            w.pulseUntil=now+.3; arrived=w.name;
             const auto [middle, half]=viewBand();
             if(offView(project(w.rect, camera, ring), heading, halfSpan, ring, middle, half)) w.cueUntil=now+3;
         }
@@ -1086,6 +1099,13 @@ public:
         focusRequest=*target;
         return land(*target, anchor);
     }
+    // XR previous/next (§5.4 of docs/xr-controls-plan.md): the next window in ring order, wrapping.
+    Aim cycleBy(int step, const tracking::Quaternion& anchor) {
+        const auto target=canvas::cycle(current(), step, arrangeable(), ring);
+        if(!target) return {};
+        focusRequest=*target;
+        return land(*target, anchor);
+    }
     // One grid step, neighbours make room; the camera chases only a window leaving the view.
     Aim nudgeBy(Direction dir, const tracking::Quaternion& anchor) {
         auto* w=findMutable(current());
@@ -1235,8 +1255,8 @@ public:
             place(Kind::Switcher, o.switcher, o.switcherRaster, 45, 0, o.switcherAlpha);
         }
         if(fade(o.helpAlpha, helpOpen, dt, o.help)) {
-            const bool takeover=settings.takeoverKeys;
-            o.helpRaster.update(overlay::helpKey(takeover, o.style), overlay::helpWidth, overlay::helpHeight, now, 0, [&](cairo_t* cr) { return overlay::paintHelp(cr, o.style, takeover); });
+            const std::string title="Window canvas keys";
+            o.helpRaster.update(overlay::helpKey(helpRows, title, o.style), overlay::helpWidth, overlay::helpHeight, now, 0, [&](cairo_t* cr) { return overlay::paintHelp(cr, o.style, helpRows, title); });
             place(Kind::Help, o.help, o.helpRaster, 45, 0, o.helpAlpha);
         }
         o.drawn=out;

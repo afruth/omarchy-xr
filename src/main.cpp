@@ -225,10 +225,6 @@ struct View {
     unsigned long long windowsSeq=0;
     unsigned loggedLive=~0u;
     bool windowsRejected=false, canvasRejected=false;
-    bool mousePanning=false;
-    // The Overview mouse drag (SDL window only: the spectator has no input and the real pointer lives in
-    // the staged window): a press on a window at (u, v), and the pointer travel; under 4 px it is a click.
-    struct Drag { bool active=false, moved=false; std::string window; float u=0, v=0; int travel=0; } drag;
     // Canvas input (§3.4): the explicitly focused window published as .hover v4, the restage asked
     // for and not yet seen in a window list, and the compositor cursor mapped onto the staged window.
     std::string hoverOutput, restageRequested;
@@ -243,7 +239,7 @@ struct View {
     GLuint cursorTexture=0;
     // The search prompt (§5.4): shown while the scene's search session is open, typed either in this SDL
     // window (when it has keyboard focus) or in the Quickshell prompt over .prompt/.search.
-    bool promptShown=false, promptSdl=false;
+    bool promptShown=false;
     canvas::Scene::State canvasStateSeen=canvas::Scene::State::Overview;
     // Monitor-only math (safe distance, overview depth, bounds); canvas mode must never run it.
     mutable unsigned monitorMathCalls=0;
@@ -272,7 +268,7 @@ struct View {
     }
     void bindTexture(GLuint texture) const { gltex::bind(texture); }
     // The windowed canvas keys (§5.8) for the title bar; --help lists them all.
-    static constexpr const char* canvasKeys="/: search | F: fill | O: overview | Tab: switch | PgUp/PgDn: scroll | F1: help";
+    static constexpr const char* canvasKeys="XR keys (Ctrl+Alt by default) | Esc: close";
     bool openWindow() {
         if (SDL_Init(direct ? SDL_INIT_EVENTS : SDL_INIT_VIDEO) != 0) { std::cerr << SDL_GetError() << '\n'; return false; }
         if (direct) return true;
@@ -282,8 +278,7 @@ struct View {
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
         int displayIndex=0;
         if (!display.empty() && !findDisplay(displayIndex)) return false;
-        const std::string title=mode==SceneMode::Canvas ? std::string("Omarchy XR canvas | Right-drag: look | Middle-drag: pan | Wheel: zoom | ")+canvasKeys
-                                                        : "Omarchy XR | Right-drag: look | Middle-drag: pan | Wheel: zoom | F: fit | R: recenter";
+        const std::string title=std::string(mode==SceneMode::Canvas ? "Omarchy XR canvas | " : "Omarchy XR | ")+canvasKeys;
         window = SDL_CreateWindow(title.c_str(),
             SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex), SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex), 1280, 720,
             SDL_WINDOW_OPENGL|SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI);
@@ -501,7 +496,7 @@ struct View {
     // Search and later are canvas verbs (M4): Switch steps by x (+-1) or finishes (begin; output
     // "cancel" cancels); Neighbour/Nudge take a direction token, Summon/Focus/Pin a window in output.
     enum class Verb { Fit, FitTarget, FitOutput, Recenter, ZoomBy, FlickIn, FlickOut, Pan,
-                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus, Scroll };
+                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus, Scroll, Cycle };
     struct Move { Verb verb; float x=0, y=0; bool begin=false; std::string output={}; };
     // Every external navigation entry point goes through here; monitor mode ignores the canvas verbs.
     void navigate(const Move& m) {
@@ -554,6 +549,7 @@ struct View {
         case Verb::Undo: applyAim(canvas->undo(anchor)); break;
         case Verb::Redo: applyAim(canvas->redo(anchor)); break;
         case Verb::Neighbour: if (direction) applyAim(canvas->neighbourOf(*direction, anchor)); break;
+        case Verb::Cycle: applyAim(canvas->cycleBy(m.x>0 ? 1 : -1, anchor)); break;
         case Verb::Nudge: if (direction) applyAim(canvas->nudgeBy(*direction, anchor)); break;
         case Verb::Pin: canvas->pinToggle(m.output.empty() ? canvas->pinTarget() : m.output); break;
         case Verb::Help: canvas->helpOpen=!canvas->helpOpen; break;
@@ -581,7 +577,6 @@ struct View {
         for (const auto& r:canvas->lastList.records)
             if (r.name()==name) { explicitFocus(name, canvas->scaled(r.w)/2.f, canvas->scaled(r.h)/2.f); return; }
     }
-    bool promptViaSdl() const { return window && SDL_GetKeyboardFocus()==window; }
     // §5.4: the prompt opens with Overview (entered from Work or Fill) and with an explicit search, and
     // closes with the session. The SDL window types itself when focused; its Overview keeps the
     // single-key commands, so only an explicit search starts SDL text input.
@@ -589,16 +584,14 @@ struct View {
         if (!canvas || !controls) return;
         using S=canvas::Scene::State;
         const bool entered=canvas->state==S::Overview && (canvasStateSeen==S::Work || canvasStateSeen==S::Fill);
-        if (entered && !promptViaSdl()) canvas->searchAttach();
+        if (entered) canvas->searchAttach();
         canvasStateSeen=canvas->state;
         const bool open=canvas->search.open;
         if (open==promptShown) return;
         promptShown=open;
-        if (open) promptSdl=promptViaSdl();
-        if (promptSdl) { if (open) SDL_StartTextInput(); else SDL_StopTextInput(); }
-        else controls->publishPrompt(open, canvas->outputName);
+        controls->publishPrompt(open, canvas->outputName);
     }
-    bool promptHoldsKeys() const { return canvas && promptShown && !promptSdl; }
+    bool promptHoldsKeys() const { return canvas && promptShown; }
     static float headingDeg(const tracking::Quaternion& view) {
         const auto f=targeting::rotate(tracking::conjugate(view), {0, 0, -1});
         return std::atan2(f.x, -f.z)*180/pi;
@@ -691,6 +684,7 @@ struct View {
                     p.texture=0; p.frame.texture=0; p.cpuWidth=p.cpuHeight=0; p.capture.reset();
                 }
                 if (canvas) canvas->releaseGpu();
+                monitorHelpRaster.release();
                 if (cursorTexture) { glDeleteTextures(1, &cursorTexture); cursorTexture=0; }
                 spectator.reset();
                 environment->release();
@@ -930,6 +924,12 @@ struct View {
             std::cout << "Canvas: brought " << canvas->bringRequested << " to the canvas" << std::endl;
             applyAim(canvas->land(std::exchange(canvas->bringRequested, {}), baseView()));
         }
+        // A window you open while the canvas runs lands in the middle of your view and gets the keyboard, so it
+        // is never lost beside or behind you. Not during a search; several at once: the last one.
+        if (const auto name=std::exchange(canvas->arrived, {}); !name.empty() && canvas->find(name) && !canvas->search.open) {
+            std::cout << "Canvas: new window " << name << std::endl;
+            navigate({.verb=Verb::Focus, .output=name});
+        }
         // --canvas-windows-file runs only: a new focus_history_id 0 window stands in for the .focus
         // mailbox, which the mailbox path follows (it leaves out XR's own staging, §4.2).
         if (!windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
@@ -1047,6 +1047,7 @@ struct View {
     }
     void steer() {
         controls->update();
+        if (controls->keys) { layerKeys=*controls->keys; if (canvas) canvas->helpRows=helpkeys::rows(layerKeys, true); }
         if (canvas) adoptMailbox();
         panGestureActive=controls->panActive;
         if (controls->panStarted || controls->panX || controls->panY) interactionUntil=monotonicSeconds()+.4;
@@ -1058,7 +1059,10 @@ struct View {
         if (controls->zoom) navigate({Verb::ZoomBy, float(controls->zoom)});
         if (controls->fit==1) navigate({Verb::FlickOut});
         if (controls->fit==2) navigate({Verb::FlickIn});
-        if (canvas && controls->fit>=8) canvasKey(controls->fit, controls->notificationTarget);
+        if (controls->fit && controls->fit!=26 && tracking.camera.grabbing) grab(false); // any other action ends a grab
+        if (controls->fit>=8) sceneKey(controls->fit, controls->notificationTarget);
+        steerGrab(monotonicSeconds());
+        if (!canvas) steerPaneWait(monotonicSeconds());
         if (notificationHud && (controls->fit==6 || controls->fit==7)) {
             placeNotification(monotonicSeconds());
             notificationHud->flick(controls->notificationTarget,controls->fit==6);
@@ -1070,8 +1074,178 @@ struct View {
         if (tracking.recenterRequested) { navigate({Verb::Recenter}); tracking.recenterRequested=false; }
         if (tracking.fitRequested) { navigate({Verb::Fit}); tracking.fitRequested=false; }
         if (tracking.fitTargetRequested) { navigate({Verb::FitTarget}); tracking.fitTargetRequested=false; }
-        if (canvas) steerCanvas(); else tracking.clearCanvasVerbs();
+        if (canvas) steerCanvas();
+        else {
+            if (std::exchange(tracking.searchRequested, false)) monitorSearchOpen();   // Studio's Search
+            if (std::exchange(tracking.helpRequested, false)) monitorKey(17, "");
+            tracking.clearCanvasVerbs(); steerMonitorSearch();
+        }
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
+    }
+    // XR key layer codes (docs/xr-controls-plan.md §5.1): notifications and grab in every scene, the rest by scene.
+    void sceneKey(int mode, const std::string& token) {
+        if (mode==20 || mode==21) {
+            if (notificationHud) { placeNotification(monotonicSeconds()); notificationHud->flickKey(token, mode==20); }
+            return;
+        }
+        if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
+        if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
+    }
+    // Monitor scene (docs/xr-controls-plan.md §5.2-5.4): overview fits every monitor; focus, fill and
+    // previous/next frame one window, which the controls adapter focuses and publishes as the pane.
+    void monitorKey(int mode, const std::string&) {
+        switch (mode) {
+        case 8: navigate({Verb::FlickOut}); break;
+        case 10: selectGazed(); fitTarget(); break;             // the adapter maximized the window: frame its monitor
+        case 18: focusGazedWindow(); break;
+        case 9: monitorSearchOpen(); break;
+        case 17: monitorHelpOpen=!monitorHelpOpen; break;
+        case 22: awaitPane(PaneFallback::Pane, controls->paneChanged); break;
+        default: break;
+        }
+    }
+    // Monitor-scene search (docs/xr-controls-plan.md §5.5): the prompt opens on the gazed XR monitor and lists
+    // the ranked windows (every regular window from the adapter's list, the canvas ranking, most recently
+    // focused first for an empty query); Enter lands through the adapter, which focuses the window (its
+    // workspace comes up) and publishes its pane; the camera frames that pane.
+    struct MonitorSearch { bool open=false; std::string query, selectedName; size_t selected=0;
+                           std::vector<windows::Record> records; std::vector<canvas::Result> results; } monitorSearch;
+    static constexpr size_t searchRows=8;
+    void monitorSearchOpen() {
+        if (!controls) return;
+        selectGazed();
+        const std::string output=!selection.output.empty() ? selection.output : geometry.empty() ? std::string() : geometry.front().output;
+        auto& m=monitorSearch;
+        m.open=true; m.query.clear(); m.selectedName.clear(); m.selected=0;
+        if (controls->windows) m.records=controls->windows->records;
+        controls->publishPrompt(true, output);
+        rankMonitorSearch();
+        std::cout << "Search: open on " << output << " with " << m.records.size() << " windows" << std::endl;
+    }
+    void monitorSearchClose() {
+        monitorSearch.open=false;
+        controls->publishPrompt(false, "");
+        controls->publishResults({});
+    }
+    void rankMonitorSearch() {
+        auto& m=monitorSearch;
+        std::vector<std::string> order;
+        auto byRecency=m.records;
+        std::stable_sort(byRecency.begin(), byRecency.end(), [](const auto& a, const auto& b) { return a.focusHistoryID<b.focusHistoryID; });
+        for (const auto& r:byRecency) order.push_back(r.name());
+        m.results=canvas::rank(m.query, m.records, order, "");
+        m.selected=m.results.empty() ? 0 : canvas::keepSelection(m.results, m.selectedName);
+        m.selectedName=m.results.empty() ? std::string() : m.results[m.selected].name;
+        publishMonitorResults();
+    }
+    // At most searchRows rows, a window around the selection.
+    void publishMonitorResults() {
+        const auto& m=monitorSearch;
+        const size_t first=m.selected<searchRows ? 0 : m.selected-searchRows+1;
+        std::vector<LiveControls::ResultRow> rows;
+        for (size_t i=first; i<m.results.size() && rows.size()<searchRows; ++i) {
+            const auto found=std::find_if(m.records.begin(), m.records.end(), [&](const auto& r) { return r.name()==m.results[i].name; });
+            if (found==m.records.end()) continue;
+            rows.push_back({i==m.selected, utf8Prefix(found->cls, 64), utf8Prefix(found->title, 200)});
+        }
+        controls->publishResults(rows);
+    }
+    // At most `bytes` bytes, never ending inside a UTF-8 character.
+    static std::string utf8Prefix(const std::string& text, size_t bytes) {
+        if (text.size()<=bytes) return text;
+        while (bytes>0 && (static_cast<unsigned char>(text[bytes])&0xC0)==0x80) --bytes;
+        return text.substr(0, bytes);
+    }
+    void monitorSearchLand(size_t index) {
+        auto& m=monitorSearch;
+        if (index>=m.results.size()) return;
+        const auto address=windows::parseAddress(m.results[index].name);
+        monitorSearchClose();
+        if (!address) return;
+        controls->publishLand(*address);
+        awaitPane(PaneFallback::None, false);
+        std::cout << "Search: land on " << m.results[index].name << std::endl;
+    }
+    void steerMonitorSearch() {
+        auto& m=monitorSearch;
+        if (!m.open || !controls) return;
+        if (controls->windows) { m.records=controls->windows->records; rankMonitorSearch(); }
+        if (!controls->search) return;
+        const auto& line=*controls->search;
+        if (!line.open) { monitorSearchClose(); return; }
+        if (line.text!=m.query) { m.query=line.text; m.selectedName.clear(); rankMonitorSearch(); }
+        for (const auto& key:line.keys) {
+            if (!m.open) break;
+            const size_t n=m.results.size();
+            if ((key=="up" || key=="shift-tab") && m.selected>0) --m.selected;
+            else if ((key=="down" || key=="tab") && m.selected+1<n) ++m.selected;
+            else if (key=="enter" || key=="shift-enter") { monitorSearchLand(m.selected); break; }
+            else if (key.starts_with("ctrl-") && key.size()==6 && key[5]>='1' && key[5]<='8') {
+                const size_t first=m.selected<searchRows ? 0 : m.selected-searchRows+1;
+                monitorSearchLand(first+size_t(key[5]-'1')); break;
+            } else continue;
+            m.selectedName=n ? m.results[m.selected].name : std::string();
+            publishMonitorResults();
+        }
+    }
+    void selectGazed() {
+        if (!gaze.current) return;
+        const auto previous=selection.output; selection.observe(gaze.current);
+        if (selection.output!=previous) selectionAnchor=baseView();
+    }
+    // Focus: the look pixel goes to the adapter with a new pointer serial (it focuses the window under it and
+    // puts the pointer there, as a dwell does) and a new pane comes back. A pane that already holds the look
+    // point is framed at once.
+    void focusGazedWindow() {
+        if (!gaze.current) { fitTarget(); return; }
+        selectGazed();
+        ++pointerSerial; pointerX=gaze.current->pixelX; pointerY=gaze.current->pixelY;
+        const auto& c=*controls;
+        const bool inside=c.paneValid && c.paneOutput==selection.output && pointerX>=c.paneX && pointerX<c.paneX+c.paneW
+            && pointerY>=c.paneY && pointerY<c.paneY+c.paneH;
+        awaitPane(PaneFallback::Monitor, inside);
+    }
+    enum class PaneFallback { Monitor, Pane, None };
+    double paneWaitUntil=0; unsigned paneWaitSeen=0; PaneFallback paneFallback=PaneFallback::Monitor;
+    void awaitPane(PaneFallback fallback, bool ready) {
+        paneWaitUntil=monotonicSeconds()+.5; paneWaitSeen=controls->paneUpdates; paneFallback=fallback;
+        if (ready) framePane();
+    }
+    void framePane() {
+        paneWaitUntil=0;
+        const auto previous=selection.output;
+        if (findLayout(controls->paneOutput)) selection.output=controls->paneOutput;
+        if (selection.output!=previous) selectionAnchor=baseView();
+        if (!fitPane()) fitTarget();
+    }
+    // A pane published after the request frames it; without one in 0.5 s, focus frames the monitor and
+    // previous/next the last pane.
+    void steerPaneWait(double now) {
+        if (paneWaitUntil<=0) return;
+        if (controls->paneUpdates!=paneWaitSeen && controls->paneValid) { framePane(); return; }
+        if (now<paneWaitUntil) return;
+        paneWaitUntil=0;
+        if (paneFallback==PaneFallback::Pane && controls->paneValid) framePane();
+        else if (paneFallback==PaneFallback::Monitor) fitTarget();
+    }
+    // Grab (§5.7): the camera carries the heading; in the canvas head pitch also scrolls the cylinder by the
+    // same share of the view. A second press, any other action, stale tracking or 30 s end it.
+    double grabStarted=-1, grabPitch=0;
+    void grab(bool begin) {
+        const double now=monotonicSeconds();
+        if (begin && !tracking.camera.fresh(now)) return;
+        if (begin==tracking.camera.grabbing || !tracking.camera.grab(begin)) return;
+        grabStarted=now; grabPitch=tracking.camera.pitch;
+        std::cout << "Grab: " << (begin ? "begin" : "end") << std::endl;
+    }
+    void steerGrab(double now) {
+        if (!tracking.camera.grabbing) return;
+        if (!tracking.camera.fresh(now) || now-grabStarted>30) { grab(false); return; }
+        interactionUntil=std::max(interactionUntil, now+.4); recenterUntil=0; // no dwell or settling while carried
+        const double pitch=tracking.camera.pitch, turned=pitch-grabPitch;
+        grabPitch=pitch;
+        // Pitch is down-positive: looking down lifts the camera, so what you carry moves down with you.
+        if (canvas && turned!=0) applyAim(canvas->scrollBy(float(-turned/fov)*canvas->metrics.viewH/std::max(canvas->camera.targetZoom, .01f)));
     }
     // The canvas key set (§5.5, modes 8-19); 11/12 with the token "release" end the switcher; 18 is the
     // confirm (M7: the fit_target hotkey and the three-finger tap), which lands on and focuses the target;
@@ -1089,6 +1263,9 @@ struct View {
         case 17: navigate({Verb::Help}); break;
         case 18: std::cout << "Canvas: confirm " << fitTargetName(monotonicSeconds()) << std::endl; navigate({Verb::FitTarget}); break;
         case 19: if (const auto f=canvas->scrollFraction(token)) navigate({.verb=Verb::Scroll, .y=*f}); break;
+        case 22: if (token=="prev" || token=="next") navigate({Verb::Cycle, token=="next" ? 1.f : -1.f}); break;
+        case 27: navigate({Verb::Undo}); break;
+        case 28: navigate({Verb::Redo}); break;
         default: break;
         }
     }
@@ -1127,7 +1304,8 @@ struct View {
     }
     // The .windows mailbox (without --canvas-windows-file); stagedLanding lands on the first staged window.
     void adoptMailbox() {
-        if (windowsPath.empty() && controls->windows) adoptList(*controls->windows);
+        // A list without a canvas output is the monitor scene's search list, never the canvas's.
+        if (windowsPath.empty() && controls->windows && !controls->windows->outputName.empty()) adoptList(*controls->windows);
     }
     // SUPER+left-drag in the glasses (M7): Lua's .drag travel (canvas-output logical px, the confinement
     // overflow included) moves the staged window over the cylinder with M6's drag (snap, free in y since
@@ -1190,135 +1368,14 @@ struct View {
         if (!w || !l || l->width<=0 || l->height<=0) return;
         explicitFocus(hit.output, hit.pixelX*w->pixelW/l->width, hit.pixelY*w->pixelH/l->height);
     }
-    // The window under the pixel ray at (u, v) of the view.
-    std::optional<targeting::Hit> hitAt(float u, float v) const {
-        const float t=std::tan(fov*pi/360), r=t*aspect();
-        const auto dir=targeting::rotate(tracking::conjugate(currentView()), targeting::normalize({(2*u-1)*r, (1-2*v)*t, -1}));
-        const auto c=sceneCylinder();
-        return targeting::query({targeting::mul({panX, panY, panZ}, -1), dir}, sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, &canvas->candidates);
-    }
-    // 2D click (§3.4): the pixel ray at (u, v) of the view focuses the window under it; no camera move.
-    void clickAt(float u, float v) {
-        const auto hit=hitAt(u, v);
-        if (!hit) { std::cout << "Canvas: click hit no window" << std::endl; return; }
-        focusHit(*hit);
-        std::cout << "Canvas: click focus " << hit->output << " at " << int(pointerX) << "," << int(pointerY) << std::endl;
-    }
-    // A left press in Overview/Search on a window begins a drag (a click on release without motion);
-    // anywhere else it clicks at once.
-    void pressAt(float u, float v) {
-        const auto hit=canvas->zoomedOut() ? hitAt(u, v) : std::nullopt;
-        if (!hit) { clickAt(u, v); return; }
-        canvas->dragBegin(hit->output);
-        drag={true, false, hit->output, u, v, 0};
-    }
-    void dragMotion(int dx, int dy) {
-        drag.travel+=std::abs(dx)+std::abs(dy);
-        if (drag.travel>=4) drag.moved=true;
-        int w=0, h=0; SDL_GetWindowSize(window, &w, &h);
-        const float s=canvas::dragScale(canvas->metrics, float(w/(stereo?2:1)), canvas->camera.zoom);
-        canvas->dragBy(float(dx)*s, float(dy)*s);
-    }
-    void releaseAt() {
-        if (!drag.moved) { canvas->dragCancel(); clickAt(drag.u, drag.v); }
-        else canvas->dragEnd();
-        drag={};
-    }
-    std::pair<float,float> buttonUv(const SDL_MouseButtonEvent& button) const {
-        int w=0, h=0; SDL_GetWindowSize(window, &w, &h);
-        float u=float(button.x)/float(std::max(w, 1));
-        if (stereo) u=std::fmod(u*2, 1.f);
-        return {u, float(button.y)/float(std::max(h, 1))};
-    }
+    // The windowed preview is presentational (docs/xr-controls-plan.md §6): the XR key layer drives it through
+    // Hyprland like the glasses; the window itself only closes.
     void pollInput() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type==SDL_QUIT) running=false;
-            if (event.type==SDL_MOUSEBUTTONDOWN && event.button.button==SDL_BUTTON_LEFT && canvas) { const auto [u, v]=buttonUv(event.button); pressAt(u, v); }
-            if (event.type==SDL_MOUSEBUTTONUP && event.button.button==SDL_BUTTON_LEFT && canvas && drag.active) releaseAt();
-            if (event.type==SDL_KEYDOWN) keyDown(event.key.keysym);
-            if (event.type==SDL_TEXTINPUT && canvas && promptShown && promptSdl) searchInput(canvas->search.query+event.text.text, "-");
-            if (event.type==SDL_MOUSEWHEEL) navigate({Verb::ZoomBy, event.wheel.preciseY*-std::log(.9f)});
-            if (event.type==SDL_MOUSEMOTION) mouseMove(event.motion);
+            if (event.type==SDL_KEYDOWN && event.key.keysym.sym==SDLK_ESCAPE) running=false;
         }
-    }
-    void keyDown(const SDL_Keysym& key) {
-        if (canvas) { canvasKeyDown(key); return; }
-        if (key.sym==SDLK_ESCAPE) running=false;
-        if (key.sym==SDLK_r) navigate({Verb::Recenter});
-        if (key.sym==SDLK_f) navigate({Verb::Fit});
-    }
-    static const char* arrowToken(SDL_Keycode key) {
-        switch (key) {
-        case SDLK_LEFT: return "left";
-        case SDLK_RIGHT: return "right";
-        case SDLK_UP: return "up";
-        case SDLK_DOWN: return "down";
-        default: return nullptr;
-        }
-    }
-    // 2D canvas keys (§5.8): / search, F Fill, O Overview, P pin, R recenter, Tab switcher (Return or
-    // 1.5 s end it), Alt(+Shift)+arrows neighbour (nudge), Ctrl+A/Z/Shift+Z, F1, PageUp/PageDown scroll
-    // (M8); Esc closes overlays, then quits.
-    void canvasKeyDown(const SDL_Keysym& key) {
-        const bool ctrl=key.mod&KMOD_CTRL, shift=key.mod&KMOD_SHIFT, alt=key.mod&KMOD_ALT;
-        if (promptShown && promptSdl) { sdlSearchKey(key.sym, ctrl, shift); return; }
-        if (const char* dir=arrowToken(key.sym); dir && alt) { navigate({.verb=shift ? Verb::Nudge : Verb::Neighbour, .output=dir}); return; }
-        if (ctrl) {
-            if (key.sym==SDLK_a) navigate({Verb::Arrange});
-            if (key.sym==SDLK_z) navigate({shift ? Verb::Redo : Verb::Undo});
-            return;
-        }
-        switch (key.sym) {
-        case SDLK_ESCAPE: closeOverlayOrQuit(); break;
-        case SDLK_SLASH: case SDLK_KP_DIVIDE: navigate({Verb::Search}); break;
-        case SDLK_f: navigate({Verb::Fill}); break;
-        case SDLK_o: navigate({Verb::Fit}); break;
-        case SDLK_p: navigate({Verb::Pin}); break;
-        case SDLK_r: navigate({Verb::Recenter}); break;
-        case SDLK_TAB: navigate({Verb::Switch, shift ? -1.f : 1.f}); break;
-        case SDLK_RETURN: case SDLK_KP_ENTER: if (canvas->switcher.active) navigate({.verb=Verb::Switch, .begin=true}); break;
-        case SDLK_F1: navigate({Verb::Help}); break;
-        case SDLK_PAGEUP: navigate({.verb=Verb::Scroll, .y=-.8f}); break;
-        case SDLK_PAGEDOWN: navigate({.verb=Verb::Scroll, .y=.8f}); break;
-        default: break;
-        }
-    }
-    void closeOverlayOrQuit() {
-        if (canvas->switcher.active) navigate({.verb=Verb::Switch, .begin=true, .output="cancel"});
-        else if (canvas->helpOpen) canvas->helpOpen=false;
-        else running=false;
-    }
-    // Typing goes through SDL_TEXTINPUT; these keys are the prompt's forwarded keys (searchKey).
-    void sdlSearchKey(SDL_Keycode sym, bool ctrl, bool shift) {
-        std::string key;
-        if (sym==SDLK_BACKSPACE) {
-            auto query=canvas->search.query;
-            while (!query.empty()) { const unsigned char c=query.back(); query.pop_back(); if ((c&0xC0)!=0x80) break; }
-            searchInput(query, "-"); return;
-        }
-        if (ctrl && sym>=SDLK_1 && sym<=SDLK_8) key="ctrl-"+std::string(1, char('1'+(sym-SDLK_1)));
-        else if (ctrl && sym==SDLK_a) key="ctrl-a";
-        else if (ctrl && sym==SDLK_z) key=shift ? "ctrl-shift-z" : "ctrl-z";
-        else if (sym==SDLK_UP || sym==SDLK_DOWN) key=sym==SDLK_UP ? "up" : "down";
-        else if (sym==SDLK_TAB) key=shift ? "shift-tab" : "tab";
-        else if (sym==SDLK_RETURN || sym==SDLK_KP_ENTER) key=shift ? "shift-enter" : "enter";
-        else if (sym==SDLK_ESCAPE) key="esc";
-        else if (sym==SDLK_F1) key="f1";
-        if (!key.empty()) searchInput(canvas->search.query, key);
-    }
-    void mouseMove(const SDL_MouseMotionEvent& motion) {
-        if (motion.state&SDL_BUTTON_RMASK) { yaw+=motion.xrel*.15f; pitch=std::clamp(pitch+motion.yrel*.15f, -80.f, 80.f); }
-        if (canvas && drag.active) dragMotion(motion.xrel, motion.yrel);
-        if (canvas) { canvasMousePan(motion); return; }
-        if (motion.state&SDL_BUTTON_MMASK) { panX+=motion.xrel*distance*.0015f; panY-=motion.yrel*distance*.0015f; targetPanX=panX; targetPanY=panY; }
-    }
-    // Middle-drag pans the canvas focus and scrolls vertically (M8); the first motion of a drag begins the gesture.
-    void canvasMousePan(const SDL_MouseMotionEvent& motion) {
-        if (!(motion.state&SDL_BUTTON_MMASK)) { mousePanning=false; return; }
-        interactionUntil=monotonicSeconds()+.4;
-        navigate({Verb::Pan, float(motion.xrel), float(motion.yrel), !mousePanning});
-        mousePanning=true;
     }
     float easeCamera() {
         const double cameraTime=monotonicSeconds();
@@ -1348,7 +1405,7 @@ struct View {
         if (state==trackingStatus) return;
         trackingStatus=state;
         std::cout << "Head tracking: " << (state ? "live" : "waiting / stale; holding view") << std::endl;
-        if (window && mode==SceneMode::Canvas) SDL_SetWindowTitle(window, (std::string(state ? "Omarchy XR canvas | Head tracking live | " : "Omarchy XR canvas | Tracking unavailable | Mouse look | ")+canvasKeys+" | Esc: exit").c_str());
+        if (window && mode==SceneMode::Canvas) SDL_SetWindowTitle(window, (std::string(state ? "Omarchy XR canvas | Head tracking live | " : "Omarchy XR canvas | Tracking unavailable | ")+canvasKeys).c_str());
         else if (window) SDL_SetWindowTitle(window, state ? "Omarchy XR | Head tracking live | R: recenter | F: fit | Esc: exit" : "Omarchy XR | Tracking unavailable | Mouse look | R: recenter | Esc: exit");
     }
     void projectPanels(int viewportWidth, int viewportHeight, double cameraTime) {
@@ -1423,7 +1480,10 @@ struct View {
             drawCanvasLabels();
             drawXrCursor();
             drawCanvasOverlays(view);
-        } else drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
+        } else {
+            drawSurfaces([&](const auto& visit){ forEachSurface(visit); });
+            drawMonitorHelp(view);
+        }
         if(notificationHud) notificationHud->draw(lastCameraTime, !canvas);
     }
     // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
@@ -1460,6 +1520,24 @@ struct View {
         scene.view=view; scene.eye={-panX, -panY, -panZ};
         scene.tanV=std::tan(fov*pi/360); scene.tanH=scene.tanV*aspect(); scene.ipd=ipd/1000;
         return scene;
+    }
+    // Monitor-scene help (the XR layer's help key): the canvas help card with this scene's keys, body-locked
+    // 1.2 m ahead with the canvas overlays' lazy berth and fade.
+    helpkeys::Keys layerKeys;
+    bool monitorHelpOpen=false; float monitorHelpAlpha=0; double monitorHelpTime=-1;
+    canvas::overlay::Berth monitorHelpBerth; canvas::overlay::Raster monitorHelpRaster; canvas::overlay::Style monitorHelpStyle;
+    void drawMonitorHelp(const tracking::Quaternion& view) {
+        const double now=lastCameraTime;
+        const float dt=monitorHelpTime<0 ? 0.f : float(std::clamp(now-monitorHelpTime, 0., .1)); monitorHelpTime=now;
+        if (!canvas::Scene::fade(monitorHelpAlpha, monitorHelpOpen, dt, monitorHelpBerth)) return;
+        namespace ov=canvas::overlay;
+        const auto scene=overlayScene(view);
+        monitorHelpStyle.accent={accent.rgb[0], accent.rgb[1], accent.rgb[2], 1};
+        const auto rows=helpkeys::rows(layerKeys, false); const std::string title="Virtual monitors keys";
+        monitorHelpRaster.update(ov::helpKey(rows, title, monitorHelpStyle), ov::helpWidth, ov::helpHeight, now, 0,
+                                 [&](cairo_t* cr) { return ov::paintHelp(cr, monitorHelpStyle, rows, title); });
+        const auto q=canvas::Scene::berthQuad(canvas::OverlayQuad::Kind::Help, monitorHelpBerth, monitorHelpRaster, 45, 0, 1.2f, monitorHelpAlpha, scene, now);
+        ov::drawQuad(q.texture, scene, q.centre, q.width, q.height, q.alpha);
     }
     void drawCanvasOverlays(const tracking::Quaternion& view) {
         const auto scene=overlayScene(view);
@@ -1894,7 +1972,7 @@ struct View {
         applyAim(landing ? landing : canvas->restoreCamera(baseView()));
         canvas->snap(); canvas->refresh(monotonicSeconds()); canvas->rememberCamera=true;
         navigationRotation=targetRotation; panX=targetPanX; panY=targetPanY; panZ=targetPanZ;
-        // SDL2 starts text input with the window; the canvas keys are single letters until search opens.
+        // SDL2 starts text input with the window; the preview takes no keys.
         if (window) SDL_StopTextInput();
         canvasStateSeen=canvas->state;
     }
@@ -1915,8 +1993,9 @@ struct View {
         else if (!windowsPath.empty()) why="--canvas-windows-file run";
         else if (next==SceneMode::Canvas && canvasPath.empty()) why="no canvas.tsv path (start with --layout or --canvas)";
         else if (next==SceneMode::Canvas && !offlineCanvas && !controlsVersionOk(posePath, why))
-            why="Window canvas needs XR controls version 6 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
+            why="Window canvas needs XR controls version 7 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
         if (!why.empty()) { std::cerr << "Scene: switch to " << name << " refused: " << why << std::endl; return false; }
+        if (monitorSearch.open) monitorSearchClose();   // the canvas has its own search
         if (next==SceneMode::Canvas ? !enterCanvasScene() : !enterMonitorScene()) return false;
         // The next recordWork() reports at once, so the backend sees the new mode within a frame.
         reportDue=true;
@@ -1927,7 +2006,7 @@ struct View {
         selection={}; gaze.current.reset(); zoomGaze.reset();
         focusOutput.clear(); panOutput.clear(); levelOutput.clear(); level=Level::Overview;
         panCamera=panGestureActive=focusFromGaze=dragHeld=false; hoverOutput.clear(); restageRequested.clear(); fillAfterStage=0;
-        xrCursor={}; lastCursor.reset(); dwellOutput.clear(); mousePanning=false; drag={};
+        xrCursor={}; lastCursor.reset(); dwellOutput.clear();
         panX=panY=panZ=targetPanX=targetPanY=targetPanZ=0; navigationRotation=targetRotation={};
         recenterUntil=0; interactionUntil=monotonicSeconds()+.4;
         trackingStatus=-1;  // showTracking retitles the window for the new mode
@@ -1942,8 +2021,9 @@ struct View {
         panels.clear(); geometry.clear(); left=top=right=bottom=cx=cy=0;
         resetNavigation();
         canvas=std::move(scene); mode=SceneMode::Canvas; controls->setCanvasMode(true);
+        canvas->helpRows=helpkeys::rows(layerKeys, true); monitorHelpOpen=false;
         canvasVersion={}; nextCanvasCheck=0; windowsSeq=0; loggedLive=~0u; canvasRejected=windowsRejected=false; ladderLogged.clear();
-        promptShown=promptSdl=false;
+        promptShown=false;
         distance=targetDistance=canvas->ring.radius;
         startCanvas();
         return true;
@@ -1951,11 +2031,10 @@ struct View {
     // A layout that cannot be captured leaves an empty monitor scene until viewer.tsv changes.
     bool enterMonitorScene() {
         // An open Quickshell prompt closes with the canvas.
-        if (promptShown && !promptSdl) controls->publishPrompt(false, canvas->outputName);
-        if (promptShown && promptSdl && window) SDL_StopTextInput();
+        if (promptShown) controls->publishPrompt(false, canvas->outputName);
         finishCanvas();
         canvas.reset(); mode=SceneMode::Monitors; controls->setCanvasMode(false);
-        resetNavigation(); promptShown=promptSdl=false;
+        resetNavigation(); promptShown=false;
         distance=targetDistance=5; nextLayoutCheck=0;
         try {
             applyLiveLayout(std::filesystem::last_write_time(viewerPath));
@@ -1993,14 +2072,14 @@ bool controlsVersionOk(const std::string& posePath, std::string& why) {
     std::ifstream in(file); int version=0;
     if (!in) { why=file.string()+" missing"; return false; }
     if (!(in>>version)) { why=file.string()+" unreadable"; return false; }
-    if (version<6) { why="found version "+std::to_string(version); return false; }
+    if (version<7) { why="found version "+std::to_string(version); return false; }
     return true;
 }
 // Window canvas mode: no monitor panels; the capture connection must work before any window opens.
 int canvasPreview(bool smoke, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& canvasPath, const std::string& windowsPath, int fps, bool spectatorEnabled) {
     std::string why;
     if (windowsPath.empty() && !controlsVersionOk(posePath, why))
-        throw std::runtime_error("Window canvas needs XR controls version 6 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
+        throw std::runtime_error("Window canvas needs XR controls version 7 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
     const auto memory=(std::filesystem::path(canvasPath).parent_path()/"canvas-memory.tsv").string();
     auto scene=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, memory);
     std::string error;
@@ -2029,7 +2108,7 @@ int main(int argc,char** argv) {
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit (monitors); R: recenter; Esc: exit\n"
-                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 6 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nCanvas keys (windowed): /: search; F: fill; O: overview; P: pin; R: recenter; Tab: switch (Return lands);\nAlt+arrows: neighbour; Alt+Shift+arrows: nudge; Ctrl+A: arrange; Ctrl+Z / Ctrl+Shift+Z: undo / redo; F1: help;\nPageUp/PageDown: scroll; Esc: close the overlay, then exit\n"; return 0; }
+                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 7 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nKeys: the XR key layer (docs/xr-controls-plan.md) drives every presentation through Hyprland; the windowed preview\nonly closes (Esc).\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.4.0\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;

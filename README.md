@@ -71,7 +71,8 @@ the terminal stays open until you press Enter.
 
 Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**):
 - **Controls**: start/stop stereo, recenter, fit, and zoom, with live connection status.
-  Expand **Shortcuts & gestures** or **Laptop display** for preferences.
+  The **Keys** card lists the main XR keys; expand **XR keys** to see and edit every key, or
+  **Laptop display** for its preferences.
 - **Monitors**: choose a setup, arrange panels, and edit resolution, scale and bend.
   **Monitor settings…**, **Workspace settings…**, and **Save setup…** contain
   additional options. The persistent action bar applies changes; switching tabs
@@ -111,17 +112,18 @@ the selected Omarchy theme.
 place, keeping the glasses in stereo (if the renderer does not confirm within 3 s, Studio restarts
 XR in the new mode; the switch is refused while the laptop display is off). Each application window then gets its own panel on a cylinder
 around you (beside, above and below), instead of sitting on a virtual monitor. At start Studio moves your windows to one
-hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer, and
-SUPER+F no longer makes windows fullscreen. Stop returns every window to its original workspace
-and tiling. SUPER+CTRL+G (or typing in Overview) searches your windows by title, class or kind,
-SUPER+F makes the current window fill your view, ALT+TAB holds up a recent-window switcher, and
-SUPER+wheel or SUPER+CTRL+Page_Up/Down scroll the cylinder up and down; new windows open next to where
-you look. F1 lists every canvas key. New windows pulse briefly, and one placed outside your view gets an edge
+hidden canvas output. The window you work in is live at 60 Hz with its menus and pointer; a
+window that asks for fullscreen is filled instead. Stop returns every window to its original workspace
+and tiling. The [XR keys](#xr-keys) work the same as with virtual monitors: XR+/ (or typing in Overview)
+searches your windows by title, class or kind, XR+Return makes the current window fill your view,
+XR+Left/Right step through the windows around the ring, and XR+Page_Up/Down or XR+Shift+wheel scroll
+the cylinder; new windows open next to where you look. XR+H lists every key in the headset. New windows pulse briefly, and one placed outside your view gets an edge
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
-needs the v6 controls adapter, so after updating re-run **Utilities → Setup & integrations → Set up
-shortcuts & gestures** (or `make install-controls`). Until you do, the option is disabled. See
+needs the v7 controls adapter, so after updating choose **Install XR controls** under the mode selector
+(or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
+the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
 
 Hide, Escape, or closing the Studio window parks the editor as an icon on the
@@ -198,9 +200,8 @@ its total sweep within 300°. Lower percentages increase the radius continuously
 that same origin; its sweep is capped at 160° to prevent folding. Bending preserves
 horizontal arc length and the panel's center/tangent. Height remains unchanged.
 
-Head/mouse rotation changes the view, not the workspace anchor. Middle-drag pans
-the viewing camera relative to the neutral anchor. Wheel zoom changes the viewing
-distance. F fits/recenters the workspace; R centers the selected monitor
+Head rotation changes the view, not the workspace anchor. Zoom (XR+= / XR+-, XR+wheel)
+changes the viewing distance. XR+Up fits the workspace; XR+Space centers the selected monitor
 while preserving viewing distance. Curvature-aware separation also limits how close you can zoom; panel surfaces
 and borders stay apart.
 
@@ -359,9 +360,8 @@ SDL_VIDEODRIVER=offscreen build/notification-preview /tmp/xr-notifications --vid
 regenerates them after an intentional visual change (the harness pins the sky
 clock and the stock accent so the pixels are reproducible).
 
-- Right-drag: look around; middle-drag: pan across the panel plane.
-- Mouse wheel: zoom; **F**: fit every panel; **R**: recenter; **Esc**: exit.
-- Clicking panels does not yet control their applications.
+- The preview is presentational: the [XR keys](#xr-keys) drive it through Hyprland like the
+  glasses; the window itself only closes with **Esc**.
 
 ```sh
 ./build/omarchy-xr --list-outputs
@@ -603,41 +603,63 @@ Hardware regression: `python3 tests/live_layout.py` exercises curvature, spacing
 capture rate, addition, removal and resize, asserting identical renderer, SDK,
 and display-helper processes throughout.
 
-### Touchpad and keyboard camera controls
+### XR keys
 
-Install with `make install-controls` on Lua-based Omarchy. While the viewer is
-running (including dedicated stereo with Studio hidden):
+Install with `make install-controls` on Lua-based Omarchy (or **Utilities → Setup & integrations →
+Set up everything** in Studio). While the viewer runs, including dedicated stereo with Studio hidden,
+one held modifier, **XR** (CTRL+ALT by default), plus a key drives every XR action, the same in
+virtual monitors and Window canvas mode. Nothing of Omarchy's is taken over, and the keys reach
+applications again within 250 ms of the viewer stopping. Every key and the modifier can be changed in
+Studio (see below); the design is in [`docs/xr-controls-plan.md`](docs/xr-controls-plan.md).
 
-- Three-finger swipe **up** zooms in; **down** zooms out continuously. Over a
-  highlighted alert, quick flicks instead dismiss (up) or cycle alerts (down).
-- **Ctrl+Up** fits the complete workspace, accounting for curved panel bounds.
-- **Super+1…0** keeps Omarchy's normal workspace switching and smoothly fits the
-  XR monitor showing that workspace, just like the first upward flick. This also
-  works when the workspace is already visible on another XR monitor. Other
-  workspace changes and external monitor focus follow the same behavior;
-  gaze-driven focus does not trigger a camera fit. Physical monitors and special
-  workspaces leave the camera unchanged. Requires `make install-controls` after updating.
-- **Ctrl+Down** fits the height of the monitor you are looking at, with a 4%
-  margin. Selection follows headset direction, not eye movements. Looking into a
-  gap or losing tracking leaves the view unchanged.
-  In window canvas mode it instead focuses the window you look at (staged,
-  raised, keyboard and pointer at the gaze point), as does a three-finger single
-  tap; see [`docs/window-canvas.md`](docs/window-canvas.md).
+| Keys | Virtual monitors | Window canvas |
+|---|---|---|
+| XR+Space | recenter | recenter |
+| XR+G (hold) | grab: the scene follows your head while held and stays where you leave it, a quick way to bring any window to the front | same; head pitch also scrolls the cylinder |
+| XR+= / XR+- (repeat) | zoom in / out | zoom in / out |
+| XR+Up | fit every monitor | Overview on/off |
+| XR+Down | fit and focus the window you look at | focus the window you look at |
+| XR+Return | maximize the gazed monitor's window and fit that monitor | Fill / restore |
+| XR+Left / XR+Right | previous / next window across the XR monitors, camera follows | previous / next window around the ring |
+| XR+/ | search every window; Enter brings up its workspace and fits it | search |
+| XR+Page_Up / Page_Down | — | scroll the cylinder |
+| XR+Shift+arrows, XR+, / XR+. (Shift: height) | — | nudge, resize by 100 px |
+| XR+P, XR+A, XR+Z / XR+Shift+Z | — | pin, arrange, undo / redo |
+| XR+N / XR+Shift+N | dismiss / cycle the gazed notification, else the front one | same |
+| XR+Home | pointer back to the laptop screen | same |
+| XR+H | show every key in the headset | same |
 
-Zoom uses exponential, frame-rate-independent easing, with no momentum after
-release beyond the short smoothing tail. Existing spacing safety limits still
-apply and can limit zoom. Target-height fit can crop the sides of a wide monitor.
-The Controls tab also provides a **Fit monitor** button for this action.
+With XR held, the wheel zooms and holding the middle button grabs; in the canvas Shift+wheel scrolls,
+left-drag moves the window you work in and right-drag resizes it. "—" keys are left to applications
+in virtual monitors mode. **Super+1…0** keeps Omarchy's workspace switching and smoothly fits the XR
+monitor showing that workspace; gaze-driven focus never triggers a fit.
 
-The Lua integration uses live gesture callbacks and an atomic cumulative motion
-mailbox, without spawning a process per gesture event. Only vertical three-finger
-gestures are reserved. The bindings deactivate within 250 ms of a clean viewer
-exit (within about 3 seconds after a crash); normal application Ctrl+arrow handling
-then resumes. Controls require the standard Studio state directory, honor
-`XDG_STATE_HOME`, and use no administrator privileges. The installer refuses
-conflicting compositor Ctrl+arrow bindings. To remove integration, remove the
-`require("hypr.xr-controls")` line from `~/.config/hypr/bindings.lua`, remove
-`~/.config/hypr/xr-controls.lua`, then reload Hyprland.
+XR+Down fits the window under your gaze with a 4% margin: the controls adapter focuses it and puts the
+pointer at the look point, then the camera frames it (the monitor when no window is there, and in
+presentations without gaze pointer control). Selection follows headset direction, not eye movements.
+Zoom uses exponential, frame-rate-independent easing. Existing spacing safety limits still apply and
+can limit zoom. The Controls tab also provides **Fit monitor** and the other view buttons.
+
+**Controls → XR keys** shows the modifier as chips and every action as a row: click a key (or press
+Enter on it), then press the new key; Shift is kept, Backspace turns an action off, Escape cancels, ↺
+resets one key and **Reset all** every key. Conflicts are named on the row: two actions on one key, an
+Omarchy binding on the same chord, CTRL+ALT+F1…F12 (virtual terminals) or SHIFT in both the modifier
+and a key. **Save keys** (enabled once the map is conflict-free) updates the running Lua bindings
+without restarting XR or reloading Hyprland; **Print cheat sheet** shows the table in a terminal.
+Profiles from before the XR layer load as the defaults.
+
+On a machine with a multitouch touchpad the gestures remain as an extra: three-finger swipe up/down
+zooms (flicks fit), a three-finger double tap recenters, a single tap focuses in the canvas, four
+fingers pan, and flicks over a highlighted alert dismiss or cycle it. Studio shows the swipe finger
+count (3 or 5) only when the installer found a touchpad. Some touchpads, such as the GPD Pocket 4's,
+reach Linux as a plain mouse; every action has a key for them.
+
+The Lua integration uses live callbacks and atomic mailboxes beside the pose socket, without spawning
+a process per key or gesture event. The bindings deactivate within 250 ms of a clean viewer exit
+(within about 3 seconds after a crash). Controls require the standard Studio state directory, honor
+`XDG_STATE_HOME`, and use no administrator privileges. The installer refuses a key map that conflicts
+with compositor bindings. To remove integration, remove the `require("hypr.xr-controls")` line from
+`~/.config/hypr/bindings.lua`, remove `~/.config/hypr/xr-controls.lua`, then reload Hyprland.
 
 
 ### Gaze selection and independent pointer
@@ -647,11 +669,11 @@ that target changes, XR selects the monitor's existing workspace once, without a
 dwell delay. Gaps, looking away, and stale tracking preserve the last selected monitor. Looking around within one
 monitor never repeats selection or steers the mouse. Mouse motion never changes
 the gaze target. Workspace selection uses normal Omarchy behavior, including any
-configured one-time cursor warp. Ctrl+Down centers the selected monitor face-on and fits its height.
-Three-finger zoom approaches the looked-at point on that monitor along its local
+configured one-time cursor warp. XR+Down frames the window you look at on the selected monitor.
+Zoom approaches the looked-at point on that monitor along its local
 normal without changing the workspace bend. A zoom gesture keeps that first look
 point until pan, fit, or recenter. With no look hit, zoom uses the selected
-monitor center, then the workspace. Ctrl+Up returns to the full workspace view.
+monitor center, then the workspace. XR+Up returns to the full workspace view.
 
 There is no XR pointer reticle. The native desktop cursor is captured with the
 desktop, so its visible update rate depends on capture delivery. Requires `make install-controls` and
@@ -662,7 +684,7 @@ during the display-flip wait and immediately flushes negotiated copy requests,
 avoiding extra full-frame waits. This improves delivery cadence but does not
 guarantee a 60 fps cursor under every compositor workload.
 
-Three-finger double tap smoothly centers the selected monitor without changing zoom (about half a second). Camera zoom
+XR+Space (or a three-finger double tap) smoothly centers the selected monitor without changing zoom (about half a second). Camera zoom
 is independent of curvature spacing, and zoom-out stops at twice the fitted
 workspace distance. A quick upward flick fits the
 selected monitor; a downward flick fits the whole workspace; slow or sustained vertical motion zooms continuously. Flicks
@@ -675,14 +697,6 @@ button recenters on a double tap within 400 ms only while XR is active (includin
 the same touchpad). External mice retain their middle button. Tap-to-click must
 be enabled; this machine already has it enabled. Rerun `make install-controls`
 after adding a new touchpad. The binding follows the global LRM/LMR tap mapping.
-
-**Controls → Shortcuts & gestures** configures fit workspace, fit selected
-monitor, recenter, zoom-in and zoom-out hotkeys. Leave a field blank to disable
-that shortcut; use modifier combinations such as `CTRL + ALT + R`. Swipe finger
-count can be 3 or 5 (hardware support required); four fingers pan. Tap remains three fingers.
-**Save shortcuts** saves preferences and updates the running Lua bindings without
-restarting XR or reloading Hyprland. Duplicate and conflicting desktop shortcuts
-are rejected. **Reset to defaults** changes the draft; **Save shortcuts** confirms it.
 
 Focused zoom uses heading-only navigation: head roll/pitch are never saved as
 workspace tilt. Live head tracking still preserves its gravity reference.

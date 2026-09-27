@@ -54,11 +54,11 @@ local function gmove(t,y)omarchy_xr_controls.gesture.update({time_ms=t,delta={y=
 local function gend(t,cancelled)omarchy_xr_controls.gesture.finish({time_ms=t,cancelled=cancelled})end
 local firstTimer, gazeTimer
 local function testActivation()
-assert(not bindings["CTRL + Up"].enabled and #gestures==0)
+assert(not bindings["CTRL + ALT + Up"] and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
-assert(bindings["CTRL + Up"].enabled and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==6 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(bindings["CTRL + ALT + Up"] and gestures[#gestures].direction=="vertical")
+assert(omarchy_xr_controls.version==7 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -86,8 +86,8 @@ gstart(1000);gmove(1100,-25)
 assert(files[path]:find("0.100000000",1,true))
 gmove(1150,10);gend(1200)
 assert(files[path]:find("0.060000000",1,true))
-bindings["CTRL + Down"].callback()
-assert(files[path]:match("3 2\n$"))
+bindings["CTRL + ALT + Down"].callback()
+assert(files[path]:match(" 3 18 %- %d+\n$")) -- focus: one code in both scenes
 -- Reload preserves cumulative zoom and disables the timer from the previous chunk.
 dofile("config/xr-controls.lua")
 assert(firstTimer.enabled==false)
@@ -105,11 +105,12 @@ before=files[path];gstart(6000);gmove(6050,-60);gend(6100,true);assert(files[pat
 testDoubleTap()
 gazeTimer=omarchy_xr_controls.hover_timer
 assert(gazeTimer and gazeTimer.enabled)
+local up=bindings["CTRL + ALT + Up"]
 now=104;omarchy_xr_controls.refresh()
-assert(not bindings["CTRL + Up"].enabled and not bindings["mouse:274"].enabled and gestures[#gestures].action=="unset")
+assert(not bindings["CTRL + ALT + Up"] and not bindings["mouse:274"].enabled and gestures[#gestures].action=="unset")
 assert(omarchy_xr_controls.hover_timer==nil and gazeTimer.enabled==false)
 local previous=files[path]
-bindings["CTRL + Up"].callback()
+up.callback()
 assert(files[path]==previous)
 print("Live swipe direction, fit bindings, reload continuity and crash expiry passed")
 end
@@ -203,14 +204,23 @@ end
 local function testSettings()
 -- Apply settings live: unregister old gesture and replace only XR bindings.
 now=111;files["/proc/uptime"]="111";files[path..".active"]="42 111";omarchy_xr_controls.refresh()
+assert(bindings["CTRL + ALT + space"] and bindings["CTRL + ALT + SHIFT + Z"]==nil) -- canvas-only keys wait for the canvas
+assert(files[path..".keys"]:match("\nredo\tCTRL %+ ALT %+ SHIFT %+ Z\t0\n") and files[path..".keys"]:match("\nhelp\tCTRL %+ ALT %+ H\t1\n"))
+-- A v1 file (before the XR layer) keeps the defaults.
 files["/state/omarchy-xr/controls-settings.tsv"]="5\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
+omarchy_xr_controls.refresh();assert(bindings["CTRL + ALT + Up"] and not bindings["ALT + Up"] and omarchy_xr_controls.fingers==3)
+files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tSUPER + ALT\nfingers\t5\nkey\trecenter\tR\nkey\tzoom_in\tI\nkey\tzoom_out\tO\nkey\toverview\t\n"
+    .."key\tbogus\tX\nkey\thelp\tH);os.exit(\n"
 omarchy_xr_controls.refresh()
-assert(not bindings["CTRL + Up"] and bindings["ALT + Up"].enabled)
+assert(not bindings["CTRL + ALT + Up"] and not bindings["CTRL + ALT + space"] and bindings["SUPER + ALT + R"])
+assert(not bindings["SUPER + ALT + Up"] and bindings["SUPER + ALT + Down"] and bindings["SUPER + ALT + H"]) -- disabled; bad line keeps the default
 assert(omarchy_xr_controls.fingers==5 and gestures[#gestures].fingers==5)
 assert(gestures[#gestures-1].fingers==3 and type(gestures[#gestures-1].action)=="table")
-bindings["CTRL + I"].callback();assert(files[path]:match("4\n$"))
-bindings["CTRL + O"].callback();assert(files[path]:match("5\n$"))
-print("Live hotkey replacement and swipe finger count passed")
+assert(bindings["SUPER + ALT + I"].options.repeating)
+bindings["SUPER + ALT + I"].callback();assert(files[path]:match("4\n$"))
+bindings["SUPER + ALT + O"].callback();assert(files[path]:match("5\n$"))
+bindings["SUPER + ALT + mouse_up"].callback();assert(files[path]:match("4\n$"))
+print("XR layer: v2 settings, modifier change, disabled and malformed keys, canvas-only keys, .keys and finger count passed")
 end
 
 local function testPan()
@@ -299,8 +309,13 @@ local function testNotificationFlicks()
     assert(files[path]:match("^v2 .* 2\n$")) -- five fingers retain monitor fit even over an alert
     dofile("config/xr-controls.lua")
     gstart(8000);gmove(8050,-60);gend(8100);assert(files[path]:match("^v3 .* 6 ab1234 130\n$"))
-    files["/state/omarchy-xr/controls-settings.tsv"]="3\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
-    omarchy_xr_controls.refresh();files[path..".notification"]="v1 42 - 130\n"
+    files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tCTRL + ALT\nfingers\t3\n"
+    omarchy_xr_controls.refresh()
+    -- Keyboard: dismiss and cycle the gazed card, or the front card (-) without one.
+    bindings["CTRL + ALT + N"].callback();assert(files[path]:match("^v3 42 .* 20 ab1234 130\n$"))
+    bindings["CTRL + ALT + SHIFT + N"].callback();assert(files[path]:match("^v3 42 .* 21 ab1234 130\n$"))
+    files[path..".notification"]="v1 42 - 130\n"
+    bindings["CTRL + ALT + N"].callback();assert(files[path]:match("^v3 42 .* 20 %- 130\n$"))
     gstart(9000);gmove(9050,60);gend(9100);assert(files[path]:match("^v2 .* 1\n$"))
     gstart(10000);gmove(10100,-10);gend(10250)
     assert(files[path]:match("^v2 ")) -- ordinary zoom still works after a notification action
@@ -391,21 +406,17 @@ local function row(address)
 end
 local function seq(file) return tonumber(files[path..file]:match("^v1 42 (%d+) ")) end
 
--- Canvas key set (§5.5): search and pin always; the optional takeovers replace Omarchy's defaults and
--- give them back on exit (tiling.lua), including both ALT+TAB binds.
+-- Omarchy's defaults the v6 canvas used to take over; v7 must leave every one of them alone.
 local DIRECTIONS={LEFT={"left","l","Focus on left window","Swap window to the left"},RIGHT={"right","r","Focus on right window","Swap window to the right"},
     UP={"up","u","Focus on above window","Swap window up"},DOWN={"down","d","Focus on below window","Swap window down"}}
 local TAKEN={"SUPER + TAB","ALT + TAB","ALT + SHIFT + TAB","SUPER + mouse_down","SUPER + mouse_up"}
 for key in pairs(DIRECTIONS) do TAKEN[#TAKEN+1]="SUPER + "..key;TAKEN[#TAKEN+1]="SUPER + SHIFT + "..key end
-local ALWAYS,RELEASES={"SUPER + CTRL + G","SUPER + ALT + P","SUPER + CTRL + Page_Up","SUPER + CTRL + Page_Down"},{"ALT + ALT_L","ALT + ALT_R"}
 local function hex(text) return (text:gsub(".",function(c) return ("%02x"):format(c:byte()) end)) end
-local function isXR(chord) return bindings[chord]~=nil and bindings[chord].options.description:match("^XR: ")~=nil end
-local function allXR(list,wanted) for _,chord in ipairs(list) do assert(isXR(chord)==wanted,chord) end end
-local function press(chord)
-    bindings[chord].callback()
+local function press(chord,index)
+    local binding=index and bindLists[chord][index] or bindings[chord]
+    binding.callback()
     return files[path]:match("^v3 42 %d+ %S+ %d+ (%d+) (%S+) %d+\n$")
 end
--- A fresh Omarchy config (the canvas activation test above already restored them once).
 local function omarchyDefaults()
     for _,chord in ipairs(TAKEN) do hl.unbind(chord) end
     hl.bind("SUPER + TAB",hl.dsp.focus({workspace="e+1"}),{description="Next workspace"})
@@ -421,99 +432,86 @@ local function omarchyDefaults()
     end
 end
 local function assertOmarchy()
-    local tab=bindings["SUPER + TAB"]
-    assert(tab.options.description=="Next workspace");assert(tab.callback.kind=="focus");assert(tab.callback.spec.workspace=="e+1")
-    for chord,wheel in pairs({["SUPER + mouse_down"]={"forward","e+1"},["SUPER + mouse_up"]={"backward","e-1"}}) do
-        local b=bindings[chord];assert(#bindLists[chord]==1)
-        assert(b.options.description=="Scroll active workspace "..wheel[1]);assert(b.callback.kind=="focus");assert(b.callback.spec.workspace==wheel[2])
-    end
-    for _,chord in ipairs({"ALT + TAB","ALT + SHIFT + TAB"}) do
-        local list=bindLists[chord]
-        assert(#list==2);assert(list[1].callback.kind=="window.cycle_next");assert(list[2].callback.kind=="window.bring_to_top")
-        assert(list[2].options.description=="Reveal active window on top")
-    end
-    assert(bindLists["ALT + TAB"][1].options.description=="Focus on next window");assert(bindLists["ALT + TAB"][1].callback.spec==nil)
-    assert(bindLists["ALT + SHIFT + TAB"][1].options.description=="Focus on previous window")
-    assert(bindLists["ALT + SHIFT + TAB"][1].callback.spec.next==false)
+    assert(bindings["SUPER + TAB"].options.description=="Next workspace")
+    for _,chord in ipairs({"SUPER + mouse_down","SUPER + mouse_up"}) do assert(#bindLists[chord]==1 and not bindings[chord].options.description:match("^XR")) end
+    for _,chord in ipairs({"ALT + TAB","ALT + SHIFT + TAB"}) do assert(#bindLists[chord]==2) end
     for key,d in pairs(DIRECTIONS) do
-        local focus,swap=bindings["SUPER + "..key],bindings["SUPER + SHIFT + "..key]
-        assert(#bindLists["SUPER + "..key]==1);assert(focus.options.description==d[3])
-        assert(focus.callback.kind=="focus");assert(focus.callback.spec.direction==d[2])
-        assert(swap.options.description==d[4]);assert(swap.callback.kind=="window.swap");assert(swap.callback.spec.direction==d[2])
+        assert(bindings["SUPER + "..key].options.description==d[3]);assert(bindings["SUPER + SHIFT + "..key].options.description==d[4])
     end
+    assert(bindings["SUPER + F"].options.description=="Full screen")
 end
-local function unboundSince(start,chord)
-    for i=start+1,#unbound do if unbound[i]==chord then return true end end
-    return false
-end
-local function testTakeoverPresses()
-    for key,d in pairs(DIRECTIONS) do
-        local mode,token=press("SUPER + "..key);assert(mode=="14");assert(token==hex(d[1]))
-        mode,token=press("SUPER + SHIFT + "..key);assert(mode=="15");assert(token==hex(d[1]))
-    end
-    local mode,token=press("ALT + TAB");assert(mode=="11");assert(token=="-")
-    mode,token=press("ALT + SHIFT + TAB");assert(mode=="12");assert(token=="-")
-    for _,chord in ipairs(RELEASES) do
-        assert(bindings[chord].options.release==true)
-        mode,token=press(chord);assert(mode=="11");assert(token==hex("release"))
-    end
-    mode,token=press("SUPER + TAB");assert(mode=="8");assert(token=="-")
-    mode=press("SUPER + CTRL + G");assert(mode=="9")
-    mode=press("SUPER + ALT + P");assert(mode=="16")
-end
+-- The XR layer in the canvas (docs/xr-controls-plan.md §3): every action publishes its code and token,
+-- grab is a press/release pair, the mouse follows the modifier, and no Omarchy chord is touched.
 local function testCanvasKeys()
     omarchyDefaults();assertOmarchy()
     local start=#unbound
     clock(146);omarchy_xr_controls.refresh()
-    for _,chord in ipairs(TAKEN) do assert(unboundSince(start,chord),chord) end
-    allXR(TAKEN,true);allXR(ALWAYS,true);allXR(RELEASES,true);assert(#bindLists["ALT + TAB"]==1)
-    assert(bindings["SUPER + CTRL + G"].options.release==nil)
-    testTakeoverPresses()
-    clock(146,"monitors");omarchy_xr_controls.refresh()
-    assertOmarchy();allXR(ALWAYS,false);allXR(RELEASES,false)
-    assert(bindings["SUPER + F"].options.description=="Full screen")
-    -- Flag 0: the optional chords stay Omarchy's; search, pin and fill are still bound.
-    start=#unbound
-    clock(147,"canvas",nil,"0");omarchy_xr_controls.refresh()
-    for _,chord in ipairs(TAKEN) do assert(not unboundSince(start,chord),chord) end
-    assertOmarchy();allXR(ALWAYS,true);allXR(RELEASES,false);assert(isXR("SUPER + F"))
-    -- The flag flips live: takeovers install and retire without leaving the canvas.
-    clock(147.5);omarchy_xr_controls.refresh();allXR(TAKEN,true);allXR(RELEASES,true)
-    clock(148,"canvas",nil,"0");omarchy_xr_controls.refresh();assertOmarchy();allXR(ALWAYS,true);allXR(RELEASES,false)
-    -- A config reload while live retires everything and re-enters with the takeover intact.
-    clock(148.5);omarchy_xr_controls.refresh()
-    local before=bindings["SUPER + LEFT"]
-    dofile("config/xr-controls.lua")
-    assert(bindings["SUPER + LEFT"]~=before);allXR(TAKEN,true);allXR(ALWAYS,true);allXR(RELEASES,true)
-    assert(#bindLists["ALT + TAB"]==1);assert(#bindLists["SUPER + CTRL + G"]==1);assert(#omarchy_xr_canvas.takeovers==15)
-    testTakeoverPresses()
-    clock(149,"monitors");omarchy_xr_controls.refresh();assertOmarchy();allXR(ALWAYS,false)
-    print("Canvas keys: search/pin always, takeovers with ALT release binds, restore of Omarchy's defaults, live flag and reload passed")
+    assert(#unbound==start);assertOmarchy()
+    local expect={["Up"]={"8","-"},["Down"]={"18","-"},["Return"]={"10","-"},["Left"]={"22",hex("prev")},["Right"]={"22",hex("next")},
+        ["Page_Up"]={"19",hex("pageup")},["Page_Down"]={"19",hex("pagedown")},["slash"]={"9","-"},["P"]={"16","-"},["A"]={"13","-"},
+        ["Z"]={"27","-"},["SHIFT + Z"]={"28","-"},["H"]={"17","-"}}
+    for key,d in pairs(DIRECTIONS) do expect["SHIFT + "..key:sub(1,1)..key:sub(2):lower()]={"15",hex(d[1])} end
+    for key,want in pairs(expect) do
+        local mode,token=press("CTRL + ALT + "..key)
+        assert(mode==want[1] and token==want[2],key)
+    end
+    assert(bindings["CTRL + ALT + Left"].options.repeating and bindings["CTRL + ALT + SHIFT + Up"].options.repeating)
+    -- Grab: one press bind (begin) and one release bind (end), never repeating.
+    local grab=bindLists["CTRL + ALT + G"];assert(#grab==2 and not grab[1].options.repeating and grab[2].options.release)
+    local mode,token=press("CTRL + ALT + G",1);assert(mode=="26" and token==hex("begin"))
+    assert(bindings["G"] and bindings["G"].options.release and bindings["G"].options.non_consuming)
+    mode,token=press("CTRL + ALT + G",2);assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
+    -- The modifier let go first: the bare key release ends the grab.
+    press("CTRL + ALT + G",1);mode,token=press("G");assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
+    local tap=bindings["mouse:274"]
+    mode,token=press("CTRL + ALT + mouse:274",1);assert(mode=="26" and token==hex("begin"))
+    assert(bindings["mouse:274"]==tap)                               -- no bare release on the touchpad tap's button
+    press("CTRL + ALT + mouse:274",2)
+    -- Mouse: SHIFT+wheel scrolls in wheel runs; left-drag moves, right-drag is Hyprland's resize.
+    mode,token=press("CTRL + ALT + SHIFT + mouse_down");assert(mode=="19" and token:sub(1,#hex("down:"))==hex("down:"))
+    assert(#bindLists["CTRL + ALT + mouse:272"]==2 and bindLists["CTRL + ALT + mouse:272"][2].options.release)
+    assert(bindings["CTRL + ALT + mouse:273"].options.mouse)
+    -- Back in monitors mode the canvas-only chords are released to applications.
+    clock(146.5,"monitors");omarchy_xr_controls.refresh()
+    for _,key in ipairs({"P","A","Z","SHIFT + Z","Page_Up","SHIFT + Left","comma","mouse:272","mouse:273","SHIFT + mouse_up"}) do
+        assert(bindings["CTRL + ALT + "..key]==nil,key)
+    end
+    local before=files[path];bindings["CTRL + ALT + Left"].callback();assert(files[path]==before) -- no XR monitor windows here
+    mode=press("CTRL + ALT + slash");assert(mode=="9")
+    assert(#unbound==start);assertOmarchy()
+    print("XR layer: canvas and monitor actions, grab press/release, mouse, canvas-only release, Omarchy untouched passed")
 end
 
 local function testCanvasActivation()
     installCanvasHl()
     hl.bind("SUPER + F",hl.dsp.window.fullscreen({mode="fullscreen"}),{description="Full screen"})
     clock(140,"canvas","43");omarchy_xr_controls.refresh()
-    assert(bindings["SUPER + F"].options.description=="Full screen");assert(#unbound==0);assert(not events["window.open"]) -- foreign owner
+    assert(#unbound==0);assert(not events["window.open"]) -- foreign owner
     clock(140);omarchy_xr_controls.refresh()
-    assert(omarchy_xr_controls.version==6);assert(files["/run/omarchy-xr/controls.version"]=="6\n")
-    assert(unbound[1]=="SUPER + F");assert(bindings["SUPER + F"].options.description=="XR: fill window (canvas)")
+    assert(omarchy_xr_controls.version==7);assert(files["/run/omarchy-xr/controls.version"]=="7\n")
+    assert(#unbound==0);assert(bindings["SUPER + F"].options.description=="Full screen")
     assert(events["window.open"]);assert(events["window.fullscreen"]);assert(events["window.move_to_workspace"])
-    bindings["SUPER + F"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 10 %- 140\n$"))
-    -- A config reload while the canvas is live retires the old takeover and events and re-enters.
-    local takeover,openEvent=bindings["SUPER + F"],events["window.open"]
+    assert(bindings["CTRL + ALT + P"])
+    bindings["CTRL + ALT + Return"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 10 %- 140\n$"))
+    -- A config reload while the canvas is live re-binds the layer and the events.
+    local pin,openEvent=bindings["CTRL + ALT + P"],events["window.open"]
     dofile("config/xr-controls.lua")
-    assert(bindings["SUPER + F"]~=takeover);assert(bindings["SUPER + F"].options.description=="XR: fill window (canvas)")
+    assert(bindings["CTRL + ALT + P"]~=pin and bindings["CTRL + ALT + P"]);assert(tostring(pin)=="HL.Keybind(expired)")
     assert(events["window.open"]);assert(events["window.open"]~=openEvent);assert(#omarchy_xr_canvas.events==9)
     clock(140,"monitors");omarchy_xr_controls.refresh()
-    local restored=bindings["SUPER + F"]
-    assert(restored.options.description=="Full screen");assert(restored.callback.kind=="window.fullscreen");assert(restored.callback.spec.mode=="fullscreen")
     assert(not events["window.open"]);assert(#omarchy_xr_canvas.events==0)
-    clock(140);omarchy_xr_controls.refresh();assert(bindings["SUPER + F"].options.description=="XR: fill window (canvas)")
+    assert(bindings["CTRL + ALT + P"]==nil and bindings["CTRL + ALT + Return"])
     clock(145,"canvas");files[path..".active"]="42 140";omarchy_xr_controls.refresh()
-    assert(bindings["SUPER + F"].options.description=="Full screen");assert(not events["window.open"]) -- expired renderer
-    print("Canvas activation: .mode owner gate, SUPER+F takeover and restore, reload and expiry passed")
+    assert(bindings["CTRL + ALT + Return"]==nil);assert(not events["window.open"]) -- expired renderer
+    -- Upgrading over a live v6 canvas gives its SUPER+F and SUPER+TAB takeovers back to Omarchy.
+    hl.unbind("SUPER + F");hl.bind("SUPER + F",function() end,{description="XR: fill window (canvas)"})
+    omarchy_xr_canvas.fill=bindings["SUPER + F"]
+    hl.unbind("SUPER + TAB")
+    omarchy_xr_canvas.takeovers={{chord="SUPER + TAB",binding=hl.bind("SUPER + TAB",function() end,{description="XR: overview (canvas)"}),
+        restore={{desc="Next workspace",dsp=function() return hl.dsp.focus({workspace="e+1"}) end}}}}
+    dofile("config/xr-controls.lua")
+    assert(bindings["SUPER + F"].options.description=="Full screen" and bindings["SUPER + TAB"].options.description=="Next workspace")
+    print("Canvas activation: .mode owner gate, no takeovers, layer rebinding, reload, expiry and v6 upgrade passed")
 end
 
 local function testPublishWindows()
@@ -718,21 +716,22 @@ end
 local function testSettingsUnchangedInCanvas()
     clock(164)
     local pane=files[path..".pane"]
-    files["/state/omarchy-xr/controls-settings.tsv"]="4\nSUPER + Up\nSUPER + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
+    files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tSUPER + CTRL\nfingers\t3\nkey\tzoom_in\tI\n"
     omarchy_xr_controls.refresh()
-    assert(bindings["SUPER + Up"].enabled);assert(not bindings["ALT + Up"]);assert(omarchy_xr_controls.fingers==3)
-    assert(bindings["SUPER + F"].options.description=="XR: fill window (canvas)");assert(isXR("SUPER + CTRL + G"));assert(isXR("SUPER + LEFT"))
-    bindings["CTRL + I"].callback();assert(files[path]:match("^v2 42 .* 4\n$"))
+    -- A modifier change in the canvas re-binds every layer key, canvas-only ones included.
+    assert(bindings["SUPER + CTRL + Up"] and bindings["SUPER + CTRL + P"] and not bindings["CTRL + ALT + P"])
+    assert(omarchy_xr_controls.fingers==3);assert(bindings["SUPER + F"].options.description=="Full screen")
+    bindings["SUPER + CTRL + I"].callback();assert(files[path]:match("^v2 42 .* 4\n$"))
     tick(164.1);assert(files[path..".pane"]==pane) -- no pane publishing in canvas mode
     local members={}
     for address in pairs(omarchy_xr_canvas.origin) do members[#members+1]=address end
     assert(#members>0);dispatched={}
     clock(170,"monitors");files[path..".active"]="42 160";omarchy_xr_controls.refresh()
-    assert(bindings["SUPER + F"].options.description=="Full screen");assert(not events["window.open"])
-    assert(not bindings["SUPER + CTRL + G"]);assertOmarchy()
+    assert(not events["window.open"]);assert(not bindings["SUPER + CTRL + P"]);assertOmarchy()
     for _,address in ipairs(members) do assert(unsetProps(address)==6) end -- leaving restores decorations
     assert(next(omarchy_xr_canvas.origin)==nil)
-    print("Canvas mode keeps the 5-key settings file and remaps existing bindings passed")
+    files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tCTRL + ALT\nfingers\t3\n"
+    print("Canvas mode: live modifier change re-binds the layer; leaving restores decorations passed")
 end
 -- `.tiers` (M5): the renderer's sliver set; slivers sit 8 px inside the right edge with no_follow_mouse.
 local function tiersFile(n,stamp,owner,list)
@@ -821,7 +820,13 @@ local function testStageBand()
     assert(d.workspace.name=="omxr-canvas");assert(followProp("0xd","1")==1);assert(omarchy_xr_canvas.slivers["0xd"])
     assert(d.at.x==22552);assert(d.at.y==0)
     tick(190.4);assert(row("0xd")[9]=="sliver");assert(row("0xc")[9]=="stage");assert(moves("0xd")==1) -- staged there, not moved again
-    print("Stage band: output minus the strip for staging and Fill, a staged sliver loses no_follow_mouse, a demoted window in the set becomes a sliver passed")
+    -- Omarchy's bar reserves the output's top 26 px: the stage starts below it, and the band is that much shorter.
+    canvasOutput.reserved={top=26,right=0,bottom=0,left=0}
+    window("0xe","omxr-park",{size={x=1000,y=1440}});hoverV4("0xe",23,10,10)
+    local e=find("0xe");assert(omarchy_xr_canvas.staged=="0xe" and e.at.x==20000 and e.at.y==26 and e.size.y==1414)
+    fillLine(9,"0xe",2600,1500,189);tick(190.6);assert(e.size.x==2552 and e.size.y==1414)
+    canvasOutput.reserved=nil
+    print("Stage band: output minus the strip and the reserved bar for staging and Fill, a staged sliver loses no_follow_mouse, a demoted window in the set becomes a sliver passed")
 end
 local function testTiersLeave()
     clock(191);omarchy_xr_controls.refresh();dispatched={}
@@ -866,19 +871,18 @@ testStageBand()
 testTiersLeave()
 testSliverFloor()
 
--- M7: confirm, auto-staging, the SUPER+left-drag takeover, resize keys and the stage re-clamp.
-files["/state/omarchy-xr/controls-settings.tsv"]="3\nCTRL + Up\nCTRL + Down\n\n\n\n"
-local DRAG="SUPER + mouse:272"
+-- M7: confirm, auto-staging, the XR+left-drag, resize keys and the stage re-clamp.
+local DRAG="CTRL + ALT + mouse:272"
 local function testConfirmHotkey()
     clock(200);omarchy_xr_controls.refresh()
-    bindings["CTRL + Down"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 18 %- 200\n$"))
+    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 18 %- 200\n$"))
     omarchy_xr_controls.fit_target();assert(files[path]:match(" 18 %- 200\n$"))
-    bindings["CTRL + Up"].callback();assert(files[path]:match("^v2 .* 1\n$"))
+    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 8 %- 200\n$"))
     gstart(20000);gmove(20050,-60);gend(20100);assert(files[path]:match("^v2 .* 2\n$")) -- the flick-in keeps mode 2
     clock(200.5,"monitors");omarchy_xr_controls.refresh()
-    bindings["CTRL + Down"].callback();assert(files[path]:match("^v2 .* 2\n$"))
-    omarchy_xr_controls.fit_target();assert(files[path]:match("^v2 .* 2\n$"))
-    print("Confirm hotkey: fit_target publishes 18 in canvas mode, 2 in monitor mode; the flick keeps 2 passed")
+    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match(" 18 %- 200\n$")) -- the renderer picks the scene's meaning
+    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 8 %- 200\n$"))
+    print("Focus and overview keys publish one code in both scenes; the flick keeps 2 passed")
 end
 local function testTapConfirm()
     clock(201);omarchy_xr_controls.refresh()
@@ -926,7 +930,7 @@ end
 local function dragFields() return files[path..".drag"]:match("^v2 42 %d+ (%d+) (%S+) (%S+) ([01]) %d+\n$") end
 local function testStageDrag()
     windows={};window("0x50","omxr-canvas");window("0x51","omxr-park");omarchy_xr_canvas.staged="0x50"
-    clock(219.5,"monitors");omarchy_xr_controls.refresh();assert(bindings[DRAG].callback.kind=="window.drag")
+    clock(219.5,"monitors");omarchy_xr_controls.refresh();assert(bindings[DRAG]==nil)
     clock(220);omarchy_xr_controls.refresh();tick(220);assert(omarchy_xr_canvas.staged=="0x50") -- staged again on entry
     local list=bindLists[DRAG];assert(#list==2);assert(list[1].options.description:match("^XR: "));assert(list[2].options.release==true)
     dispatched={};cursorPos={x=20100,y=100};files["/proc/uptime"]="220";list[1].callback()
@@ -935,7 +939,7 @@ local function testStageDrag()
     local id,dx,dy,held=dragFields();assert(id=="1");assert(tonumber(dx)==40);assert(tonumber(dy)==30);assert(held=="1")
     cursorPos={x=21000,y=130};tick(220.2)                     -- confined: the overflow carries the travel
     assert(cursorPos.x==20798);assert(select(2,dragFields())=="900.000000000");assert(select(3,dragFields())=="30.000000000")
-    local plain=bindings["mouse:272"];assert(plain.options.release==true) -- SUPER let go first: the plain release ends it
+    local plain=bindings["mouse:272"];assert(plain.options.release==true) -- the modifier let go first: the plain release ends it
     assert(plain.options.description:match("^XR: "));plain.callback()
     assert(select(4,dragFields())=="0");assert(select(2,dragFields())=="900.000000000");assert(bindings["mouse:272"]==nil)
     list[1].callback();assert(bindings["mouse:272"]);list[2].callback();assert(bindings["mouse:272"]==nil)
@@ -944,53 +948,42 @@ local function testStageDrag()
     dofile("config/xr-controls.lua");assert(#bindLists[DRAG]==2)  -- a reload retires the old binds
     cursorPos={x=20300,y=300};bindLists[DRAG][1].callback();assert(dragFields()=="3");assert(select(4,dragFields())=="1")
     clock(221,"monitors");omarchy_xr_controls.refresh();assert(select(4,dragFields())=="0") -- leaving ends the drag
-    assert(bindings["mouse:272"]==nil)
-    local restored=bindings[DRAG];assert(#bindLists[DRAG]==1);assert(restored.callback.kind=="window.drag")
-    assert(restored.options.mouse==true);assert(restored.options.description=="Move window")
-    print("Stage drag: SUPER+left-drag taken over, cumulative travel with overflow, release, the plain-release fallback, reload, restore of window.drag passed")
+    assert(bindings["mouse:272"]==nil);assert(bindings[DRAG]==nil)
+    print("Stage drag: XR+left-drag, cumulative travel with overflow, release, the plain-release fallback, reload, unbound outside the canvas passed")
 end
 local function testResizeKeys()
     clock(222);omarchy_xr_controls.refresh();tick(222);assert(omarchy_xr_canvas.staged=="0x50");dispatched={}
-    local function key(name,times) for _=1,times or 1 do bindings["SUPER + CTRL + "..name].callback() end return last("window.resize") end
+    local names={RIGHT="period",LEFT="comma",DOWN="SHIFT + period",UP="SHIFT + comma"}
+    local function key(name,times)
+        assert(bindings["CTRL + ALT + "..names[name]].options.repeating)
+        for _=1,times or 1 do bindings["CTRL + ALT + "..names[name]].callback() end return last("window.resize")
+    end
     assert(key("RIGHT").x==900);assert(last("window.resize").y==600);assert(key("DOWN").y==700);assert(key("UP").y==600)
     assert(key("LEFT",12).x==100);tick(222.2);assert(row("0x50")[4]=="100");assert(row("0x50")[5]=="600")
     assert(key("RIGHT",40).x==2552);assert(key("DOWN",20).y==1440);assert(key("UP",20).y==100)
     clock(223,"monitors");omarchy_xr_controls.refresh()
-    assert(bindings["SUPER + CTRL + UP"]==nil);assert(bindings["SUPER + CTRL + DOWN"]==nil)
-    local left,right=bindings["SUPER + CTRL + LEFT"],bindings["SUPER + CTRL + RIGHT"]
-    assert(left.callback.kind=="group.prev");assert(left.options.description=="Move grouped window focus left")
-    assert(right.callback.kind=="group.next");assert(right.options.description=="Move grouped window focus right")
-    print("Resize keys: 100 px steps clamped to 100 px and the band, Omarchy's group keys back on exit passed")
+    for _,name in pairs(names) do assert(bindings["CTRL + ALT + "..name]==nil) end
+    print("Resize keys: 100 px steps clamped to 100 px and the band, released outside the canvas passed")
 end
--- M8 scroll (mode 19): the wheel is a takeover, SUPER+CTRL+Page_Up/Down are always bound in canvas mode.
-local testScrollKeys
-do
-    local function wheelIsOmarchy()
-        assert(bindings["SUPER + mouse_up"].options.description=="Scroll active workspace backward")
-        assert(bindings["SUPER + mouse_down"].options.description=="Scroll active workspace forward")
-        assert(bindings["SUPER + mouse_up"].callback.spec.workspace=="e-1");assert(bindings["SUPER + mouse_down"].callback.spec.workspace=="e+1")
+-- M8 scroll (mode 19): XR+Page_Up/Down and XR+SHIFT+wheel, canvas only.
+local function testScrollKeys()
+    clock(222.5);omarchy_xr_controls.refresh()
+    for chord,want in pairs({["CTRL + ALT + Page_Up"]="pageup",["CTRL + ALT + Page_Down"]="pagedown"}) do
+        local mode,token=press(chord);assert(mode=="19",chord);assert(token==hex(want),chord)
     end
-    testScrollKeys=function()
-        clock(222.5);omarchy_xr_controls.refresh()
-        for chord,want in pairs({["SUPER + CTRL + Page_Up"]="pageup",["SUPER + CTRL + Page_Down"]="pagedown"}) do
-            local mode,token=press(chord);assert(mode=="19",chord);assert(token==hex(want),chord)
-        end
-        -- A wheel notch counts within its run: the same direction continues it, a turn or another mode press starts one.
-        local function notch(chord)
-            local mode,token=press(chord);assert(mode=="19",chord)
-            return token:gsub("%x%x",function(h) return string.char(tonumber(h,16)) end):match("^(%a+):(%d+):(%d+)$")
-        end
-        local dir,run,one=notch("SUPER + mouse_down");assert(dir=="down" and one=="1")
-        local _,again,second=notch("SUPER + mouse_down");assert(again==run and second=="2")
-        local up,turned,first=notch("SUPER + mouse_up");assert(up=="up" and turned~=run and first=="1")
-        press("SUPER + CTRL + Page_Up")
-        local _,fresh,restart=notch("SUPER + mouse_up");assert(fresh~=turned and restart=="1")
-        clock(222.6,"canvas",nil,"0");omarchy_xr_controls.refresh();wheelIsOmarchy()
-        assert(isXR("SUPER + CTRL + Page_Up"));assert(select(2,press("SUPER + CTRL + Page_Down"))==hex("pagedown"))
-        clock(222.7,"monitors");omarchy_xr_controls.refresh();wheelIsOmarchy()
-        assert(bindings["SUPER + CTRL + Page_Up"]==nil);assert(bindings["SUPER + CTRL + Page_Down"]==nil)
-        print("Scroll keys: SUPER+wheel takeover and SUPER+CTRL+Page_Up/Down publish mode 19, wheel notches counted per run, Omarchy's workspace scroll back on exit passed")
+    -- A wheel notch counts within its run: the same direction continues it, a turn or another mode press starts one.
+    local function notch(chord)
+        local mode,token=press(chord);assert(mode=="19",chord)
+        return token:gsub("%x%x",function(h) return string.char(tonumber(h,16)) end):match("^(%a+):(%d+):(%d+)$")
     end
+    local dir,run,one=notch("CTRL + ALT + SHIFT + mouse_down");assert(dir=="down" and one=="1")
+    local _,again,second=notch("CTRL + ALT + SHIFT + mouse_down");assert(again==run and second=="2")
+    local up,turned,first=notch("CTRL + ALT + SHIFT + mouse_up");assert(up=="up" and turned~=run and first=="1")
+    press("CTRL + ALT + Page_Up")
+    local _,fresh,restart=notch("CTRL + ALT + SHIFT + mouse_up");assert(fresh~=turned and restart=="1")
+    clock(222.7,"monitors");omarchy_xr_controls.refresh()
+    assert(bindings["CTRL + ALT + Page_Up"]==nil and bindings["CTRL + ALT + SHIFT + mouse_up"]==nil)
+    print("Scroll keys: XR+Page_Up/Down and XR+SHIFT+wheel publish mode 19, notches counted per run, canvas only passed")
 end
 local function testStageReclamp()
     clock(224);omarchy_xr_controls.refresh();tick(224)
@@ -1021,5 +1014,56 @@ testStageDrag()
 testResizeKeys()
 testScrollKeys()
 testStageReclamp()
+-- Virtual monitors mode windows (docs/xr-controls-plan.md §5.3-5.4): XR+Left/Right walk the visible windows of the
+-- XR monitors left to right with a pane for the renderer; XR+Return maximizes the gazed monitor's window.
+local function testMonitorWindows()
+    clock(240,"monitors");omarchy_xr_controls.refresh()
+    local left={name="OMXR-a",x=0,y=0,width=1920,height=1080,scale=1,active_workspace={id=4}}
+    local right={name="OMXR-b",x=1920,y=0,width=1920,height=1080,scale=1,active_workspace={id=5}}
+    hl.get_monitors=function() return {right,laptop,left,canvasOutput} end
+    local ws=function(id) return {id=id,name=tostring(id)} end
+    local list={
+        {address="0x1",at={x=960,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=2,monitor="OMXR-a",mapped=true,class="firefox",title="Docs"},
+        {address="0x2",at={x=0,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=1,monitor="OMXR-a"},
+        {address="0x3",at={x=1920,y=0},size={x=1920,y=1080},workspace=ws(5),focus_history_id=0,monitor="OMXR-b"},
+        {address="0x4",at={x=0,y=0},size={x=500,y=500},workspace=ws(9),focus_history_id=3,monitor="OMXR-a"}, -- another workspace
+        {address="0x5",at={x=100,y=100},size={x=500,y=500},workspace=ws(4),hidden=true,monitor="OMXR-a"},
+    }
+    hl.get_windows=function(filter) local out={} for _,w in ipairs(list) do if not filter or w.monitor==filter.monitor then out[#out+1]=w end end return out end
+    local active=list[3]
+    hl.get_active_window=function() return active end
+    dispatched={}
+    local mode,token=press("CTRL + ALT + Right")
+    assert(mode=="22" and token==hex("next"))                     -- from 0x3 (the last) around to 0x2
+    assert(last("focus").window=="address:0x2" and cursorPos.x==480 and cursorPos.y==540)
+    assert(files[path..".pane"]:match("^v1 42 %d+ OMXR%-a 0 0 960 1080 %d+\n$"))
+    active=list[2];press("CTRL + ALT + Right");assert(last("focus").window=="address:0x1")
+    assert(files[path..".pane"]:match(" OMXR%-a 960 0 960 1080 "))
+    active=list[1];press("CTRL + ALT + Left");assert(last("focus").window=="address:0x2")
+    active=nil;press("CTRL + ALT + Left");assert(last("focus").window=="address:0x3")
+    assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
+    -- Fill: the gazed monitor's most recently focused window is maximized, then code 10.
+    files[path..".hover"]="v3 42 7000 1 OMXR-a 0 0 0 100 100";omarchy_xr_controls.hover()
+    dispatched={};mode=press("CTRL + ALT + Return");assert(mode=="10")
+    local fill=last("window.fullscreen");assert(fill.window=="address:0x2" and fill.mode=="maximized")
+    -- Search: the window list (4-field header) and code 9; Enter comes back as .land.
+    for _,w in ipairs(list) do w.mapped=true;w.class=w.class or "foot";w.title=w.title or ("t "..w.address) end
+    hl.get_window=function(selector) for _,w in ipairs(list) do if "address:"..w.address==selector then return w end end end
+    mode=press("CTRL + ALT + slash");assert(mode=="9")
+    local header=files[path..".windows"]:match("^([^\n]*)\n")
+    assert(header:match("^v1 42 %d+ 240$") and tonumber(header:match("^v1 42 (%d+)"))==omarchy_xr_canvas.windowsSeq) -- one counter for both scenes
+    assert(files[path..".windows"]:match("\n0x1 "..hex("firefox").." "..hex("Docs").." "))
+    files[path..".land"]="v1 42 1 0x3 240\n";dispatched={};tick(240.1)
+    assert(last("focus").window=="address:0x3" and cursorPos.x==2880 and cursorPos.y==540)
+    assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
+    dispatched={};tick(240.2);assert(#dispatched==0)                  -- each landing once
+    files[path..".land"]="v1 42 2 0x1 200\n";tick(240.3);assert(#dispatched==0) -- stale
+    -- A renderer restarted within the freshness window: .keys follows the new session at once.
+    files[path..".active"]="77 240";omarchy_xr_controls.refresh()
+    assert(files[path..".keys"]:match("^v1 77 %d+ %d+\nmodifier\tCTRL %+ ALT\n"))
+    files[path..".active"]="42 240";omarchy_xr_controls.refresh()
+    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window, search lists every window and lands once passed")
+end
+testMonitorWindows()
 assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")
 print("Keybind handles: no remove/set_enabled on an expired handle passed")

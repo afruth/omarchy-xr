@@ -340,7 +340,7 @@ void virtualCursor(View& v) {
     cursor(20010, 20, 0, 0);
     assert(v.xrCursor.valid && v.xrCursor.window==name && v.xrCursor.px==10 && v.xrCursor.py==20);
 }
-// The view (u, v) of a window's centre, as a 2D click would give it.
+// The view (u, v) of a window's centre: which windows are in view.
 std::optional<std::pair<float,float>> projectCentre(const View& v, const std::string& name) {
     const auto* l=v.findLayout(name); if (!l) return std::nullopt;
     const auto c=spatial::vertex(v.monitorPose(*l), 0, 0);
@@ -351,14 +351,17 @@ std::optional<std::pair<float,float>> projectCentre(const View& v, const std::st
     if (u<.05f || u>.95f || w<.05f || w>.95f) return std::nullopt;
     return std::pair{u, w};
 }
-// (i) A click at a window's projected centre focuses that window at its buffer centre; the camera stays.
-void clickPath(View& v) {
+// (i) Focusing a window at its centre (the hit a gaze confirm or Studio's Land on window gives) stages it at
+// its buffer centre; the camera stays. The windowed preview takes no clicks (docs/xr-controls-plan.md §6).
+void focusPath(View& v) {
     v.navigate({View::Verb::FlickOut}); ease(v, 120);
-    std::string name; std::pair<float,float> at;
-    for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (const auto p=projectCentre(v, w.name)) { name=w.name; at=*p; break; }
+    std::string name;
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (projectCentre(v, w.name)) { name=w.name; break; }
     assert(!name.empty());
     const auto serial=v.pointerSerial; const auto rotation=v.targetRotation;
-    v.clickAt(at.first, at.second);
+    const auto* l=v.findLayout(name); assert(l);
+    targeting::Hit centre; centre.output=name; centre.pixelX=l->width/2; centre.pixelY=l->height/2;
+    v.focusHit(centre);
     const auto* w=v.canvas->find(name);
     assert(v.pointerSerial==serial+1 && v.hoverOutput==name && sameRotation(rotation, v.targetRotation));
     assert(std::abs(v.pointerX-w->pixelW/2.f)<.02f*w->pixelW && std::abs(v.pointerY-w->pixelH/2.f)<.02f*w->pixelH);
@@ -368,14 +371,15 @@ void clickPath(View& v) {
     restagedByXr(v, name);
     restagedByXr(v, "0x5005");
 }
-// (j) The renderer's controls version gate: v6 or newer beside the pose socket.
+// (j) The renderer's controls version gate: v7 (the XR key layer) or newer beside the pose socket.
 void versionGate(const std::string& temp) {
     const std::string dir=temp+"/gate", pose=dir+"/pose.sock"; std::filesystem::create_directories(dir);
     std::string why;
     assert(!controlsVersionOk(pose, why) && why.find("missing")!=std::string::npos);
     std::ofstream(dir+"/controls.version") << "5\n"; assert(!controlsVersionOk(pose, why) && why=="found version 5");
-    std::ofstream(dir+"/controls.version") << "6\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "6\n"; assert(!controlsVersionOk(pose, why) && why=="found version 6"); // before the XR layer
     std::ofstream(dir+"/controls.version") << "7\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "8\n"; assert(controlsVersionOk(pose, why));
     std::ofstream(dir+"/controls.version") << "six\n"; assert(!controlsVersionOk(pose, why));
     assert(!controlsVersionOk("", why));
 }
@@ -784,7 +788,7 @@ using State=canvas::Scene::State;
 void searchLandingBeatsGaze(View& v) {
     work(v); landOn(v, "0x5005");
     v.navigate({View::Verb::Search});
-    assert(v.canvas->state==State::Search && v.canvas->search.open && v.promptShown && !v.promptSdl);
+    assert(v.canvas->state==State::Search && v.canvas->search.open && v.promptShown);
     const auto opened=promptFields(v);
     assert(opened[3]=="1" && opened[4]=="OMXRTEST-canvas");
     typeSearch(v, 1, "term 20487", "-");   // the title of 0x5007
@@ -1155,12 +1159,13 @@ void newWindowCues(View& v) {
     s.adopt(next, now);
     const auto* in=s.find("0xc0de1"); assert(in && sameRect(in->rect, near));
     assert(in->pulseUntil>s.clock && s.haloTarget("0xc0de1")==1 && in->cueUntil==0 && s.newWindowCues().empty());
+    assert(s.arrived=="0xc0de1"); s.arrived.clear();
     s.tick(now+.35, 0); assert(s.haloTarget("0xc0de1")==0);
     const auto away=freeNear(s, far, 400, 300);
     assert(canvas::offView(canvas::project(away, s.camera, s.ring), s.heading, s.halfSpan, s.ring));
     next.records.push_back(remembered(v, 0xc0de2, away, now+.4));
     s.adopt(next, now+.4);
-    const auto* out=s.find("0xc0de2"); assert(out && sameRect(out->rect, away));
+    const auto* out=s.find("0xc0de2"); assert(out && sameRect(out->rect, away) && s.arrived=="0xc0de2"); s.arrived.clear();
     assert(out->pulseUntil>s.clock && out->cueUntil>s.clock && s.newWindowCues().size()==1);
     const auto cue=s.newWindowCues()[0]; assert(cue.name=="0xc0de2" && cue.alpha==1);
     s.expireCues(v.overlayScene(v.currentView())); assert(s.newWindowCues().size()==1);
@@ -1176,8 +1181,16 @@ void newWindowCues(View& v) {
     fresh.adopt(listOf({record(0xd001, "a", 800, 600, 0, 1), record(0xd002, "b", 800, 600, 1, 2)}), 1);
     for (auto& r:fresh.lastList.records) r.canvas=true;
     fresh.adopt(fresh.lastList, 1);
-    assert(fresh.primed && fresh.live()==2);
+    assert(fresh.primed && fresh.live()==2 && fresh.arrived.empty());   // the start's windows are not new
     for (const auto& w:fresh.windows) assert(w.pulseUntil==0 && w.cueUntil==0);
+    // Through the View: a window opened behind you is landed on (centred, focused) as it arrives.
+    work(v); landOn(v, "0x5005");
+    auto opened=s.lastList; opened.records.push_back(remembered(v, 0xc0de4, freeNear(s, far, 400, 300), monotonicSeconds()));
+    opened.seq=v.windowsSeq+1; v.adoptList(opened);
+    const auto serial=v.pointerSerial;
+    assert(s.landed=="0xc0de4" && v.hoverOutput=="0xc0de4" && s.arrived.empty());
+    auto back=s.lastList; back.records.pop_back(); back.seq=v.windowsSeq+1; v.adoptList(back);
+    assert(v.pointerSerial==serial && s.arrived.empty());                  // a close lands nowhere
 }
 // (x) The Overview mouse drag: snapped, neighbours make room (M9), free in y (M8), remembered and undoable; a
 // press without motion is a click, and in Work a press never drags.
@@ -1207,20 +1220,6 @@ void overviewDrag(View& v) {
     // A cancelled drag puts the window back where it started.
     s.dragBegin("0x5003"); s.dragBy(400, 0); assert(!sameRect(w->rect, start));
     s.dragCancel(); assert(sameRect(w->rect, start) && s.history.undo.size()==undos && !s.dragEnd());
-    // Through the View: a press and release in place focuses; with motion it drags.
-    const auto at=projectCentre(v, "0x5003"); assert(at);
-    const auto serial=v.pointerSerial;
-    v.pressAt(at->first, at->second); assert(v.drag.active && v.drag.window=="0x5003" && v.pointerSerial==serial);
-    v.releaseAt(); assert(!v.drag.active && v.hoverOutput=="0x5003" && v.pointerSerial==serial+1 && sameRect(w->rect, start));
-    v.pressAt(at->first, at->second); v.dragMotion(2, 1); assert(!v.drag.moved); v.dragMotion(60, 0); assert(v.drag.moved);
-    assert(w->rect.x!=start.x);
-    v.releaseAt(); assert(!v.drag.active && s.history.undo.size()==undos+1 && std::fmod(w->rect.x, 20.f)==0);
-    v.navigate({V::Undo}); assert(sameRect(w->rect, start));
-    ease(v, 60); panInsideRing(v);
-    work(v);
-    bool pressed=false;
-    for (const auto& c:s.windows) if (const auto p=c.gone ? std::nullopt : projectCentre(v, c.name)) { v.pressAt(p->first, p->second); pressed=true; break; }
-    assert(pressed && !v.drag.active && s.dragName.empty());
     assert(v.monitorMathCalls==0);
 }
 void publishCard(const std::string& folder) {
@@ -1422,23 +1421,25 @@ void confirmHint(View& v, const std::string& temp) {
     assert(s.hintFor.empty());
     // The chord: the configured one, none, or the default for a missing or malformed file.
     const auto settings=temp+"/controls-settings.tsv";
-    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n");
-    assert(canvas::readConfirmKey(settings)=="CTRL + Down");
-    write(settings, "4\nSUPER + Up\nSUPER + F5\n\n\n\n");
-    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + F5 or a three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\n\n\n\n\n");
+    const std::string head="v2\nmodifier\tCTRL + ALT\nfingers\t3\n";
+    write(settings, head+"key\tfocus\tDown\n");
+    assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
+    write(settings, "v2\nmodifier\tSUPER + ALT\nkey\trecenter\tspace\nkey\tfocus\tF5\n");
+    s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + ALT + F5 or a three-finger tap to focus");
+    write(settings, head+"key\tfocus\t\n");
     s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="Three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\nCTRL;Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + Down");
+    write(settings, head+"key\tfocus\tCTRL;Down\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
+    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down"); // v1
     std::filesystem::remove(settings); s.setConfirmKey(canvas::readConfirmKey(settings));
-    assert(s.hintText().find("CTRL + Down")==0 && !s.labels.atlas.count("hint"));
-    // A fit_target change in Studio mid-session: the renderer's poll picks up the rewritten file.
-    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
-    write(settings, "3\nCTRL + Up\nSUPER + F7\n\n\n\n"); v.pollConfirmKey();
-    assert(s.hintText()=="SUPER + F7 or a three-finger tap to focus");
-    write(settings, "3\nCTRL + Up\n\n\n\n\n");   // a later mtime even on a coarse clock
+    assert(s.hintText().find("CTRL + ALT + Down")==0 && !s.labels.atlas.count("hint"));
+    // A focus key change in Studio mid-session: the renderer's poll picks up the rewritten file.
+    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
+    write(settings, head+"key\tfocus\tF7\n"); v.pollConfirmKey();
+    assert(s.hintText()=="CTRL + ALT + F7 or a three-finger tap to focus");
+    write(settings, head+"key\tfocus\t\n");   // a later mtime even on a coarse clock
     std::filesystem::last_write_time(settings, std::filesystem::last_write_time(settings)+std::chrono::seconds(2));
     v.pollConfirmKey(); assert(s.hintText()=="Three-finger tap to focus");
-    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + Down")==0);
+    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
     ease(v, 120); v.interactionUntil=0; inRing(v);
 }
 // M8 full cylinder. The landed window's projected centre under the target camera (0 = eye level).
@@ -1474,9 +1475,6 @@ void scrollVerbs(View& v) {
     controlsMode(v, 19, "up:70:4"); assert(std::abs(c.targetScrollY-(before-.8f*viewH))<1e-2f);
     controlsMode(v, 19, "down:75:2"); assert(std::abs(c.targetScrollY-(before-.4f*viewH))<1e-2f);
     controlsMode(v, 19, "down:80:40"); assert(std::abs(c.targetScrollY-(before+.6f*viewH))<1e-2f);   // at most 5
-    before=c.targetScrollY;
-    v.controls->canvasMode=false; controlsMode(v, 19, "pagedown"); v.controls->canvasMode=true; v.steer();
-    assert(c.targetScrollY==before);
     ease(v, 120); inRing(v);
 }
 // (m2) Every landing brings its window to eye level: neighbour up to a window far above, focus follow of
@@ -1725,7 +1723,7 @@ int main() {
         placedAndLanded(v); verbs(v); fadeAndPlace(v); reloadFile(v);
         navigationInvariants(v); workAndOverview(v); zoomAnchor(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
-        mailboxList(v); hoverV4(v); virtualCursor(v); clickPath(v); stageSourceFallback(v); stageRegion(v);
+        mailboxList(v); hoverV4(v); virtualCursor(v); focusPath(v); stageSourceFallback(v); stageRegion(v);
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
         bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
         newWindowCues(v); overviewDrag(v); notificationInsideRing(v);
@@ -1738,5 +1736,5 @@ int main() {
     sceneMemory(temp); sizeAndParent(); fluidCanvas(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
+    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the focus path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
 }

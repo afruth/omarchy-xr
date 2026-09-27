@@ -1,5 +1,6 @@
 #pragma once
 #include "canvas_search.hpp"
+#include "help_keys.hpp"
 #include "gl_texture.hpp"
 #include "notification_draw.hpp"
 #include "notification_hud.hpp"
@@ -200,52 +201,44 @@ inline int paintRadar(cairo_t* cr, const Radar& r, const Style& s) {
     notifications::source(cr, s.text, .9); cairo_rectangle(cr, mid-1, 4, 2, radarHeight-8); cairo_fill(cr);
     return radarHeight;
 }
-// F1 help: the canvas chords in one table, so the user guide and this card stay in sync. Takeover rows
-// (canvas.tsv takeoverKeys) show only while the takeover switch is on; off, those chords stay Omarchy's.
-// The confirm row names the default fit_target chord; the dwell hint shows the configured one.
-struct HelpRow { const char* section; const char* keys; const char* action; bool takeover=false; };
-inline constexpr HelpRow helpRows[]={
-    {"Find", "type", "search windows"}, {"Find", "Up/Down / Tab", "move the selection"}, {"Find", "Ctrl+1-8", "land on that row"},
-    {"Find", "Enter", "land on the selection"}, {"Find", "Shift+Enter", "summon it here"}, {"Find", "Esc", "clear, then go back"},
-    {"View", "SUPER+TAB", "overview", true}, {"View", "SUPER+CTRL+G", "search"}, {"View", "SUPER+F", "fill"},
-    {"View", "SUPER+arrows", "neighbour", true}, {"View", "flick in / out", "land / zoom out"},
-    {"View", "Ctrl+Down / 3-finger tap", "focus the gazed window"},
-    {"View", "SUPER+wheel / SUPER+CTRL+PgUp/PgDn", "scroll up / down"}, {"View", "4-finger pan", "pan / scroll"},
-    {"Arrange", "SUPER+SHIFT+arrows", "nudge", true}, {"Arrange", "Ctrl+A", "arrange"}, {"Arrange", "Ctrl+Z / Ctrl+Shift+Z", "undo / redo"},
-    {"Arrange", "SUPER+left-drag", "move (also up / down)"}, {"Arrange", "SUPER+right-drag", "resize"},
-    {"Arrange", "SUPER+CTRL+arrows", "resize 100 px"}, {"Arrange", "SUPER+ALT+P", "pin"},
-    {"Anywhere", "ALT+TAB", "switcher", true}, {"Anywhere", "three-finger double tap", "release pointer"}, {"Anywhere", "F1", "this help"},
-};
-constexpr int helpWidth=1120, helpHeight=640;
-inline std::string helpKey(bool takeover, const Style& s) { return std::string("help ")+(takeover ? "1 " : "0 ")+colorKey(s.accent); }
-// Walks the rows as the card lays them out: header(section, x, y) and row(keys, action, x, y); returns
-// the bottom of the lowest row, so the preview smoke can check the card still holds every row.
-template<class Header, class Row> int layoutHelp(bool takeover, Header&& header, Row&& row) {
-    int column=0, y=76, bottom=0; std::string section;
-    for(const auto& r:helpRows) {
-        if(r.takeover && !takeover) continue;
-        if(r.section!=section) {
-            section=r.section;
-            // Find and View on the left, Arrange and Anywhere on the right.
-            if(section=="Arrange") { column=1; y=76; }
-            header(section, 32+column*544, y+6); y+=38;
+// Help (the XR layer's help key, F1 in the search field): the XR keys from help_keys.hpp, i.e. the chords the
+// controls adapter bound, so the card always matches the keyboard. Two columns, filled top to bottom.
+constexpr int helpWidth=1056, helpHeight=820, helpTop=76, helpRowHeight=30, helpHeaderHeight=36, helpColumn=512, helpColumns=2;
+inline std::string helpKey(const std::vector<helpkeys::Row>& rows, const std::string& title, const Style& s) {
+    std::string key="help "+colorKey(s.accent)+' '+title;
+    for(const auto& r:rows) key+='\n'+r.section+'\t'+r.keys+'\t'+r.action;
+    return key;
+}
+// Walks the rows as the card lays them out: header(section, x, y) and row(row, x, y); returns the bottom of
+// the lowest row, so a test can check the card still holds every row.
+template<class Header, class RowFn> int layoutHelp(const std::vector<helpkeys::Row>& rows, Header&& header, RowFn&& row) {
+    int column=0, y=helpTop, bottom=0; std::string section;
+    for(const auto& r:rows) {
+        const bool fresh=r.section!=section;
+        if(y+(fresh ? helpHeaderHeight : 0)+helpRowHeight>helpHeight-16 && column+1<helpColumns) {
+            ++column; y=helpTop;
+            if(!fresh) { header(section, 32+column*helpColumn, y+6); y+=helpHeaderHeight; }
         }
-        row(r, 32+column*544, y);
-        y+=32; bottom=std::max(bottom, y-8);
+        if(fresh) { section=r.section; header(section, 32+column*helpColumn, y+6); y+=helpHeaderHeight; }
+        row(r, 32+column*helpColumn, y);
+        y+=helpRowHeight; bottom=std::max(bottom, y-6);
     }
     return bottom;
 }
-inline int helpBottom(bool takeover) { return layoutHelp(takeover, [](const std::string&, int, int) {}, [](const HelpRow&, int, int) {}); }
-inline int paintHelp(cairo_t* cr, const Style& s, bool takeover=true) {
+inline int helpBottom(const std::vector<helpkeys::Row>& rows) {
+    return layoutHelp(rows, [](const std::string&, int, int) {}, [](const helpkeys::Row&, int, int) {});
+}
+inline int paintHelp(cairo_t* cr, const Style& s, const std::vector<helpkeys::Row>& rows, const std::string& title) {
     card(cr, helpWidth, helpHeight, s);
-    notifications::text(cr, "Window canvas keys", s.text, 32, 22, 500, 26, 1, true);
-    notifications::text(cr, "F1 or Esc closes", s.dim, helpWidth-272, 28, 240, 17, 1, false, true);
-    layoutHelp(takeover, [&](const std::string& section, int x, int y) { notifications::text(cr, section, s.accent, x, y, 400, 19, 1, true); },
-               [&](const HelpRow& row, int x, int y) {
-                   notifications::text(cr, row.keys, s.text, x, y, 340, 17, 1, true);
-                   notifications::text(cr, row.action, s.dim, x+350, y, 180, 17, 1);
+    notifications::text(cr, title, s.text, 32, 22, 700, 26, 1, true);
+    std::string close="Esc closes";
+    for(const auto& r:rows) if(r.action=="this help") close=r.keys+" or Esc closes";
+    notifications::text(cr, close, s.dim, helpWidth-432, 28, 400, 17, 1, false, true);
+    layoutHelp(rows, [&](const std::string& section, int x, int y) { notifications::text(cr, section, s.accent, x, y, 460, 19, 1, true); },
+               [&](const helpkeys::Row& row, int x, int y) {
+                   notifications::text(cr, row.keys, s.text, x, y, 250, 16, 1, true);
+                   notifications::text(cr, row.action, s.dim, x+258, y, 220, 16, 1);
                });
-    if(!takeover) notifications::text(cr, "SUPER+TAB, SUPER+arrows, SUPER+wheel and ALT+TAB keep Omarchy's keys (takeover off in Studio)", s.dim, 32, helpHeight-44, helpWidth-64, 15, 1);
     return helpHeight;
 }
 // A textured quad facing the eye, depth test off, premultiplied blend (the label state block). An

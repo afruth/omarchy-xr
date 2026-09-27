@@ -141,6 +141,10 @@ static void neighbours() {
     assert(neighbour("b", Direction::Up, w, ring)=="e");
     assert(!neighbour("a", Direction::Up, w, ring));          // e is beyond 45 degrees of a
     assert(!neighbour("zz", Direction::Right, w, ring));
+    // Cycling: ring order a d e b f c (angle, then height), wrapping both ways.
+    assert(cycle("a", 1, w, ring)=="d" && cycle("d", 1, w, ring)=="e" && cycle("e", 1, w, ring)=="b");
+    assert(cycle("c", 1, w, ring)=="a" && cycle("a", -1, w, ring)=="c" && cycle("b", -1, w, ring)=="e");
+    assert(cycle("zz", 1, w, ring)=="a" && cycle("zz", -1, w, ring)=="c" && !cycle("a", 1, {}, ring));
     const auto moved=nudge({10,10,5,5}, Direction::Left, 20);
     assert(moved.x==-10 && moved.y==10 && nudge(moved, Direction::Down, 20).y==30 && nudge(moved, Direction::Up, 20).y==-10);
 }
@@ -245,5 +249,5 @@ static void summoning() {
 }
 int main() {
     placement(); dialogs(); arranging(); neighbours(); grouping(); undoing(); summoning(); displacing();
-    std::cout<<"Canvas placement: periodic no-overlap on the cylinder, determinism, the 2D spiral, dialog start, block arrange, groups, neighbours, undo, summon and displacement passed\n";
+    std::cout<<"Canvas placement: periodic no-overlap on the cylinder, determinism, the 2D spiral, dialog start, block arrange, groups, neighbours, cycling, undo, summon and displacement passed\n";
 }

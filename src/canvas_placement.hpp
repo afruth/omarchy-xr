@@ -186,6 +186,23 @@ inline std::optional<std::string> neighbour(const std::string& from, Direction d
     }
     return best;
 }
+// Previous/next window (docs/xr-controls-plan.md §5.4): every window in ring order (angle around the ring,
+// then height, then name), wrapping at both ends. Without a current window the first one comes next.
+inline std::optional<std::string> cycle(const std::string& from, int step, const std::vector<Placed>& windows, const Ring& ring) {
+    if(windows.empty()) return {};
+    std::vector<const Placed*> order;
+    for(const auto& p:windows) order.push_back(&p);
+    std::sort(order.begin(), order.end(), [&](const Placed* a, const Placed* b) {
+        const float ax=ring.unwrap(a->rect.cx()), bx=ring.unwrap(b->rect.cx());
+        if(ax!=bx) return ax<bx;
+        if(a->rect.cy()!=b->rect.cy()) return a->rect.cy()<b->rect.cy();
+        return a->name<b->name;
+    });
+    const auto at=std::find_if(order.begin(), order.end(), [&](const Placed* p) { return p->name==from; });
+    if(at==order.end()) return order[step>0 ? 0 : order.size()-1]->name;
+    const long n=long(order.size()), i=((at-order.begin())+step%n+n)%n;
+    return order[size_t(i)]->name;
+}
 inline Rect nudge(Rect r, Direction dir, float step) {
     if(dir==Direction::Left) r.x-=step; else if(dir==Direction::Right) r.x+=step;
     else if(dir==Direction::Up) r.y-=step; else r.y+=step;

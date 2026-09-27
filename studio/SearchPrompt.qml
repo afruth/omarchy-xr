@@ -20,9 +20,13 @@ Rectangle {
     property color muted: "#7f849c"
     property alias text: field.text
     property bool quiet: false
+    // Virtual monitors mode lists the renderer's ranked windows here (.results); the canvas draws its own.
+    property var results: []
+    readonly property int fieldHeight: 72
+    readonly property int rowHeight: 44
     signal line(string text)
     implicitWidth: 720
-    implicitHeight: 72
+    implicitHeight: fieldHeight + (results.length ? results.length * rowHeight + 12 : 0)
     color: "#1e1e2e"
     border.color: accent
     border.width: 2
@@ -42,6 +46,26 @@ Rectangle {
             for (var i = 0; i < seq.length; ++i) out += (seq[i] < 16 ? "0" : "") + seq[i].toString(16);
         }
         return out === "" ? "-" : out;
+    }
+    // Hex UTF-8 back to text ('-' is empty); malformed input gives "".
+    function textOf(hex) {
+        if (hex === "-" || !/^([0-9a-f]{2})+$/.test(hex)) return "";
+        try { return decodeURIComponent(hex.replace(/(..)/g, "%$1")); } catch (e) { return ""; }
+    }
+    // .results (renderer -> prompt, monitors mode): v1 <pid> <promptSeq> <seq> <stamp>, then
+    // "<selected 0/1> <hex class|-> <hex title|->" rows. Rows of another renderer or prompt are ignored.
+    function parseResults(value, pid, seq) {
+        var lines = String(value).split("\n").filter(function(l) { return l !== ""; });
+        if (!lines.length) return [];
+        var head = lines[0].split(" ");
+        if (head.length !== 5 || head[0] !== "v1" || head[1] !== String(pid) || head[2] !== String(seq)) return [];
+        var rows = [];
+        for (var i = 1; i < lines.length && rows.length < 8; ++i) {
+            var f = lines[i].split(" ");
+            if (f.length !== 3 || (f[0] !== "0" && f[0] !== "1")) return [];
+            rows.push({selected: f[0] === "1", cls: textOf(f[1]), title: textOf(f[2])});
+        }
+        return rows;
     }
     // .prompt (renderer -> prompt): v1 <pid> <seq> <open 0/1> <output|-> <stamp>, else null.
     function parsePrompt(value) {
@@ -63,6 +87,7 @@ Rectangle {
     }
     function reset() {
         quiet = true; field.text = ""; quiet = false;
+        results = [];
         editSeq = 0;
         keys = [];
         field.forceActiveFocus();
@@ -103,10 +128,42 @@ Rectangle {
         color: root.muted
         font.pixelSize: 28
     }
+    Column {
+        objectName: "search-results"
+        x: root.border.width + 6
+        y: root.fieldHeight
+        width: root.width - 2 * x
+        Repeater {
+            model: root.results
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+                objectName: "search-result-" + index
+                width: parent.width
+                height: root.rowHeight
+                radius: 8
+                color: modelData.selected ? Qt.alpha(root.accent, .28) : "transparent"
+                Text {
+                    anchors.fill: parent
+                    leftPadding: 16
+                    rightPadding: 16
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    font.pixelSize: 20
+                    color: root.foreground
+                    text: modelData.title + (modelData.cls ? "  ·  " + modelData.cls : "")
+                }
+            }
+        }
+    }
     TextInput {
         id: field
         objectName: "search-field"
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: root.fieldHeight
         anchors.margins: root.border.width
         leftPadding: 22
         rightPadding: 22

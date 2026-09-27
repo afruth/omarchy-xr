@@ -80,7 +80,7 @@ stops installation. Oversized downloads stop before excess bytes are written;
 incomplete or unverified downloads are deleted. No downloaded script is executed.
 
 **Utilities → Setup & integrations** also provides buttons to install or update
-the optional shortcuts/gestures and spatial-notification integration, and
+the XR keys (the controls integration) and the spatial-notification integration, and
 **Set up everything**, which runs all of them in one terminal. A source
 installation with a developer-supplied SDK gets an **Install stereo helper**
 button there, which becomes **Update stereo helper** when the installed helper

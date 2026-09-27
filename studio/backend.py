@@ -25,7 +25,7 @@ from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
 import socket
-from input_settings import DEFAULTS, load_controls, save_controls
+from input_settings import ACTIONS as CONTROL_ACTIONS, DEFAULTS, desktop_bindings, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
 from atomic_file import atomic_write
 from clock import boot_time
@@ -951,7 +951,7 @@ class Manager:
     def set_render_mode(self, mode, layout=None):
         if mode not in ("monitors", "canvas"):
             raise ValueError("Choose Virtual monitors or Window canvas")
-        if mode == "canvas" and self.controls_version() < 6:
+        if mode == "canvas" and self.controls_version() < 7:
             raise RuntimeError(CONTROLS_HINT)
         if mode == self.render_mode:
             return
@@ -1117,7 +1117,7 @@ class Manager:
     def controls_hint(self):
         if not self.viewer or self.viewer.poll() is not None:
             return ""
-        return CONTROLS_HINT if self.controls_version() < 6 else ""
+        return CONTROLS_HINT if self.controls_version() < 7 else ""
 
     def reconcile_status(self, monitors):
         if (self.applied or self.canvas.active) and monitors is not None:
@@ -1225,6 +1225,15 @@ class Manager:
         self.viewer_exit = ""
 
 
+def touchpad_found():
+    """Whether install-controls found a multitouch touchpad (it lists them in xr-touchpads.lua)."""
+    config = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    try:
+        return '"' in (config / "hypr/xr-touchpads.lua").read_text()
+    except OSError:
+        return False
+
+
 def read_saved(manager, warnings, saved):
     load, path, fallback, warning, label = saved
     try:
@@ -1239,10 +1248,16 @@ def read_saved(manager, warnings, saved):
 def action_load(manager, _request):
     warnings: list[str] = []
     layout = read_saved(manager, warnings, (manager.load, manager.profile, default_layout(), "Layout file was invalid and was set aside", "layout load"))
-    controls = read_saved(manager, warnings, (lambda: load_controls(manager.directory), manager.directory / "controls-settings.json", dict(DEFAULTS), "Control settings were invalid and were set aside", "controls load"))
+    controls = read_saved(manager, warnings, (lambda: load_controls(manager.directory), manager.directory / "controls-settings.json", json.loads(json.dumps(DEFAULTS)), "Control settings were invalid and were set aside", "controls load"))
     setups = read_saved(manager, warnings, (manager.setups, manager.directory / "setups.json", {"version": 1, "selected": "", "items": []}, "Saved setups were invalid and were set aside", "setups load"))
     canvas = read_saved(manager, warnings, (manager.canvas.load, manager.canvas.profile, dict(CANVAS_DEFAULTS), "Canvas settings were invalid and were set aside", "canvas load"))
-    response = {"layout": layout, "controls": controls, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
+    try:
+        bindings = desktop_bindings(manager.runner)
+    except Exception:  # Conflicts are also checked on save; the key map just shows none.
+        bindings = []
+    controls_meta = {"actions": [{"id": a[0], "group": a[1], "title": a[2], "default": a[3], "scope": a[4]} for a in CONTROL_ACTIONS],
+                     "defaults": DEFAULTS, "desktopBindings": bindings, "touchpad": touchpad_found()}
+    response = {"layout": layout, "controls": controls, "controlsMeta": controls_meta, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
     if warnings:
         response["message"] = " ".join(warnings)
     return response
@@ -1279,7 +1294,7 @@ def action_use_setup(manager, request):
 
 def action_save_controls(manager, request):
     settings = save_controls(manager.directory, request["controls"], manager.runner)
-    return {"controls": settings, "message": "Shortcuts and gestures saved."}
+    return {"controls": settings, "message": "XR keys saved."}
 
 
 def action_save(manager, request):

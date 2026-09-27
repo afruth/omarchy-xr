@@ -33,7 +33,7 @@ def run(action, which=shutil.which, runner=subprocess.run, root=ROOT):
 
 def run_all(which=shutil.which, runner=subprocess.run, root=ROOT):
     """Stereo helper, controls and notifications; each step runs even if an earlier one failed."""
-    steps = [("helper", "Stereo helper"), ("controls", "Shortcuts & gestures"), ("notifications", "XR notifications")]
+    steps = [("helper", "Stereo helper"), ("controls", "XR keys"), ("notifications", "XR notifications")]
     if which("omarchy-xr-setup"):
         # The package owns the stereo helper; pacman keeps it in step.
         steps = steps[1:]

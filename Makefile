@@ -271,7 +271,7 @@ check-lint:
 	$(RUFF) check studio scripts tests
 	$(MYPY)
 	$(LUACHECK) config/xr-controls.lua tests/controls.lua
-	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml \
+	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml studio/KeyMap.qml \
 		studio/SearchPrompt.qml studio/SearchPromptWindow.qml
 	python3 scripts/function_length.py
 .PHONY: check-lint

@@ -1,6 +1,7 @@
 #pragma once
 #include "async_file.hpp"
 #include "hex_token.hpp"
+#include "help_keys.hpp"
 #include "window_list.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -129,9 +130,10 @@ class LiveControls {
         std::ifstream in(file);
         return std::string((std::istreambuf_iterator<char>(in)), {});
     }
-    // The adapter's window list (§3.1): this session's, strictly newer and fresh; canvas mode only.
+    // The adapter's window list (§3.1): this session's, strictly newer and fresh. The canvas adopts it; the
+    // monitor scene searches it (docs/xr-controls-plan.md §5.5).
     void updateWindows() {
-        if (!canvasMode || !newer(path + ".windows", windowsStamp)) return;
+        if (!newer(path + ".windows", windowsStamp)) return;
         auto list = ::windows::parse(readAll(path + ".windows"));
         if (!list || list->owner != session || list->seq <= windowsSeq || !stampFresh(list->stamp)) return;
         windowsSeq = list->seq; windows = std::move(*list);
@@ -143,11 +145,11 @@ class LiveControls {
         if (!line || line->owner != session || line->seq <= cursorSeq || !stampFresh(line->stamp)) return;
         cursorSeq = line->seq; cursor = *line;
     }
-    // This session's prompt, answering the current .prompt request with a newer edit, fresh; canvas only.
+    // This session's prompt, answering the current .prompt request with a newer edit, fresh; both scenes.
     // Lines overwritten between two polls are not lost keys: the key log keeps the keys this reader has
     // not seen (editSeq beyond the last one read), oldest first.
     void updateSearch() {
-        if (!canvasMode || !newer(path + ".search", searchStamp)) return;
+        if (!newer(path + ".search", searchStamp)) return;
         auto line = ::windows::parseSearch(readAll(path + ".search"));
         if (!line || line->owner != session || !promptSeq || line->promptSeq != promptSeq || line->editSeq <= searchSeq || !stampFresh(line->stamp)) return;
         const auto unseen = line->editSeq - searchSeq;
@@ -179,12 +181,15 @@ class LiveControls {
             || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)
             || w <= 0 || h <= 0 || w > 32768 || h > 32768 || std::abs(x) > 1e6 || std::abs(y) > 1e6) return;
         paneOutput = name; paneX = float(x); paneY = float(y); paneW = float(w); paneH = float(h); paneValid = true;
+        ++paneUpdates; paneChanged = true;
     }
 public:
     std::string focusOutput, notificationTarget;
     std::string paneOutput;
     float paneX = 0, paneY = 0, paneW = 0, paneH = 0;
     bool paneValid = false;
+    // A new valid pane line: counted, and flagged for the update() that read it (monitor-mode XR keys).
+    unsigned paneUpdates = 0; bool paneChanged = false;
     double zoom = 0, panX = 0, panY = 0;
     bool panStarted = false, panActive = false;
     // SUPER+left-drag on the staged window (canvas mode, M7): the same codec as .pan.
@@ -253,6 +258,33 @@ public:
         promptOpen = open; promptOutput = output; ++promptSeq; searchSeq = 0;
         writePrompt();
     }
+    // Monitor-scene search (docs/xr-controls-plan.md §5.5). `.results` lists the ranked rows for the prompt, which
+    // shows them under its field: v1 <pid> <promptSeq> <seq> <stamp>, then "<selected 0/1> <hex class|-> <hex title|->"
+    // per row. `.land` asks the adapter to land on a window: v1 <pid> <seq> <address> <stamp>.
+    // The chords the adapter bound (`.keys`, help_keys.hpp), set when this session's file changes.
+    std::optional<helpkeys::Keys> keys;
+    timespec keysStamp{};
+    unsigned long long keysSeq=0;
+    void updateKeys() {
+        keys.reset();
+        if (!newer(path + ".keys", keysStamp)) return;
+        unsigned long long seq=0;
+        auto parsed=helpkeys::parse(readAll(path + ".keys"), session, &seq);
+        if (seq && seq==keysSeq) return;
+        keysSeq=seq; keys=std::move(parsed);
+    }
+    struct ResultRow { bool selected=false; std::string cls, title; };
+    void publishResults(const std::vector<ResultRow>& rows) {
+        if (path.empty()) return;
+        std::string text="v1 "+std::to_string(getpid())+' '+std::to_string(promptSeq)+' '+std::to_string(++resultsSeq)+' '+std::to_string(bootSeconds())+'\n';
+        for (const auto& r:rows) text+=std::string(r.selected ? "1 " : "0 ")+hextoken::encodeHex(r.cls)+' '+hextoken::encodeHex(r.title)+'\n';
+        writeFile(path+".results", text);
+    }
+    void publishLand(std::uint64_t address) {
+        if (path.empty()) return;
+        writeFile(path+".land", "v1 "+std::to_string(getpid())+' '+std::to_string(++landSeq)+' '+::windows::addressToken(address)+' '+std::to_string(bootSeconds())+'\n');
+    }
+    unsigned long long resultsSeq=0, landSeq=0;
     // Logical px of the canvas output for the staged window (Fill and its restore).
     void publishFill(const std::string& address, unsigned w, unsigned h) {
         const auto parsed = ::windows::parseAddress(address);
@@ -272,7 +304,7 @@ public:
     // The optional takeover chords (canvas.tsv takeoverKeys), announced with the next heartbeat.
     void setTakeover(bool on) { if (on != takeover) { takeover = on; heartbeat = 0; } }
     void update() {
-        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
+        zoom = 0; fit = 0; paneChanged = false; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
         updateCumulative(".pan", pan, panX, panY, panStarted, panActive);
         if (canvasMode) updateCumulative(".drag", drag, dragX, dragY, dragStarted, dragActive);
         updatePane();
@@ -280,6 +312,7 @@ public:
         updateWindows();
         updateCursor();
         updateSearch();
+        updateKeys();
         beat();
         updateControls();
     }
@@ -296,9 +329,11 @@ public:
         if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
         heartbeat = now;
     }
-    // Modes 0..7 everywhere, 8..19 (canvas verbs, §5.5; 18 confirm, M7; 19 scroll, M8) in canvas mode only; modes >= 6 need
-    // v3 and a fresh stamp, and a target only for 6, 7 (notifications), 14, 15 (direction tokens) and 19 (scroll token). 11 and 12
-    // may carry the token "release" (the Alt-Tab release bind).
+    // Modes 0..7, and 8..28: the canvas verbs (§5.5; 18 confirm, M7; 19 scroll, M8) and the XR key layer codes
+    // (docs/xr-controls-plan.md §5.1: 20/21 notification keys, 22 cycle, 26 grab, 27/28 undo/redo), in both scenes;
+    // the renderer gives each its meaning in the current scene. Modes >= 6 need v3 and a fresh stamp, and a target
+    // only for 6, 7 (notifications), 14, 15 (direction tokens), 19 (scroll token), 22 (prev/next) and 26 (begin/end).
+    // 11 and 12 may carry the token "release" (the Alt-Tab release bind); 20/21 without a target act on the front card.
     void updateControls() {
         const auto filePath = existing("");
         if (filePath != controlsSeen) { controlsSeen = filePath; controlsStamp = {}; }
@@ -309,7 +344,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > (canvasMode ? 19 : 7) || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 28 || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;
@@ -317,7 +352,7 @@ public:
             target=decodeTarget(token);
         }
         if(file>>extra)return;
-        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19;
+        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19 || mode==22 || mode==26;
         if(mode>=6 && (first!="v3" || (needsTarget && target.empty()) || !stampFresh(stamp)))return;
         if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit;notificationTarget=target; }
         else zoom = std::clamp(total - previousZoom, -4., 4.);

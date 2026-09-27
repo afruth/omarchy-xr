@@ -154,9 +154,15 @@ void run(View& v, const std::filesystem::path& directory) {
     assert(v.canvas->switcher.revealed && v.canvas->overlayOpen());
     still(v, directory, "switcher.png", Kind::Switcher);
     v.navigate({.verb=View::Verb::Switch, .begin=true, .output="cancel"}); assert(!v.canvas->switcher.active);
-    // Every row (M7 added four, M8 two) stays on the card, above the takeover-off note when that shows.
+    // Every XR key (all 28 actions with long chords), the search field keys and the mouse rows stay on the card.
     namespace ov=canvas::overlay;
-    assert(std::size(ov::helpRows)==24 && ov::helpBottom(true)<=ov::helpHeight-24 && ov::helpBottom(false)<=ov::helpHeight-48);
+    helpkeys::Keys keys{"CTRL + ALT", {}};
+    for (const auto& t:helpkeys::titles) keys.entries.push_back({t.id, "CTRL + ALT + SHIFT + Page_Down", true});
+    const auto rows=helpkeys::rows(keys, true);
+    assert(rows.size()==std::size(helpkeys::titles)+5+4 && ov::helpBottom(rows)<=ov::helpHeight-16);
+    keys.entries.clear();
+    for (const auto& t:helpkeys::titles) keys.entries.push_back({t.id, std::string("CTRL + ALT + ")+(t.id[0]=='n' ? "SHIFT + " : "")+"H", true});
+    v.canvas->helpRows=helpkeys::rows(keys, true);
     v.navigate({View::Verb::Help}); assert(v.canvas->helpOpen);
     still(v, directory, "help.png", Kind::Help);
     v.navigate({View::Verb::Help}); assert(!v.canvas->helpOpen);
