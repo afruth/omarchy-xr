@@ -1140,9 +1140,15 @@ struct View {
         for (size_t i=first; i<m.results.size() && rows.size()<searchRows; ++i) {
             const auto found=std::find_if(m.records.begin(), m.records.end(), [&](const auto& r) { return r.name()==m.results[i].name; });
             if (found==m.records.end()) continue;
-            rows.push_back({i==m.selected, found->cls.substr(0, 64), found->title.substr(0, 200)});
+            rows.push_back({i==m.selected, utf8Prefix(found->cls, 64), utf8Prefix(found->title, 200)});
         }
         controls->publishResults(rows);
+    }
+    // At most `bytes` bytes, never ending inside a UTF-8 character.
+    static std::string utf8Prefix(const std::string& text, size_t bytes) {
+        if (text.size()<=bytes) return text;
+        while (bytes>0 && (static_cast<unsigned char>(text[bytes])&0xC0)==0x80) --bytes;
+        return text.substr(0, bytes);
     }
     void monitorSearchLand(size_t index) {
         auto& m=monitorSearch;
@@ -1292,7 +1298,8 @@ struct View {
     }
     // The .windows mailbox (without --canvas-windows-file); stagedLanding lands on the first staged window.
     void adoptMailbox() {
-        if (windowsPath.empty() && controls->windows) adoptList(*controls->windows);
+        // A list without a canvas output is the monitor scene's search list, never the canvas's.
+        if (windowsPath.empty() && controls->windows && !controls->windows->outputName.empty()) adoptList(*controls->windows);
     }
     // SUPER+left-drag in the glasses (M7): Lua's .drag travel (canvas-output logical px, the confinement
     // overflow included) moves the staged window over the cylinder with M6's drag (snap, free in y since

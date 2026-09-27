@@ -38,10 +38,19 @@ Item {
     function maskOf(text) {
         return modList(text).reduce(function(sum, m) { return sum + (root.mods[m] || 0); }, 0);
     }
+    // The layer also binds the modifier with the wheel and mouse buttons (and SHIFT+wheel in the canvas).
+    readonly property var mouseKeys: ["mouse_up", "mouse_down", "mouse:272", "mouse:273", "mouse:274"]
     function modifierProblem(text) {
         var list = modList(text);
         if (list.length < 2 || !list.some(function(m) { return m === "CTRL" || m === "ALT" || m === "SUPER"; }))
             return "The XR key layer needs two or more modifiers, such as CTRL + ALT";
+        var mask = maskOf(text);
+        for (var b = 0; b < bindings.length; ++b) {
+            var bind = bindings[b], key = String(bind.key).toLowerCase();
+            if (String(bind.description || "").startsWith("XR:") || mouseKeys.indexOf(key) < 0) continue;
+            if (bind.modmask === mask || (!(mask & 1) && bind.modmask === (mask | 1) && key.startsWith("mouse_")))
+                return list.join(" + ") + " + " + bind.key + " (XR mouse) is already used by " + (bind.description || "another desktop binding");
+        }
         return "";
     }
     function keyOf(id) { return (profile.keys || {})[id] || ""; }

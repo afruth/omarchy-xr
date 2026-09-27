@@ -1761,6 +1761,10 @@ Item {
                                         }
                                     }
                                 }
+                                Label {
+                                    text: "Exclusions"
+                                    helpText: "App classes or process ids that stay off the canvas, separated by commas"
+                                }
                                 Ui.TextField {
                                     Layout.fillWidth: true
                                     text: root.canvasExclude

@@ -87,6 +87,21 @@ def key(value):
     return ' + '.join(extra+[name]),MODS['SHIFT'] if extra else 0,name.lower()
 
 
+# The layer also binds the modifier with the wheel and the mouse buttons (config/xr-controls.lua bindMouse),
+# and SHIFT+wheel in the canvas; remove() would erase a desktop binding on the same chord.
+MOUSE_KEYS=('mouse_up','mouse_down','mouse:272','mouse:273','mouse:274')
+
+
+def mouse_conflict(value,bindings=()):
+    """A message when the modifier's mouse chords collide with a desktop binding, else ''."""
+    layer,mask=modifier(value['modifier'])
+    chords=[(mask,k) for k in MOUSE_KEYS]+([(mask|MODS['SHIFT'],k) for k in MOUSE_KEYS[:2]] if not mask&MODS['SHIFT'] else [])
+    for b in bindings:
+        if (b.get('modmask'),str(b.get('key','')).lower()) in chords and not str(b.get('description','')).startswith('XR:'):
+            return f"{layer} + {b.get('key')} (XR mouse) is already used by "+(b.get('description') or 'another desktop binding')
+    return ''
+
+
 def conflicts(value,bindings=()):
     """[(action, message)] for every key that cannot be bound; value is already normalized."""
     layer,mask=modifier(value['modifier'])
@@ -120,6 +135,8 @@ def validate_controls(value,bindings=()):
     if unknown:raise ValueError('Unknown XR action: '+sorted(unknown)[0])
     result={'version':2,'modifier':modifier(value.get('modifier',''))[0],'fingers':fingers,
             'keys':{a:key(value['keys'].get(a,''))[0] for a in ACTION_IDS}}
+    mouse=mouse_conflict(result,bindings)
+    if mouse:raise ValueError('XR modifier: '+mouse)
     problems=conflicts(result,bindings)
     if problems:
         action,message=problems[0]

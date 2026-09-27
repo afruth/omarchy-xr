@@ -55,6 +55,15 @@ class InputSettingsTests(unittest.TestCase):
         # A disabled action never conflicts.
         validate_controls(settings(recenter=''),omarchy)
 
+    def test_mouse_chords_of_the_modifier_conflict(self):
+        wheel=[{'modmask':72,'key':'mouse_down','description':'Scroll active workspace forward'}]   # SUPER+ALT+wheel
+        with self.assertRaisesRegex(ValueError,r'XR modifier: ALT \+ SUPER \+ mouse_down \(XR mouse\) is already used by Scroll active workspace forward'):
+            validate_controls(dict(DEFAULTS,modifier='SUPER + ALT'),wheel)
+        validate_controls(DEFAULTS,wheel)                                        # CTRL+ALT is free
+        shifted=[{'modmask':13,'key':'mouse_up','description':'Something'}]     # CTRL+ALT+SHIFT+wheel
+        with self.assertRaisesRegex(ValueError,'XR mouse'):
+            validate_controls(DEFAULTS,shifted)
+
     def test_version_one_profiles_migrate_to_the_layer(self):
         old={'fingers':5,'fit_all':'CTRL + Up','fit_target':'CTRL + Down','recenter':'','zoom_in':'','zoom_out':''}
         self.assertEqual(migrate(old),dict(DEFAULTS,fingers=5))

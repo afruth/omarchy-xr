@@ -459,8 +459,14 @@ local function testCanvasKeys()
     -- Grab: one press bind (begin) and one release bind (end), never repeating.
     local grab=bindLists["CTRL + ALT + G"];assert(#grab==2 and not grab[1].options.repeating and grab[2].options.release)
     local mode,token=press("CTRL + ALT + G",1);assert(mode=="26" and token==hex("begin"))
-    mode,token=press("CTRL + ALT + G",2);assert(mode=="26" and token==hex("end"))
+    assert(bindings["G"] and bindings["G"].options.release and bindings["G"].options.non_consuming)
+    mode,token=press("CTRL + ALT + G",2);assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
+    -- The modifier let go first: the bare key release ends the grab.
+    press("CTRL + ALT + G",1);mode,token=press("G");assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
+    local tap=bindings["mouse:274"]
     mode,token=press("CTRL + ALT + mouse:274",1);assert(mode=="26" and token==hex("begin"))
+    assert(bindings["mouse:274"]==tap)                               -- no bare release on the touchpad tap's button
+    press("CTRL + ALT + mouse:274",2)
     -- Mouse: SHIFT+wheel scrolls in wheel runs; left-drag moves, right-drag is Hyprland's resize.
     mode,token=press("CTRL + ALT + SHIFT + mouse_down");assert(mode=="19" and token:sub(1,#hex("down:"))==hex("down:"))
     assert(#bindLists["CTRL + ALT + mouse:272"]==2 and bindLists["CTRL + ALT + mouse:272"][2].options.release)
@@ -1039,13 +1045,17 @@ local function testMonitorWindows()
     hl.get_window=function(selector) for _,w in ipairs(list) do if "address:"..w.address==selector then return w end end end
     mode=press("CTRL + ALT + slash");assert(mode=="9")
     local header=files[path..".windows"]:match("^([^\n]*)\n")
-    assert(header:match("^v1 42 %d+ 240$"))
+    assert(header:match("^v1 42 %d+ 240$") and tonumber(header:match("^v1 42 (%d+)"))==omarchy_xr_canvas.windowsSeq) -- one counter for both scenes
     assert(files[path..".windows"]:match("\n0x1 "..hex("firefox").." "..hex("Docs").." "))
     files[path..".land"]="v1 42 1 0x3 240\n";dispatched={};tick(240.1)
     assert(last("focus").window=="address:0x3" and cursorPos.x==2880 and cursorPos.y==540)
     assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
     dispatched={};tick(240.2);assert(#dispatched==0)                  -- each landing once
     files[path..".land"]="v1 42 2 0x1 200\n";tick(240.3);assert(#dispatched==0) -- stale
+    -- A renderer restarted within the freshness window: .keys follows the new session at once.
+    files[path..".active"]="77 240";omarchy_xr_controls.refresh()
+    assert(files[path..".keys"]:match("^v1 77 %d+ %d+\nmodifier\tCTRL %+ ALT\n"))
+    files[path..".active"]="42 240";omarchy_xr_controls.refresh()
     print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window, search lists every window and lands once passed")
 end
 testMonitorWindows()

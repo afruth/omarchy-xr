@@ -92,6 +92,14 @@ TestCase {
         compare(map.conflicts.help, "Already used by Launcher");
         verify(map.conflicts.focus === undefined);                       // XR's own bindings never conflict
     }
+    function test_mouse_chords_of_the_modifier() {
+        map.bindings = [{modmask: 72, key: "mouse_down", description: "Scroll active workspace forward"}];
+        compare(map.modifierError, "");
+        mouseClick(findChild(map, "modifier-SUPER")); mouseClick(findChild(map, "modifier-CTRL"));
+        compare(map.profile.modifier, "ALT + SUPER");
+        verify(map.modifierError.indexOf("(XR mouse) is already used by Scroll active workspace forward") > 0);
+        compare(map.conflictCount, 1);
+    }
     function test_modifier() {
         mouseClick(findChild(map, "modifier-SUPER"));
         compare(map.profile.modifier, "CTRL + ALT + SUPER");

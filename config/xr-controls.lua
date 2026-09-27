@@ -299,6 +299,7 @@ end
 local function adoptSession(owner)
     session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
     workspacePending=false;focusWaiting=nil;focusSerial=0
+    if active then installLayer() end -- a restarted renderer gets .keys under its own session
     local focus=io.open(path..".focus","r")
     if focus then
         local savedOwner,savedSerial=(focus:read("*l") or ""):match("^v1 (%d+) (%d+) ")
@@ -469,7 +470,7 @@ local function windowRows(list)
     snapshot={}
     for _,w in ipairs(list) do
         local member=isMember(w)
-        if member and not isExcluded(w) then enforce(w) end
+        if member and canvasMode and not isExcluded(w) then enforce(w) end
         remember(w)
         if #rows<MAX_ROWS and (member or others>0) then
             rows[#rows+1]=windowRow(w)
@@ -983,12 +984,14 @@ end
 -- no canvas output), refreshed every second while XR runs and at once when search opens. Enter comes back as
 -- `.land` (v1 <owner> <seq> <address> <stamp>): focus the window, which brings its workspace up on its monitor,
 -- point at it and publish its pane for the camera.
-local monitorSearch={seq=0,written=-math.huge,landSeq=0,landOwner=nil}
+-- Both scenes write `.windows` with the one sequence number in canvas.windowsSeq, which survives reloads, so
+-- the renderer never keeps a stale list after a mode switch.
+local monitorSearch={written=-math.huge,landSeq=0,landOwner=nil}
 function monitorSearch.publish(now)
     local rows=windowRows(listWindows())
-    monitorSearch.seq=monitorSearch.seq+1;monitorSearch.written=now
+    canvas.windowsSeq=canvas.windowsSeq+1;monitorSearch.written=now
     rows[#rows+1]=""
-    writeMailbox(".windows",string.format("v1 %s %d %d",session,monitorSearch.seq,math.floor(now)).."\n"..table.concat(rows,"\n"))
+    writeMailbox(".windows",string.format("v1 %s %d %d",session,canvas.windowsSeq,math.floor(now)).."\n"..table.concat(rows,"\n"))
 end
 function monitorSearch.tick(now)
     if now-monitorSearch.written>=1 then monitorSearch.publish(now) end
@@ -1085,6 +1088,7 @@ for _,action in ipairs(LAYER_ACTIONS) do layerKeys[action[1]]=action.key end
 omarchy_xr_layer=omarchy_xr_layer or {bindings={}}
 local function retireLayer()
     for _,binding in ipairs(omarchy_xr_layer.bindings) do removeBinding(binding) end
+    removeBinding(omarchy_xr_layer.holdRelease);omarchy_xr_layer.holdRelease=nil
     omarchy_xr_layer.bindings={}
 end
 retireLayer()
@@ -1104,11 +1108,24 @@ local function layerCallback(action)
     local token=action.token and hexToken(action.token) or nil
     return function() publish(0,action.code,token) end
 end
+-- A release bind matches the modifiers held at release, so letting go of the modifier first would miss it
+-- (as with the drag): while held, a bare release bind on the key itself ends the hold too. Not for a mouse
+-- button: the touchpad tap is bound on the bare button, and remove() would erase it with ours.
+local function endHold(code)
+    removeBinding(omarchy_xr_layer.holdRelease);omarchy_xr_layer.holdRelease=nil
+    publish(0,code,hexToken("end"))
+end
 local function bindAction(action,chord)
     local description="XR: "..action[1]:gsub("_"," ")
     if action.hold then
-        bindLayer(chord,function() publish(0,action.code,hexToken("begin")) end,{description=description})
-        bindLayer(chord,function() publish(0,action.code,hexToken("end")) end,{release=true,description=description.." (release)"})
+        local bare=chord:match("([^+%s]+)%s*$")
+        bindLayer(chord,function()
+            publish(0,action.code,hexToken("begin"))
+            removeBinding(omarchy_xr_layer.holdRelease);omarchy_xr_layer.holdRelease=nil
+            if bare:match("^mouse") then return end
+            omarchy_xr_layer.holdRelease=hl.bind(bare,function() endHold(action.code) end,{release=true,non_consuming=true,description=description.." (release)"})
+        end,{description=description})
+        bindLayer(chord,function() endHold(action.code) end,{release=true,description=description.." (release)"})
     else
         bindLayer(chord,layerCallback(action),{repeating=action.repeating,description=description})
     end
@@ -1134,8 +1151,8 @@ end
 local keysSerial,keysText=0,nil
 local function publishKeys(rows)
     local body=table.concat(rows,"\n")
-    if body==keysText then return end
-    keysText=body;keysSerial=keysSerial+1
+    if tostring(session)..body==keysText then return end
+    keysText=tostring(session)..body;keysSerial=keysSerial+1
     writeMailbox(".keys",string.format("v1 %s %d %d\n",tostring(session or 0),keysSerial,math.floor(bootSeconds()))..body..(body~="" and "\n" or ""))
 end
 installLayer=function()
