@@ -2092,7 +2092,7 @@ Item {
                                         readonly property bool runtimeReady: !!root.glasses.runtimeInstalled && !!sdkControls.sdk.available && sdkControls.sdk.licenseAccepted !== false
                                         text: "Set up everything"
                                         selected: true
-                                        helpText: runtimeReady ? "Install or update the stereo helper, shortcuts & gestures and XR notifications in one terminal" : "Install the XR runtime first"
+                                        helpText: runtimeReady ? "Install or update the stereo helper, the XR keys and XR notifications in one terminal" : "Install the XR runtime first"
                                         enabled: runtimeReady
                                         onClicked: root.runSetupAction("all")
                                     }
@@ -2104,8 +2104,8 @@ Item {
                                             ? root.runSetupAction("helper") : root.installRuntime()
                                     }
                                     Action {
-                                        text: "Set up shortcuts & gestures"
-                                        helpText: "Add or refresh the optional touchpad gestures and keyboard shortcuts"
+                                        text: "Set up XR keys"
+                                        helpText: "Add or update the XR keys (and touchpad gestures where a touchpad exists)"
                                         onClicked: root.runSetupAction("controls")
                                     }
                                     Action {
