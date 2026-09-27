@@ -23,6 +23,7 @@ from environment import Environment
 from glasses import Recovery, detect
 from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
+from install_runtime import installed_outdated
 import socket
 from input_settings import DEFAULTS, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
@@ -1150,6 +1151,7 @@ class Manager:
             glasses["detectionError"] = "Display status unavailable"
         glasses["dedicatedDisplay"] = self.dedicated.output if self.direct else None
         glasses["runtimeInstalled"] = runtime_installed(self.renderer)
+        glasses["runtimeOutdated"] = installed_outdated()
         glasses["helperAvailable"] = HELPER.is_file()
         glasses["helperCurrent"] = helper_current()
         glasses.update(self.recovery.status())

@@ -19,6 +19,16 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertEqual(install_runtime.SHA256,
                          '5da8d235b7ff58e3a51ae033ff5339562647cef9e76f07cf6a3ccc6eda05aeb2')
 
+    def test_older_installed_package_is_outdated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / 'manifest.json'
+            self.assertFalse(install_runtime.installed_outdated(manifest))  # no package installed
+            for installed, outdated in (('0.3.1', True), ('0.3.10', True), ('0.4.0', False), ('0.10.0', False), ('bogus', False)):
+                manifest.write_text('{"version": "%s"}' % installed)
+                self.assertEqual(install_runtime.installed_outdated(manifest), outdated, installed)
+            manifest.write_text('not json')
+            self.assertFalse(install_runtime.installed_outdated(manifest))
+
     def test_verified_package_installs_before_user_setup(self):
         payload = b'complete application package'
         packages = []

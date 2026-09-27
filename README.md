@@ -63,7 +63,9 @@ and spatial notifications. Once the runtime is installed, **Set up everything**
 there installs or updates the stereo helper, controls and notifications in one
 go. When a source build's stereo helper is older than the Studio that ships it,
 the Controls tab offers **Update stereo helper**, and a missing controls adapter
-gets an **Install XR controls** button under the mode selector. Setup still opens
+gets an **Install XR controls** button under the mode selector. If the installed
+XR runtime package is older than the one this Studio installs, the Controls tab
+offers **Update XR runtime**. Setup still opens
 a terminal so package-manager, licence, and administrator prompts remain visible;
 the terminal stays open until you press Enter.
 

@@ -1,6 +1,7 @@
 """Install the pinned, complete application package from the public release."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
@@ -8,11 +9,23 @@ import subprocess
 import tempfile
 import urllib.request
 
-PACKAGE = 'omarchy-xr-bin-0.4.0-1-x86_64.pkg.tar.zst'
-URL = 'https://github.com/afruth/omarchy-xr/releases/download/v0.4.0/' + PACKAGE
+VERSION = '0.4.0'
+PACKAGE = f'omarchy-xr-bin-{VERSION}-1-x86_64.pkg.tar.zst'
+URL = f'https://github.com/afruth/omarchy-xr/releases/download/v{VERSION}/' + PACKAGE
 SHA256 = '5da8d235b7ff58e3a51ae033ff5339562647cef9e76f07cf6a3ccc6eda05aeb2'
 # Pin size alongside the URL and digest; never trust the server's Content-Length.
 PACKAGE_SIZE = 5_638_571
+# The package's copy of the plugin manifest records which release is installed.
+PACKAGED_MANIFEST = Path('/usr/share/omarchy-xr/plugin/manifest.json')
+
+
+def installed_outdated(manifest=PACKAGED_MANIFEST):
+    """Whether the installed package is older than the one this Studio installs (false without a package)."""
+    try:
+        installed = json.loads(manifest.read_text())['version']
+        return tuple(map(int, installed.split('.'))) < tuple(map(int, VERSION.split('.')))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def download(destination):
@@ -43,7 +56,7 @@ def download(destination):
 
 
 def install(controls=False, notifications=False):
-    print('Downloading Omarchy XR 0.4.0 with its bundled glasses runtime.', flush=True)
+    print(f'Downloading Omarchy XR {VERSION} with its bundled glasses runtime.', flush=True)
     with tempfile.TemporaryDirectory(prefix='omarchy-xr-install-') as directory:
         package = Path(directory) / PACKAGE
         download(package)
