@@ -217,11 +217,14 @@ class Manager:
             presentation = json.loads(self.presentation_profile.read_text())
             self.spectator_enabled = presentation.get("spectator", False) is True
             self.laptop_off_enabled = presentation.get("laptopOff", False) is True
+            self.battery_saver_enabled = presentation.get("batterySaver", False) is True
             self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
         except (OSError, ValueError, AttributeError):
             self.spectator_enabled = False
             self.laptop_off_enabled = False
+            self.battery_saver_enabled = False
             self.render_mode = "monitors"
+        self.write_power()
         self.environment = Environment(self.directory)
         self.graphics_limits = None
         self.profile = self.directory / "layout.json"
@@ -946,7 +949,17 @@ class Manager:
 
     def save_presentation(self):
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
-                                                "renderMode":self.render_mode})
+                                                "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled})
+
+    def write_power(self):
+        # The renderer re-reads power.tsv every 2 s, so a change reaches a running XR view.
+        atomic_write(self.directory / "power.tsv", f"power-v1 {1 if self.battery_saver_enabled else 0}\n")
+
+    def set_battery_saver(self, enabled):
+        if type(enabled) is not bool: raise ValueError("Battery saver setting must be on or off")
+        self.battery_saver_enabled = enabled
+        self.write_power()
+        self.save_presentation()
 
     def set_render_mode(self, mode, layout=None):
         if mode not in ("monitors", "canvas"):
@@ -1186,7 +1199,7 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
                 "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
@@ -1359,6 +1372,13 @@ def action_laptop_off(manager, request):
     return {"message": message}
 
 
+def action_battery_saver(manager, request):
+    manager.set_battery_saver(request.get("enabled"))
+    message = ("Battery saver on: on battery, XR captures at most 30 fps." if manager.battery_saver_enabled
+               else "Battery saver off: captures run at their set rate on battery too.")
+    return {"message": message}
+
+
 def action_restore_laptop(manager, _request):
     manager.laptop.stop()
     return {"message": "Laptop display restored."}
@@ -1440,6 +1460,7 @@ def perform(manager, request):
         "present_direct": action_present_direct,
         "present": action_present,
         "set_laptop_off": action_laptop_off,
+        "set_battery_saver": action_battery_saver,
         "restore_laptop": action_restore_laptop,
         "set_spectator": action_spectator,
         "set_render_mode": action_render_mode,

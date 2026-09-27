@@ -23,6 +23,7 @@
 #include "theme.hpp"
 #include "notification_hud.hpp"
 #include "canvas_scene.hpp"
+#include "power.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -196,8 +197,11 @@ struct View {
     MissPenalty missPenalty;
     std::filesystem::file_time_type layoutVersion{}, trackingVersion{}, gazeVersion{};
     bool trackingLoaded=false, gazeLoaded=false;
-    std::string trackingPath, gazePath;
-    double nextGazeCheck=0;
+    std::string trackingPath, gazePath, powerPath;
+    double nextGazeCheck=0, nextPowerCheck=0;
+    power::Saver power;
+    std::filesystem::file_time_type powerVersion{};
+    bool powerLoaded=false;
     gaze::Dwell dwell;
     // Zoom level reached by the last fit: flick in steps overview -> monitor -> pane, flick out steps back.
     enum class Level { Overview, Monitor, Pane };
@@ -811,6 +815,31 @@ struct View {
         std::ifstream file(trackingPath); std::string line; std::getline(file, line);
         if (const auto parsed=tracking::parsePrediction(line)) { tracking.camera.prediction=*parsed; describePrediction("tracking.tsv"); }
         else std::cerr << "Ignoring invalid tracking.tsv; expected: tracking-v2 <horizonMs 0..30> <restSpeed> <fullSpeed> <samples 2..8> <minCutoffHz> <beta>" << std::endl;
+    }
+    // Battery saver: power.tsv (Studio) and the supply state, every 2 s; the caps apply every tick.
+    void reloadPower(double now) {
+        if (now<nextPowerCheck) return;
+        nextPowerCheck=now+2;
+        const bool wasActive=power.active(), wasEnabled=power.enabled;
+        std::error_code missing;
+        const auto version=powerPath.empty() ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(powerPath, missing);
+        if (powerPath.empty() || missing) { power.enabled=false; powerLoaded=false; }
+        else if (!powerLoaded || version!=powerVersion) {
+            powerLoaded=true; powerVersion=version;
+            const auto line=power::readFirstLine(powerPath);
+            if (const auto parsed=power::parseSettings(line)) power.enabled=*parsed;
+            else std::cerr << "Ignoring invalid power.tsv; expected: power-v1 <batterySaver 0|1>" << std::endl;
+        }
+        // OMARCHY_XR_POWER_SUPPLY replaces /sys/class/power_supply for live tests.
+        const char* supplies=std::getenv("OMARCHY_XR_POWER_SUPPLY");
+        power.battery=power.enabled && (supplies ? power::onBattery(supplies) : power::onBattery());
+        if (power.active()!=wasActive || power.enabled!=wasEnabled)
+            std::cout << "Power: battery saver " << (!power.enabled ? "off" : power.active() ? "active on battery (captures at most "+std::to_string(power::captureCapHz)+" Hz, canvas budget halved)" : "on, external power (no caps)") << std::endl;
+    }
+    void applyPowerCaps() {
+        for (auto& p:panels) if (p.capture) p.capture->setFrameRate(power.captureHz(unsigned(fps)));
+        const unsigned cap=power.active() ? power::captureCapHz : 0;
+        if (canvas && (canvas->powerMaxHz!=cap || canvas->powerBudget!=power.budget())) canvas->setPowerCap(cap, power.budget());
     }
     void reloadGaze(double now) {
         if (gazePath.empty() || now<nextGazeCheck) return;
@@ -1795,6 +1824,8 @@ struct View {
             << ",\"latchMarginMs\":" << lastMarginMs << ",\"latchPenaltyMs\":" << missPenalty.ms;
         if (gpu) stats << ",\"gpuCaptureP95\":" << gpuCaptureP95 << ",\"gpuSpectatorP95\":" << gpuSpectatorP95 << ",\"gpuSceneP95\":" << gpuSceneP95;
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
+        stats << ",\"power\":{\"batterySaver\":" << (power.enabled?"true":"false") << ",\"onBattery\":" << (power.battery?"true":"false")
+              << ",\"active\":" << (power.active()?"true":"false") << ",\"captureCapHz\":" << (power.active()?power::captureCapHz:0) << "}";
         if (output) stats << ",\"refreshHz\":" << output->refreshHz() << ",\"missedVblanks\":" << missed << ",\"missedVblanksWindow\":" << missed-missedBaseline;
         if (canvas) writeCanvasStats(stats);
         stats << ",\"captures\":[";
@@ -1845,6 +1876,7 @@ struct View {
         trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
         describePrediction("defaults");
         gazePath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"gaze.tsv").string();
+        powerPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"power.tsv").string();
         describeGaze("defaults");
     }
     bool tick() {
@@ -1856,6 +1888,7 @@ struct View {
         reconnectCaptures();
         reloadTracking(workStarted);
         reloadGaze(workStarted);
+        reloadPower(workStarted);
         accent.update(workStarted);
         tracking.update();
         applyModeRequest();
@@ -1865,6 +1898,7 @@ struct View {
         }
         predictPose();
         reloadLayout();
+        applyPowerCaps();
         steer();
         pollInput();
         const float cameraDt=easeCamera();

@@ -167,6 +167,18 @@ a left press in Overview or Search starts `dragBegin` on the window under the po
 `canvas-memory.tsv`; a press without motion stays a click (stage and warp). The
 spectator gets no input, and in the glasses the real pointer lives in the staged window.
 
+**Battery saver** (Studio → Battery, off by default). The backend keeps the choice in
+`presentation.json` (`batterySaver`) and writes `power.tsv` (`power-v1 <0|1>`) beside the layout at
+start and on every change. The renderer (`src/power.hpp`) re-reads it every 2 s and, while it is on,
+reads `/sys/class/power_supply`: on battery means no external supply (Mains, USB, USB-C) is online and
+a system battery is Discharging; peripheral batteries (`scope` Device) are ignored. While on battery,
+`applyPowerCaps` sets every monitor capture to at most 30 Hz each tick and `canvas::Scene::setPowerCap`
+caps the ladder's top rate at 30 Hz and halves the Studio capture budget, over whatever `canvas.tsv`
+sets; external power lifts both at once. Outputs are never recreated, and the stereo scanout is already
+60 Hz (SBS mode 0x32). `.stats` reports `power` (`batterySaver`, `onBattery`, `active`,
+`captureCapHz`) and Studio shows whether the saver is active. `OMARCHY_XR_POWER_SUPPLY` replaces the
+sysfs directory for live tests.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping
