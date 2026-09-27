@@ -179,12 +179,15 @@ class LiveControls {
             || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)
             || w <= 0 || h <= 0 || w > 32768 || h > 32768 || std::abs(x) > 1e6 || std::abs(y) > 1e6) return;
         paneOutput = name; paneX = float(x); paneY = float(y); paneW = float(w); paneH = float(h); paneValid = true;
+        ++paneUpdates; paneChanged = true;
     }
 public:
     std::string focusOutput, notificationTarget;
     std::string paneOutput;
     float paneX = 0, paneY = 0, paneW = 0, paneH = 0;
     bool paneValid = false;
+    // A new valid pane line: counted, and flagged for the update() that read it (monitor-mode XR keys).
+    unsigned paneUpdates = 0; bool paneChanged = false;
     double zoom = 0, panX = 0, panY = 0;
     bool panStarted = false, panActive = false;
     // SUPER+left-drag on the staged window (canvas mode, M7): the same codec as .pan.
@@ -272,7 +275,7 @@ public:
     // The optional takeover chords (canvas.tsv takeoverKeys), announced with the next heartbeat.
     void setTakeover(bool on) { if (on != takeover) { takeover = on; heartbeat = 0; } }
     void update() {
-        zoom = 0; fit = 0; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
+        zoom = 0; fit = 0; paneChanged = false; focusOutput.clear();notificationTarget.clear(); windows.reset(); cursor.reset(); search.reset(); if (path.empty()) return;
         updateCumulative(".pan", pan, panX, panY, panStarted, panActive);
         if (canvasMode) updateCumulative(".drag", drag, dragX, dragY, dragStarted, dragActive);
         updatePane();

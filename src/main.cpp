@@ -1062,6 +1062,7 @@ struct View {
         if (controls->fit && controls->fit!=26 && tracking.camera.grabbing) grab(false); // any other action ends a grab
         if (controls->fit>=8) sceneKey(controls->fit, controls->notificationTarget);
         steerGrab(monotonicSeconds());
+        if (!canvas) steerPaneWait(monotonicSeconds());
         if (notificationHud && (controls->fit==6 || controls->fit==7)) {
             placeNotification(monotonicSeconds());
             notificationHud->flick(controls->notificationTarget,controls->fit==6);
@@ -1085,13 +1086,55 @@ struct View {
         if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
         if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
     }
-    // Monitor scene: overview fits every monitor, focus the gazed monitor.
+    // Monitor scene (docs/xr-controls-plan.md §5.2-5.4): overview fits every monitor; focus, fill and
+    // previous/next frame one window, which the controls adapter focuses and publishes as the pane.
     void monitorKey(int mode, const std::string&) {
         switch (mode) {
         case 8: navigate({Verb::FlickOut}); break;
-        case 18: navigate({Verb::FitTarget}); break;
+        case 10: selectGazed(); fitTarget(); break;             // the adapter maximized the window: frame its monitor
+        case 18: focusGazedWindow(); break;
+        case 22: awaitPane(PaneFallback::Pane, controls->paneChanged); break;
         default: break;
         }
+    }
+    void selectGazed() {
+        if (!gaze.current) return;
+        const auto previous=selection.output; selection.observe(gaze.current);
+        if (selection.output!=previous) selectionAnchor=baseView();
+    }
+    // Focus: the look pixel goes to the adapter with a new pointer serial (it focuses the window under it and
+    // puts the pointer there, as a dwell does) and a new pane comes back. A pane that already holds the look
+    // point is framed at once.
+    void focusGazedWindow() {
+        if (!gaze.current) { fitTarget(); return; }
+        selectGazed();
+        ++pointerSerial; pointerX=gaze.current->pixelX; pointerY=gaze.current->pixelY;
+        const auto& c=*controls;
+        const bool inside=c.paneValid && c.paneOutput==selection.output && pointerX>=c.paneX && pointerX<c.paneX+c.paneW
+            && pointerY>=c.paneY && pointerY<c.paneY+c.paneH;
+        awaitPane(PaneFallback::Monitor, inside);
+    }
+    enum class PaneFallback { Monitor, Pane };
+    double paneWaitUntil=0; unsigned paneWaitSeen=0; PaneFallback paneFallback=PaneFallback::Monitor;
+    void awaitPane(PaneFallback fallback, bool ready) {
+        paneWaitUntil=monotonicSeconds()+.5; paneWaitSeen=controls->paneUpdates; paneFallback=fallback;
+        if (ready) framePane();
+    }
+    void framePane() {
+        paneWaitUntil=0;
+        const auto previous=selection.output;
+        if (findLayout(controls->paneOutput)) selection.output=controls->paneOutput;
+        if (selection.output!=previous) selectionAnchor=baseView();
+        if (!fitPane()) fitTarget();
+    }
+    // A pane published after the request frames it; without one in 0.5 s, focus frames the monitor and
+    // previous/next the last pane.
+    void steerPaneWait(double now) {
+        if (paneWaitUntil<=0) return;
+        if (controls->paneUpdates!=paneWaitSeen && controls->paneValid) { framePane(); return; }
+        if (now<paneWaitUntil) return;
+        paneWaitUntil=0;
+        if (paneFallback==PaneFallback::Pane && controls->paneValid) framePane(); else fitTarget();
     }
     // Grab (§5.7): the camera carries the heading; in the canvas head pitch also scrolls the cylinder by the
     // same share of the view. A second press, any other action, stale tracking or 30 s end it.

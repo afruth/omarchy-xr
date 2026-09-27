@@ -911,6 +911,86 @@ end
 local CANVAS_EVENTS={["window.open"]=onOpen, ["window.close"]=onClose, ["window.destroy"]=onClose,
     ["window.title"]=markWindowsDirty, ["window.class"]=markWindowsDirty, ["window.active"]=onActive,
     ["window.fullscreen"]=onFullscreen, ["window.move_to_workspace"]=onMove, ["window.urgent"]=markWindowsDirty}
+-- `.pane` lines (v1 <owner> <seq> <monitor> <x> <y> <w> <h> <stamp>, or "-"), written on change only.
+local paneSerial,paneLast=0,nil
+local function writePane(line)
+    if line==paneLast then return end
+    paneLast=line;paneSerial=paneSerial+1
+    writeMailbox(".pane",string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
+end
+-- Virtual monitors mode windows for the XR layer (docs/xr-controls-plan.md §5.3-5.4): the visible windows of
+-- every XR monitor, monitors left to right, each one's windows left to right and top to bottom.
+local monitorWindows
+do
+    local function rect(w)
+        local x,y=pair(w.at);local width,height=pair(w.size)
+        return x,y,width,height
+    end
+    local function xrMonitors()
+        local fine,monitors=pcall(hl.get_monitors)
+        local out={}
+        if not fine or type(monitors)~="table" then return out end
+        for _,m in ipairs(monitors) do
+            if m.name and m.name:match("^OMXR%-") and not m.name:match(CANVAS_MONITOR_PATTERN) then out[#out+1]=m end
+        end
+        table.sort(out,function(a,b) if a.x~=b.x then return a.x<b.x end return a.y<b.y end)
+        return out
+    end
+    monitorWindows=function()
+        local out={}
+        for _,m in ipairs(xrMonitors()) do
+            local fine,list=pcall(hl.get_windows,{monitor=m.name,mapped=true})
+            local here={}
+            local active=m.active_workspace and m.active_workspace.id
+            for _,w in ipairs(fine and list or {}) do
+                if w.address and not w.hidden and (not active or not w.workspace or w.workspace.id==active) then here[#here+1]=w end
+            end
+            table.sort(here,function(a,b)
+                local ax,ay=rect(a);local bx,by=rect(b)
+                if ax~=bx then return ax<bx end
+                if ay~=by then return ay<by end
+                return a.address<b.address
+            end)
+            for _,w in ipairs(here) do out[#out+1]={window=w,monitor=m} end
+        end
+        return out
+    end
+end
+local function paneFor(entry)
+    local x,y=pair(entry.window.at);local width,height=pair(entry.window.size)
+    local m=entry.monitor
+    return string.format("%s %d %d %d %d",m.name,math.floor(x-m.x+.5),math.floor(y-m.y+.5),math.floor(width+.5),math.floor(height+.5))
+end
+-- XR previous/next outside the canvas: focus the next window (wrapping), point at its centre, publish its
+-- pane, then code 22 so the renderer fits it.
+local function monitorCycle(step)
+    local list=monitorWindows()
+    if #list==0 then return end
+    local fine,current=pcall(hl.get_active_window)
+    local index
+    for i,entry in ipairs(list) do if fine and current and entry.window.address==current.address then index=i end end
+    local nextIndex=index and ((index-1+step)%#list)+1 or (step>0 and 1 or #list)
+    local entry=list[nextIndex]
+    local x,y=pair(entry.window.at);local width,height=pair(entry.window.size)
+    gazeDispatch=true
+    hl.dispatch(hl.dsp.focus({window="address:"..entry.window.address}))
+    hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+width/2),y=math.floor(y+height/2)}))
+    gazeDispatch=false
+    writePane(paneFor(entry))
+    publish(0,CANVAS_MODES.cycle,hexToken(step>0 and "next" or "prev"))
+end
+-- XR fill outside the canvas: toggle maximize on the window focused on the gazed XR monitor, then code 10
+-- so the renderer fits that monitor. Unlike the canvas, fullscreen is harmless here: every monitor is its
+-- own output.
+local function monitorFill()
+    local target
+    for _,entry in ipairs(monitorWindows()) do
+        if entry.monitor.name==hoverName and (not target or (entry.window.focus_history_id or 0)<(target.window.focus_history_id or 0)) then target=entry end
+    end
+    if not target then return end
+    windowDispatch("fullscreen",target.window.address,{mode="maximized"})
+    publish(0,CANVAS_MODES.fill)
+end
 -- Canvas mode from the renderer's heartbeat (the v6 takeover flag after it is ignored).
 local function readMode()
     local file=io.open(path..".mode","r")
@@ -941,9 +1021,9 @@ local LAYER_ACTIONS={
     {"zoom_out",key="minus",code=5,repeating=true},
     {"overview",key="Up",code=CANVAS_MODES.overview},
     {"focus",key="Down",code=CANVAS_MODES.confirm},
-    {"fill",key="Return",code=CANVAS_MODES.fill},
-    {"previous",key="Left",code=CANVAS_MODES.cycle,token="prev",repeating=true},
-    {"next",key="Right",code=CANVAS_MODES.cycle,token="next",repeating=true},
+    {"fill",key="Return",code=CANVAS_MODES.fill,monitors=monitorFill},
+    {"previous",key="Left",code=CANVAS_MODES.cycle,token="prev",repeating=true,monitors=function() monitorCycle(-1) end},
+    {"next",key="Right",code=CANVAS_MODES.cycle,token="next",repeating=true,monitors=function() monitorCycle(1) end},
     {"scroll_up",key="Page_Up",code=CANVAS_MODES.scroll,token="pageup",canvas=true,repeating=true},
     {"scroll_down",key="Page_Down",code=CANVAS_MODES.scroll,token="pagedown",canvas=true,repeating=true},
     {"search",key="slash",code=CANVAS_MODES.search},
@@ -982,6 +1062,10 @@ local function bindLayer(chord,callback,options)
 end
 local function layerCallback(action)
     if action.run then return action.run end
+    if action.monitors then
+        local canvasAction=layerCallback({code=action.code,token=action.token})
+        return function() if canvasMode then canvasAction() else action.monitors() end end
+    end
     if action.resize then return function() resizeStaged(action.resize) end end
     if action.notification then return function() publish(0,action.notification,notificationTarget() or "-") end end
     local token=action.token and hexToken(action.token) or nil
@@ -1212,7 +1296,6 @@ end
 -- The last-focused window on the selected XR monitor, for the pane zoom level; written on change
 -- only. The globally active window is usually elsewhere (the laptop screen), so the monitor's
 -- own focus history is what the pane fit needs.
-local paneSerial,paneLast=0,nil
 local function publishPane(name)
     if not active or canvasMode then paneLast=nil;return end
     local line="-"
@@ -1239,9 +1322,7 @@ local function publishPane(name)
             end
         end
     end
-    if line==paneLast then return end
-    paneLast=line;paneSerial=paneSerial+1
-    writeMailbox(".pane",string.format("v1 %s %d %s %d\n",session,paneSerial,line,math.floor(bootSeconds())))
+    writePane(line)
 end
 local function updatePointer()
     if canvasMode then followCanvas() else followWorkspace() end

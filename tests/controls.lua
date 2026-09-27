@@ -470,7 +470,7 @@ local function testCanvasKeys()
     for _,key in ipairs({"P","A","Z","SHIFT + Z","Page_Up","SHIFT + Left","comma","mouse:272","mouse:273","SHIFT + mouse_up"}) do
         assert(bindings["CTRL + ALT + "..key]==nil,key)
     end
-    mode,token=press("CTRL + ALT + Left");assert(mode=="22" and token==hex("prev"))
+    local before=files[path];bindings["CTRL + ALT + Left"].callback();assert(files[path]==before) -- no XR monitor windows here
     mode=press("CTRL + ALT + slash");assert(mode=="9")
     assert(#unbound==start);assertOmarchy()
     print("XR layer: canvas and monitor actions, grab press/release, mouse, canvas-only release, Omarchy untouched passed")
@@ -1002,5 +1002,40 @@ testStageDrag()
 testResizeKeys()
 testScrollKeys()
 testStageReclamp()
+-- Virtual monitors mode windows (docs/xr-controls-plan.md §5.3-5.4): XR+Left/Right walk the visible windows of the
+-- XR monitors left to right with a pane for the renderer; XR+Return maximizes the gazed monitor's window.
+local function testMonitorWindows()
+    clock(240,"monitors");omarchy_xr_controls.refresh()
+    local left={name="OMXR-a",x=0,y=0,width=1920,height=1080,scale=1,active_workspace={id=4}}
+    local right={name="OMXR-b",x=1920,y=0,width=1920,height=1080,scale=1,active_workspace={id=5}}
+    hl.get_monitors=function() return {right,laptop,left,canvasOutput} end
+    local ws=function(id) return {id=id,name=tostring(id)} end
+    local list={
+        {address="0x1",at={x=960,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=2,monitor="OMXR-a"},
+        {address="0x2",at={x=0,y=0},size={x=960,y=1080},workspace=ws(4),focus_history_id=1,monitor="OMXR-a"},
+        {address="0x3",at={x=1920,y=0},size={x=1920,y=1080},workspace=ws(5),focus_history_id=0,monitor="OMXR-b"},
+        {address="0x4",at={x=0,y=0},size={x=500,y=500},workspace=ws(9),focus_history_id=3,monitor="OMXR-a"}, -- another workspace
+        {address="0x5",at={x=100,y=100},size={x=500,y=500},workspace=ws(4),hidden=true,monitor="OMXR-a"},
+    }
+    hl.get_windows=function(filter) local out={} for _,w in ipairs(list) do if not filter or w.monitor==filter.monitor then out[#out+1]=w end end return out end
+    local active=list[3]
+    hl.get_active_window=function() return active end
+    dispatched={}
+    local mode,token=press("CTRL + ALT + Right")
+    assert(mode=="22" and token==hex("next"))                     -- from 0x3 (the last) around to 0x2
+    assert(last("focus").window=="address:0x2" and cursorPos.x==480 and cursorPos.y==540)
+    assert(files[path..".pane"]:match("^v1 42 %d+ OMXR%-a 0 0 960 1080 %d+\n$"))
+    active=list[2];press("CTRL + ALT + Right");assert(last("focus").window=="address:0x1")
+    assert(files[path..".pane"]:match(" OMXR%-a 960 0 960 1080 "))
+    active=list[1];press("CTRL + ALT + Left");assert(last("focus").window=="address:0x2")
+    active=nil;press("CTRL + ALT + Left");assert(last("focus").window=="address:0x3")
+    assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
+    -- Fill: the gazed monitor's most recently focused window is maximized, then code 10.
+    files[path..".hover"]="v3 42 7000 1 OMXR-a 0 0 0 100 100";omarchy_xr_controls.hover()
+    dispatched={};mode=press("CTRL + ALT + Return");assert(mode=="10")
+    local fill=last("window.fullscreen");assert(fill.window=="address:0x2" and fill.mode=="maximized")
+    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window passed")
+end
+testMonitorWindows()
 assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")
 print("Keybind handles: no remove/set_enabled on an expired handle passed")
