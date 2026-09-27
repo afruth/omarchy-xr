@@ -1474,9 +1474,6 @@ void scrollVerbs(View& v) {
     controlsMode(v, 19, "up:70:4"); assert(std::abs(c.targetScrollY-(before-.8f*viewH))<1e-2f);
     controlsMode(v, 19, "down:75:2"); assert(std::abs(c.targetScrollY-(before-.4f*viewH))<1e-2f);
     controlsMode(v, 19, "down:80:40"); assert(std::abs(c.targetScrollY-(before+.6f*viewH))<1e-2f);   // at most 5
-    before=c.targetScrollY;
-    v.controls->canvasMode=false; controlsMode(v, 19, "pagedown"); v.controls->canvasMode=true; v.steer();
-    assert(c.targetScrollY==before);
     ease(v, 120); inRing(v);
 }
 // (m2) Every landing brings its window to eye level: neighbour up to a window far above, focus follow of

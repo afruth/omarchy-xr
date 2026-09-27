@@ -402,7 +402,8 @@ void canvasMailboxes() {
     std::filesystem::remove_all(dir);
 }
 
-// Modes 8..18 are canvas verbs (18 the M7 confirm): canvas mode only, v3 with a fresh stamp, a target only for 14/15.
+// Modes 8..28 (canvas verbs and the XR key layer codes) are accepted in both scenes; the renderer routes them.
+// v3 with a fresh stamp, a target only for 14/15.
 void canvasModes() {
     const auto dir=tempDir();const std::string pose=dir+"/pose.sock",path=pose+".controls";
     const auto owner=std::to_string(getpid());
@@ -411,8 +412,8 @@ void canvasModes() {
     };
     {
         LiveControls monitors(pose);
-        writeFile(path,line(1,10,"-",bootNow()));monitors.update();assert(monitors.fit==0);
-        writeFile(path,line(2,18,"-",bootNow()));monitors.update();assert(monitors.fit==0);
+        writeFile(path,line(1,10,"-",bootNow()));monitors.update();assert(monitors.fit==10);
+        writeFile(path,line(2,18,"-",bootNow()));monitors.update();assert(monitors.fit==18);
         writeFile(path,line(3,3,"-",bootNow()));monitors.update();assert(monitors.fit==3);
     }
     {

@@ -4,6 +4,7 @@
 #undef main
 #include <cassert>
 
+void grabControls(View& view,const std::string& directory);
 void exercise(View& view,const std::string& directory) {
     view.controls.emplace(directory+"/pose.sock");
     view.notificationHud=std::make_unique<notifications::Hud>(directory);
@@ -42,9 +43,21 @@ void exercise(View& view,const std::string& directory) {
     assert(view.targetPanX==x && view.targetPanY==y && view.targetPanZ==z);
     next=aim();request(7,next);assert(hud.count()==1); // singleton cycling preserves it
     request(6,next);assert(hud.count()==0 && !hud.visible());
+    // XR+N / XR+SHIFT+N (codes 20/21): the gazed card, else the front card, with or without gaze.
+    {std::ofstream file(directory+"/notifications.json");file<<"{\"version\":1,\"generation\":\"keys\",\"time\":"
+        <<std::fixed<<notifications::wallMilliseconds()<<",\"entries\":[{\"key\":\"three\",\"summary\":\"Third\"},{\"key\":\"four\",\"summary\":\"Fourth\"},{\"key\":\"five\",\"summary\":\"Fifth\"}]}";}
+    for(int i=0;i<100 && hud.count()!=3;++i){SDL_Delay(10);hud.update(view.tracking.camera,monotonicSeconds());}
+    assert(hud.count()==3);
+    const auto front=hud.front();
+    request(21,"-");assert(hud.count()==3 && hud.front()!=front);   // no gaze: cycles the stack
+    request(20,"-");assert(hud.count()==2);                          // no gaze: dismisses the front card
+    next=aim();request(20,next);assert(hud.count()==1);             // gazed card
+    request(20,hextoken::encodeHex("unknown"));assert(hud.count()==0); // an unknown identity acts on the front card
+    request(20,"-");assert(hud.count()==0);                          // nothing left: no-op
     hud.release();
 }
-// Canvas verbs 8..17 exist only in canvas mode; Alt-Tab's release bind sends mode 11 with the token "release".
+// Codes 8..28 are accepted in both scenes (the renderer routes them); Alt-Tab's release bind sends mode 11 with the
+// token "release"; prev/next (22) and grab (26) need their token; 20/21 may omit theirs.
 void releaseToken(const std::string& directory) {
     const auto accepted=[&](bool canvasMode,int mode,const std::string& token) {
         const std::string pose=directory+(canvasMode?"/canvas.sock":"/monitors.sock");
@@ -56,7 +69,11 @@ void releaseToken(const std::string& directory) {
     assert(accepted(true,11,hextoken::encodeHex("release"))=="release");
     assert(accepted(true,12,"-").empty());
     assert(accepted(true,14,"-")=="rejected"); // a direction needs its token
-    assert(accepted(false,11,hextoken::encodeHex("release"))=="rejected");
+    assert(accepted(false,11,hextoken::encodeHex("release"))=="release");
+    assert(accepted(false,22,hextoken::encodeHex("next"))=="next" && accepted(false,22,"-")=="rejected");
+    assert(accepted(true,26,hextoken::encodeHex("begin"))=="begin" && accepted(false,26,"-")=="rejected");
+    assert(accepted(false,20,"-").empty() && accepted(true,21,"-").empty() && accepted(false,28,"-").empty());
+    assert(accepted(false,29,"-")=="rejected");
     assert(accepted(true,6,hextoken::encodeHex("card"))=="card" && accepted(false,7,hextoken::encodeHex("card"))=="card");
 }
 // The same flicks on a canvas View (offline scene, three windows): 6/7 dismiss and cycle and never pan.
@@ -76,7 +93,50 @@ void canvasFlicks(SDL_Window* window,const std::string& directory) {
     view.canvas->setFov(view.canvasFov());
     assert(view.canvas->adopt(list,1));view.canvas->tick(1,0);
     exercise(view,directory);
+    grabControls(view,directory+"/grab");
     assert(view.monitorMathCalls==0);
+}
+// Grab (code 26, docs/xr-controls-plan.md §5.7) through the real mailbox: begin/end, a second begin, any other
+// action, stale tracking and 30 s end it; in the canvas head pitch scrolls the cylinder.
+void grabControls(View& view,const std::string& directory) {
+    std::filesystem::create_directories(directory);
+    view.controls.emplace(directory+"/pose.sock");
+    int seq=0;
+    const auto request=[&](int mode,const std::string& token) {
+        std::ofstream file(directory+"/pose.sock.controls");++seq;
+        file<<"v3 "<<getpid()<<' '<<seq<<" 0 "<<seq<<' '<<mode<<' '<<token<<' '<<std::time(nullptr)<<'\n';file.close();
+        view.steer();
+    };
+    auto& camera=view.tracking.camera;
+    const auto sample=[&](double pitch,double yaw) {
+        SDL_Delay(2); // distinct stamps at microsecond precision
+        const double now=monotonicSeconds();
+        // to_string rounds to microseconds, so the stamp may be just after now: accept with 1 ms of slack.
+        assert(camera.accept("euler-nwu-v1 "+std::to_string(now)+" 0 "+std::to_string(pitch)+" "+std::to_string(yaw),now+.001));
+    };
+    const auto begin=hextoken::encodeHex("begin"),end=hextoken::encodeHex("end");
+    sample(0,5);sample(0,5);
+    request(26,begin);assert(camera.grabbing);
+    request(26,begin);assert(!camera.grabbing);               // a second press ends a grab whose release was missed
+    request(26,begin);assert(camera.grabbing);
+    const double neutral=camera.neutralYaw;
+    sample(0,60);assert(camera.neutralYaw!=neutral && std::abs(std::remainder(camera.neutralYaw-camera.yaw-camera.grabOffset,360.0))<1e-9); // carried
+    request(26,end);assert(!camera.grabbing);
+    const double reached=camera.neutralYaw;
+    sample(0,90);assert(camera.neutralYaw==reached);            // released: the reference stays
+    request(26,begin);request(4,"-");assert(!camera.grabbing);  // another action ends it
+    request(26,begin);assert(camera.grabbing);
+    camera.timestamp=monotonicSeconds()-1;view.steer();assert(!camera.grabbing); // stale tracking
+    sample(0,90);request(26,begin);view.grabStarted-=31;view.steer();assert(!camera.grabbing); // 30 s
+    if(view.canvas) {
+        sample(0,90);request(26,begin);
+        const float before=view.canvas->camera.targetScrollY;
+        sample(7,90);view.steer();
+        const float lifted=before-view.canvas->camera.targetScrollY;
+        assert(lifted>0);                                      // looking down lifts the camera
+        request(26,end);
+        sample(0,90);view.steer();assert(view.canvas->camera.targetScrollY==before-lifted);
+    }
 }
 int main() {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -89,8 +149,13 @@ int main() {
         view.window=window;exercise(view,temp);
     }
     canvasFlicks(window,std::string(temp)+"/canvas");
+    {
+        std::vector<Panel> panels;const std::string empty;
+        View view(panels,false,spatial::Workspace{40},30,empty,empty,false,true,64,28,empty,60,false);
+        view.window=window;grabControls(view,std::string(temp)+"/grab-monitors");
+    }
     releaseToken(temp);
     AsyncFile::instance().flush();std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context);SDL_DestroyWindow(window);SDL_Quit();
-    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay, no camera fit (monitors and canvas) and the canvas-only release token passed\n";
+    std::cout<<"Gaze mailbox and renderer steering: cycle, dismiss, identity, stale/foreign input, replay, no camera fit (monitors and canvas), keyboard dismiss/cycle, the XR layer codes and grab passed\n";
 }

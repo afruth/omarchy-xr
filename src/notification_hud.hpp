@@ -177,6 +177,14 @@ public:
     }
     bool flick(const std::string& identity,bool up) {
         if(identity.empty() || identity!=highlighted)return false;
+        return act(identity,up);
+    }
+    // Keyboard (XR+N dismiss, XR+SHIFT+N next): the gazed card, else the front card of the stack.
+    bool flickKey(const std::string& identity,bool up) {
+        if(items.empty())return false;
+        return act(!identity.empty() && identity==highlighted ? identity : items.front().raster->card.identity(),up);
+    }
+    bool act(const std::string& identity,bool up) {
         auto found=std::find_if(items.begin(),items.end(),[&](const auto& item){return item.raster->card.identity()==identity;});
         if(found==items.end())return false;
         if(up) {

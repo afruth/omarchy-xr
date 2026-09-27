@@ -296,9 +296,11 @@ public:
         if (!mirror.empty()) writeFile(mirror + ".active", session + ' ' + std::to_string(std::time(nullptr)) + '\n');
         heartbeat = now;
     }
-    // Modes 0..7 everywhere, 8..19 (canvas verbs, §5.5; 18 confirm, M7; 19 scroll, M8) in canvas mode only; modes >= 6 need
-    // v3 and a fresh stamp, and a target only for 6, 7 (notifications), 14, 15 (direction tokens) and 19 (scroll token). 11 and 12
-    // may carry the token "release" (the Alt-Tab release bind).
+    // Modes 0..7, and 8..28: the canvas verbs (§5.5; 18 confirm, M7; 19 scroll, M8) and the XR key layer codes
+    // (docs/xr-controls-plan.md §5.1: 20/21 notification keys, 22 cycle, 26 grab, 27/28 undo/redo), in both scenes;
+    // the renderer gives each its meaning in the current scene. Modes >= 6 need v3 and a fresh stamp, and a target
+    // only for 6, 7 (notifications), 14, 15 (direction tokens), 19 (scroll token), 22 (prev/next) and 26 (begin/end).
+    // 11 and 12 may carry the token "release" (the Alt-Tab release bind); 20/21 without a target act on the front card.
     void updateControls() {
         const auto filePath = existing("");
         if (filePath != controlsSeen) { controlsSeen = filePath; controlsStamp = {}; }
@@ -309,7 +311,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > (canvasMode ? 19 : 7) || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 28 || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;
@@ -317,7 +319,7 @@ public:
             target=decodeTarget(token);
         }
         if(file>>extra)return;
-        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19;
+        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19 || mode==22 || mode==26;
         if(mode>=6 && (first!="v3" || (needsTarget && target.empty()) || !stampFresh(stamp)))return;
         if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit;notificationTarget=target; }
         else zoom = std::clamp(total - previousZoom, -4., 4.);

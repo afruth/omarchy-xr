@@ -501,7 +501,7 @@ struct View {
     // Search and later are canvas verbs (M4): Switch steps by x (+-1) or finishes (begin; output
     // "cancel" cancels); Neighbour/Nudge take a direction token, Summon/Focus/Pin a window in output.
     enum class Verb { Fit, FitTarget, FitOutput, Recenter, ZoomBy, FlickIn, FlickOut, Pan,
-                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus, Scroll };
+                      Search, Fill, Switch, Arrange, Undo, Redo, Neighbour, Nudge, Pin, Help, Summon, Focus, Scroll, Cycle };
     struct Move { Verb verb; float x=0, y=0; bool begin=false; std::string output={}; };
     // Every external navigation entry point goes through here; monitor mode ignores the canvas verbs.
     void navigate(const Move& m) {
@@ -554,6 +554,7 @@ struct View {
         case Verb::Undo: applyAim(canvas->undo(anchor)); break;
         case Verb::Redo: applyAim(canvas->redo(anchor)); break;
         case Verb::Neighbour: if (direction) applyAim(canvas->neighbourOf(*direction, anchor)); break;
+        case Verb::Cycle: applyAim(canvas->cycleBy(m.x>0 ? 1 : -1, anchor)); break;
         case Verb::Nudge: if (direction) applyAim(canvas->nudgeBy(*direction, anchor)); break;
         case Verb::Pin: canvas->pinToggle(m.output.empty() ? canvas->pinTarget() : m.output); break;
         case Verb::Help: canvas->helpOpen=!canvas->helpOpen; break;
@@ -1058,7 +1059,9 @@ struct View {
         if (controls->zoom) navigate({Verb::ZoomBy, float(controls->zoom)});
         if (controls->fit==1) navigate({Verb::FlickOut});
         if (controls->fit==2) navigate({Verb::FlickIn});
-        if (canvas && controls->fit>=8) canvasKey(controls->fit, controls->notificationTarget);
+        if (controls->fit && controls->fit!=26 && tracking.camera.grabbing) grab(false); // any other action ends a grab
+        if (controls->fit>=8) sceneKey(controls->fit, controls->notificationTarget);
+        steerGrab(monotonicSeconds());
         if (notificationHud && (controls->fit==6 || controls->fit==7)) {
             placeNotification(monotonicSeconds());
             notificationHud->flick(controls->notificationTarget,controls->fit==6);
@@ -1072,6 +1075,42 @@ struct View {
         if (tracking.fitTargetRequested) { navigate({Verb::FitTarget}); tracking.fitTargetRequested=false; }
         if (canvas) steerCanvas(); else tracking.clearCanvasVerbs();
         if (!controls->focusOutput.empty()) navigate({.verb=Verb::FitOutput, .output=controls->focusOutput});
+    }
+    // XR key layer codes (docs/xr-controls-plan.md §5.1): notifications and grab in every scene, the rest by scene.
+    void sceneKey(int mode, const std::string& token) {
+        if (mode==20 || mode==21) {
+            if (notificationHud) { placeNotification(monotonicSeconds()); notificationHud->flickKey(token, mode==20); }
+            return;
+        }
+        if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
+        if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
+    }
+    // Monitor scene: overview fits every monitor, focus the gazed monitor.
+    void monitorKey(int mode, const std::string&) {
+        switch (mode) {
+        case 8: navigate({Verb::FlickOut}); break;
+        case 18: navigate({Verb::FitTarget}); break;
+        default: break;
+        }
+    }
+    // Grab (§5.7): the camera carries the heading; in the canvas head pitch also scrolls the cylinder by the
+    // same share of the view. A second press, any other action, stale tracking or 30 s end it.
+    double grabStarted=-1, grabPitch=0;
+    void grab(bool begin) {
+        const double now=monotonicSeconds();
+        if (begin && !tracking.camera.fresh(now)) return;
+        if (begin==tracking.camera.grabbing || !tracking.camera.grab(begin)) return;
+        grabStarted=now; grabPitch=tracking.camera.pitch;
+        std::cout << "Grab: " << (begin ? "begin" : "end") << std::endl;
+    }
+    void steerGrab(double now) {
+        if (!tracking.camera.grabbing) return;
+        if (!tracking.camera.fresh(now) || now-grabStarted>30) { grab(false); return; }
+        interactionUntil=std::max(interactionUntil, now+.4); recenterUntil=0; // no dwell or settling while carried
+        const double pitch=tracking.camera.pitch, turned=pitch-grabPitch;
+        grabPitch=pitch;
+        // Pitch is down-positive: looking down lifts the camera, so what you carry moves down with you.
+        if (canvas && turned!=0) applyAim(canvas->scrollBy(float(-turned/fov)*canvas->metrics.viewH/std::max(canvas->camera.targetZoom, .01f)));
     }
     // The canvas key set (§5.5, modes 8-19); 11/12 with the token "release" end the switcher; 18 is the
     // confirm (M7: the fit_target hotkey and the three-finger tap), which lands on and focuses the target;
@@ -1089,6 +1128,9 @@ struct View {
         case 17: navigate({Verb::Help}); break;
         case 18: std::cout << "Canvas: confirm " << fitTargetName(monotonicSeconds()) << std::endl; navigate({Verb::FitTarget}); break;
         case 19: if (const auto f=canvas->scrollFraction(token)) navigate({.verb=Verb::Scroll, .y=*f}); break;
+        case 22: if (token=="prev" || token=="next") navigate({Verb::Cycle, token=="next" ? 1.f : -1.f}); break;
+        case 27: navigate({Verb::Undo}); break;
+        case 28: navigate({Verb::Redo}); break;
         default: break;
         }
     }

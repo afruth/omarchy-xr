@@ -12,9 +12,11 @@ void equal(Vec a,Vec b) {for(int i=0;i<3;++i) assert(near(a[i],b[i]));}
 tracking::Camera unfiltered() { tracking::Camera c; c.prediction.minCutoff=0; return c; }
 void packetParsing();
 void prediction();
+void grab();
 int main() {
     packetParsing();
     prediction();
+    grab();
     std::cout<<"SDK reference camera: six directions, 60 combined poses, yaw-only recenter, wrap and freshness passed\n";
 }
 
@@ -178,4 +180,27 @@ void prediction() {
     tracking::Camera off=unfiltered();
     feed(off,600,10,[](int i,double){ return i%2 ? 0.05 : -0.05; });
     assert(std::abs(std::abs(off.yaw)-0.05)<1e-9 && off.cutoffHz==0);
+}
+
+// Grab (docs/xr-controls-plan.md §5.7): a yaw sweep while grabbing keeps the view's heading, release keeps
+// the reached reference, and a grab never starts before the first sample.
+void grab() {
+    auto view=[](double r,double p,double y){return tracking::matrix(tracking::conjugate(tracking::orientation(r,p,y)));};
+    auto same=[](std::array<float,16> a,std::array<float,16> b){for(int i=0;i<16;++i) assert(near(a[i],b[i]));};
+    tracking::Camera c=unfiltered();
+    assert(!c.grab(true) && !c.grabbing);
+    assert(c.accept("euler-nwu-v1 20 0 0 10",20));          // neutral 10
+    assert(c.accept("euler-nwu-v1 20.01 0 5 40",20.01));   // looking 30° left at something
+    same(tracking::matrix(c.view),view(0,5,30));
+    assert(c.grab(true) && c.grabbing);
+    for(double y:{60.,120.,-170.,-100.,10.}) {              // sweep, across the wrap: the view stays put
+        static double t=20.02; t+=.01;
+        assert(c.accept("euler-nwu-v1 "+std::to_string(t)+" 0 5 "+std::to_string(y),t));
+        same(tracking::matrix(c.view),view(0,5,30));
+    }
+    c.grab(false);
+    assert(near(c.neutralYaw,-20));                          // 10 at the end, the view kept at 30
+    assert(c.accept("euler-nwu-v1 20.2 0 0 -20",20.2));    // straight ahead now shows what was at 30° left
+    same(tracking::matrix(c.view),view(0,0,0));
+    std::cout<<"Grab: the view holds through a yaw sweep across the wrap, release keeps the new heading passed\n";
 }

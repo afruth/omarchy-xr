@@ -85,6 +85,14 @@ struct Camera {
     double deviceScale=0, prevDevice=0, prevHost=-1;
     std::vector<double> ratios;
     bool fresh(double now) const { return timestamp>=0 && now>=timestamp && now-timestamp<=.25; }
+    // Grab (docs/xr-controls-plan.md §5.7): while held, the heading reference follows the head at the
+    // offset it had at the start, so the scene turns with the head; ending keeps the reference it reached.
+    bool grabbing=false; double grabOffset=0;
+    bool grab(bool begin) {
+        if (begin && !centered) return false;
+        if (begin) grabOffset=std::remainder(neutralYaw-yaw,360.0);
+        grabbing=begin; return true;
+    }
     void updateView() {view=conjugate(orientation(roll,pitch,std::remainder(yaw-neutralYaw,360.0))); predictionActive=false; predictionMs=0;}
     void remember(double td) {
         history[histNext]={timestamp,td,roll,pitch,yaw};
@@ -176,7 +184,8 @@ struct Camera {
         const double x=std::clamp((std::sqrt(vr*vr+vp*vp+vy*vy)-prediction.restSpeed)/(prediction.fullSpeed-prediction.restSpeed),0.0,1.0);
         const double applied=horizon*x*x*(3-2*x)*coherenceGate();
         if(applied<=0) { updateView(); return false; }
-        const double relYaw=std::remainder((latest.yaw-neutralYaw)+vy*applied,360.0);
+        // A grab carries the scene with the head: no yaw to extrapolate relative to it.
+        const double relYaw=grabbing ? std::remainder(-grabOffset,360.0) : std::remainder((latest.yaw-neutralYaw)+vy*applied,360.0);
         view=conjugate(orientation(latest.roll+vr*applied, latest.pitch+vp*applied, relYaw));
         predictionActive=true; predictionMs=applied*1000; return true;
     }
@@ -207,6 +216,7 @@ struct Camera {
         stabilise(value, td);
         roll=value[0];pitch=value[1];yaw=std::remainder(value[2],360.0);timestamp=stamp;deviceTimestamp=device;++samples;
         if (!centered) {neutralYaw=yaw;centered=true;}
+        if (grabbing) neutralYaw=std::remainder(yaw+grabOffset,360.0);
         remember(td);
         updateView(); return true;
     }

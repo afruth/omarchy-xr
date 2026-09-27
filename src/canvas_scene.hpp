@@ -1086,6 +1086,13 @@ public:
         focusRequest=*target;
         return land(*target, anchor);
     }
+    // XR previous/next (§5.4 of docs/xr-controls-plan.md): the next window in ring order, wrapping.
+    Aim cycleBy(int step, const tracking::Quaternion& anchor) {
+        const auto target=canvas::cycle(current(), step, arrangeable(), ring);
+        if(!target) return {};
+        focusRequest=*target;
+        return land(*target, anchor);
+    }
     // One grid step, neighbours make room; the camera chases only a window leaving the view.
     Aim nudgeBy(Direction dir, const tracking::Quaternion& anchor) {
         auto* w=findMutable(current());
