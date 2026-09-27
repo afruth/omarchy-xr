@@ -75,6 +75,10 @@ class InputSettingsTests(unittest.TestCase):
         rows=re.findall(r'^\s*\{"(\w+)",key="([^"]*)"',table.group(1),re.M)
         self.assertEqual(rows,[(a,DEFAULTS['keys'][a]) for a in ACTION_IDS])
 
+    def test_headset_help_knows_every_action(self):
+        header=(ROOT/'src/help_keys.hpp').read_text()
+        self.assertEqual(re.findall(r'\{"(\w+)", "[^"]+", "[^"]+"\}',header),list(ACTION_IDS))
+
     def test_persist_and_apply(self):
         with tempfile.TemporaryDirectory() as temp:
             directory=Path(temp);calls=[]

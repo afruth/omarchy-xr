@@ -1141,7 +1141,7 @@ end
 installLayer=function()
     retireLayer()
     if not active then publishKeys({});return end
-    local rows={}
+    local rows={"modifier\t"..layerModifier}
     for _,action in ipairs(LAYER_ACTIONS) do
         local key=layerKeys[action[1]]
         if key and key~="" then

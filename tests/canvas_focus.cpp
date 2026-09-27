@@ -340,7 +340,7 @@ void virtualCursor(View& v) {
     cursor(20010, 20, 0, 0);
     assert(v.xrCursor.valid && v.xrCursor.window==name && v.xrCursor.px==10 && v.xrCursor.py==20);
 }
-// The view (u, v) of a window's centre, as a 2D click would give it.
+// The view (u, v) of a window's centre: which windows are in view.
 std::optional<std::pair<float,float>> projectCentre(const View& v, const std::string& name) {
     const auto* l=v.findLayout(name); if (!l) return std::nullopt;
     const auto c=spatial::vertex(v.monitorPose(*l), 0, 0);
@@ -351,14 +351,17 @@ std::optional<std::pair<float,float>> projectCentre(const View& v, const std::st
     if (u<.05f || u>.95f || w<.05f || w>.95f) return std::nullopt;
     return std::pair{u, w};
 }
-// (i) A click at a window's projected centre focuses that window at its buffer centre; the camera stays.
-void clickPath(View& v) {
+// (i) Focusing a window at its centre (the hit a gaze confirm or Studio's Land on window gives) stages it at
+// its buffer centre; the camera stays. The windowed preview takes no clicks (docs/xr-controls-plan.md §6).
+void focusPath(View& v) {
     v.navigate({View::Verb::FlickOut}); ease(v, 120);
-    std::string name; std::pair<float,float> at;
-    for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (const auto p=projectCentre(v, w.name)) { name=w.name; at=*p; break; }
+    std::string name;
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (projectCentre(v, w.name)) { name=w.name; break; }
     assert(!name.empty());
     const auto serial=v.pointerSerial; const auto rotation=v.targetRotation;
-    v.clickAt(at.first, at.second);
+    const auto* l=v.findLayout(name); assert(l);
+    targeting::Hit centre; centre.output=name; centre.pixelX=l->width/2; centre.pixelY=l->height/2;
+    v.focusHit(centre);
     const auto* w=v.canvas->find(name);
     assert(v.pointerSerial==serial+1 && v.hoverOutput==name && sameRotation(rotation, v.targetRotation));
     assert(std::abs(v.pointerX-w->pixelW/2.f)<.02f*w->pixelW && std::abs(v.pointerY-w->pixelH/2.f)<.02f*w->pixelH);
@@ -785,7 +788,7 @@ using State=canvas::Scene::State;
 void searchLandingBeatsGaze(View& v) {
     work(v); landOn(v, "0x5005");
     v.navigate({View::Verb::Search});
-    assert(v.canvas->state==State::Search && v.canvas->search.open && v.promptShown && !v.promptSdl);
+    assert(v.canvas->state==State::Search && v.canvas->search.open && v.promptShown);
     const auto opened=promptFields(v);
     assert(opened[3]=="1" && opened[4]=="OMXRTEST-canvas");
     typeSearch(v, 1, "term 20487", "-");   // the title of 0x5007
@@ -1208,20 +1211,6 @@ void overviewDrag(View& v) {
     // A cancelled drag puts the window back where it started.
     s.dragBegin("0x5003"); s.dragBy(400, 0); assert(!sameRect(w->rect, start));
     s.dragCancel(); assert(sameRect(w->rect, start) && s.history.undo.size()==undos && !s.dragEnd());
-    // Through the View: a press and release in place focuses; with motion it drags.
-    const auto at=projectCentre(v, "0x5003"); assert(at);
-    const auto serial=v.pointerSerial;
-    v.pressAt(at->first, at->second); assert(v.drag.active && v.drag.window=="0x5003" && v.pointerSerial==serial);
-    v.releaseAt(); assert(!v.drag.active && v.hoverOutput=="0x5003" && v.pointerSerial==serial+1 && sameRect(w->rect, start));
-    v.pressAt(at->first, at->second); v.dragMotion(2, 1); assert(!v.drag.moved); v.dragMotion(60, 0); assert(v.drag.moved);
-    assert(w->rect.x!=start.x);
-    v.releaseAt(); assert(!v.drag.active && s.history.undo.size()==undos+1 && std::fmod(w->rect.x, 20.f)==0);
-    v.navigate({V::Undo}); assert(sameRect(w->rect, start));
-    ease(v, 60); panInsideRing(v);
-    work(v);
-    bool pressed=false;
-    for (const auto& c:s.windows) if (const auto p=c.gone ? std::nullopt : projectCentre(v, c.name)) { v.pressAt(p->first, p->second); pressed=true; break; }
-    assert(pressed && !v.drag.active && s.dragName.empty());
     assert(v.monitorMathCalls==0);
 }
 void publishCard(const std::string& folder) {
@@ -1725,7 +1714,7 @@ int main() {
         placedAndLanded(v); verbs(v); fadeAndPlace(v); reloadFile(v);
         navigationInvariants(v); workAndOverview(v); zoomAnchor(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
-        mailboxList(v); hoverV4(v); virtualCursor(v); clickPath(v); stageSourceFallback(v); stageRegion(v);
+        mailboxList(v); hoverV4(v); virtualCursor(v); focusPath(v); stageSourceFallback(v); stageRegion(v);
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
         bringToCanvas(v); poseVerbs(v); takeoverFlag(v);
         newWindowCues(v); overviewDrag(v); notificationInsideRing(v);
@@ -1738,5 +1727,5 @@ int main() {
     sceneMemory(temp); sizeAndParent(); fluidCanvas(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the click path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, the Overview drag, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
+    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the focus path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
 }

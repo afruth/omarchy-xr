@@ -395,7 +395,7 @@ void canvasMailboxes() {
     {
         LiveControls input(pose);
         writeFile(path+".windows",list(owner,9,bootNow()));writeFile(path+".cursor","v1 "+owner+" 9 1 1 0 0 "+std::to_string(bootNow())+"\n");
-        input.update();assert(!input.windows && !input.cursor);
+        input.update();assert(input.windows && !input.cursor); // the monitor scene searches the list; the cursor is canvas-only
         AsyncFile::instance().flush();
         assert(readFile(path+".mode").starts_with("v1 "+owner+" monitors 1 "));
     }

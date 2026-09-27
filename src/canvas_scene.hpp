@@ -199,6 +199,8 @@ public:
     std::optional<FillRequest> fillRequest;
     std::string filled, bringRequested, focusRequest;
     bool helpOpen=false;
+    // The help card's rows (help_keys.hpp), set by the renderer from the controls adapter's `.keys`.
+    std::vector<helpkeys::Row> helpRows=helpkeys::rows({}, true);
     Overlays overlays;
     // primed: the first list was adopted, so later windows are new (pulse and cue). The Overview mouse
     // drag: the window, its rect and the layout when it started.
@@ -1251,8 +1253,8 @@ public:
             place(Kind::Switcher, o.switcher, o.switcherRaster, 45, 0, o.switcherAlpha);
         }
         if(fade(o.helpAlpha, helpOpen, dt, o.help)) {
-            const bool takeover=settings.takeoverKeys;
-            o.helpRaster.update(overlay::helpKey(takeover, o.style), overlay::helpWidth, overlay::helpHeight, now, 0, [&](cairo_t* cr) { return overlay::paintHelp(cr, o.style, takeover); });
+            const std::string title="Window canvas keys";
+            o.helpRaster.update(overlay::helpKey(helpRows, title, o.style), overlay::helpWidth, overlay::helpHeight, now, 0, [&](cairo_t* cr) { return overlay::paintHelp(cr, o.style, helpRows, title); });
             place(Kind::Help, o.help, o.helpRaster, 45, 0, o.helpAlpha);
         }
         o.drawn=out;

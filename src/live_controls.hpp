@@ -1,6 +1,7 @@
 #pragma once
 #include "async_file.hpp"
 #include "hex_token.hpp"
+#include "help_keys.hpp"
 #include "window_list.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -260,6 +261,18 @@ public:
     // Monitor-scene search (docs/xr-controls-plan.md §5.5). `.results` lists the ranked rows for the prompt, which
     // shows them under its field: v1 <pid> <promptSeq> <seq> <stamp>, then "<selected 0/1> <hex class|-> <hex title|->"
     // per row. `.land` asks the adapter to land on a window: v1 <pid> <seq> <address> <stamp>.
+    // The chords the adapter bound (`.keys`, help_keys.hpp), set when this session's file changes.
+    std::optional<helpkeys::Keys> keys;
+    timespec keysStamp{};
+    unsigned long long keysSeq=0;
+    void updateKeys() {
+        keys.reset();
+        if (!newer(path + ".keys", keysStamp)) return;
+        unsigned long long seq=0;
+        auto parsed=helpkeys::parse(readAll(path + ".keys"), session, &seq);
+        if (seq && seq==keysSeq) return;
+        keysSeq=seq; keys=std::move(parsed);
+    }
     struct ResultRow { bool selected=false; std::string cls, title; };
     void publishResults(const std::vector<ResultRow>& rows) {
         if (path.empty()) return;
@@ -299,6 +312,7 @@ public:
         updateWindows();
         updateCursor();
         updateSearch();
+        updateKeys();
         beat();
         updateControls();
     }

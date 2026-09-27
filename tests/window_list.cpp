@@ -1,4 +1,5 @@
 #include "window_list.hpp"
+#include "help_keys.hpp"
 #include <cassert>
 #include <iostream>
 using namespace windows;
@@ -123,7 +124,25 @@ static void tiers() {
     assert(parseTiers(tiersLine(1, 1, many, 5))->slivers.size()==maxRecords);
     many.push_back(maxRecords+1); assert(!parseTiers(tiersLine(1, 1, many, 5)));
 }
+// `.keys` (help_keys.hpp): this owner only, the modifier row, unknown actions and malformed rows skipped,
+// chords shown compactly, canvas-only actions only in the canvas help, and a note without v7 controls.
+static void layerKeys() {
+    const std::string text="v1 42 3 100\nmodifier\tCTRL + ALT\nrecenter\tCTRL + ALT + space\t1\nredo\tCTRL + ALT + SHIFT + Z\t0\n"
+                           "bogus\tCTRL + ALT + B\t1\nhelp CTRL + ALT + H\nfocus\tCTRL + ALT + Down\t1\n";
+    unsigned long long seq=0;
+    const auto keys=helpkeys::parse(text, "42", &seq);
+    assert(seq==3 && keys.modifier=="CTRL + ALT" && keys.entries.size()==3);
+    assert(keys.entries[1].action=="redo" && !keys.entries[1].live);
+    assert(helpkeys::parse(text, "43").entries.empty() && helpkeys::parse(text, "43").modifier.empty());
+    assert(helpkeys::pretty("CTRL + ALT + SHIFT + Page_Down")=="Ctrl+Alt+Shift+PgDn" && helpkeys::pretty("SUPER + ALT + equal")=="Super+Alt+=");
+    const auto monitors=helpkeys::rows(keys, false), canvas=helpkeys::rows(keys, true);
+    assert(monitors.size()==2+2 && monitors[0].keys=="Ctrl+Alt+Space" && monitors[0].action=="recenter" && monitors[1].action=="focus the gazed window");
+    assert(monitors[2].section=="Mouse" && monitors[2].keys=="Ctrl+Alt+wheel");
+    assert(canvas.size()==5+2+4 && canvas[0].section=="Search field");       // redo is canvas-only but not live here
+    const auto none=helpkeys::rows({}, false);
+    assert(none.size()==1 && none[0].action=="install XR controls v7");
+}
 int main() {
-    sample(); hex(); rejections(); cursor(); search(); tiers();
-    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header, the cursor, search, prompt, fill and tiers lines passed\n";
+    sample(); hex(); rejections(); cursor(); search(); tiers(); layerKeys();
+    std::cout<<"Window list: mailbox sample, hex round trip, addresses, rejections, the 512-row cap, the output header, the cursor, search, prompt, fill and tiers lines and the XR layer keys passed\n";
 }
