@@ -921,6 +921,17 @@ public:
     }
     // The palette shows in the Search state, the switcher once revealed, help while open.
     bool overlayOpen() const { return state==State::Search || switcher.revealed || helpOpen; }
+    // Something that moves by time alone, so the idle-frame gate draws every frame: camera easing, the
+    // Overview radar and labels, overlays and their fades, lazily following pins, a drag, a closing
+    // window's fade, a new window's pulse or cue and the confirm hint.
+    bool animating(double now) const {
+        const auto& o=overlays;
+        if(camera.moving() || zoomedOut() || overlayOpen() || switcher.active || !dragName.empty() || !o.pinned.empty()
+           || o.radarAlpha>0 || o.paletteAlpha>0 || o.switcherAlpha>0 || o.helpAlpha>0 || (!hintFor.empty() && now<hintUntil)) return true;
+        return std::any_of(windows.begin(), windows.end(), [&](const CanvasWindow& w) {
+            return (w.gone && now-w.goneAt<fadeSeconds) || now<w.pulseUntil || (!w.gone && now<w.cueUntil) || (w.pinned && !w.gone);
+        });
+    }
     // Dwell stays off only while the gaze ray (the view centre) meets a drawn overlay quad (§5.6), so gaze
     // still selects windows above the palette in Search.
     bool overlayUnderGaze(const overlay::space::Scene& scene) const {

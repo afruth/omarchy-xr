@@ -47,6 +47,10 @@ public:
     std::string error;
     bool loadingImage() const {return loader.valid() || bool(pixels);}
     bool visible() const {return (texture || procedural()) && !requested.empty() && brightness>0;}
+    // For the idle-frame gate: what the sky shows (settings line, resident texture), and how often the
+    // animated procedural sky needs a redraw. Its 24 s pulse moves less than one 8-bit level per 0.25 s.
+    std::size_t revision() const {return std::hash<std::string>{}(lastConfig)^(std::size_t(texture)<<1);}
+    double ambientPeriod() const {return visible() && procedural() && animated ? .25 : 0;}
     explicit SkyEnvironment(const std::string& path):configPath(path) {glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxSize);}
     void update(double now) {
         time=now;

@@ -179,6 +179,24 @@ sets; external power lifts both at once. Outputs are never recreated, and the st
 `captureCapHz`) and Studio shows whether the saver is active. `OMARCHY_XR_POWER_SUPPLY` replaces the
 sysfs directory for live tests.
 
+**Idle frames.** The viewer skips the draw and the page flip while the image would not change
+(`src/idle_frames.hpp`); the glasses' scanout, or the compositor for the windowed view, keeps the last
+buffer. Each tick, after its updates, `describeFrame` gives the gate the view quaternion and pan, the sum
+of uploaded capture frames, a hash of everything else drawn (surface geometry, halos, textures and status,
+the cylinder, drawable size, accent, XR cursor, environment settings, HUD count) and whether something
+moves by time alone (camera easing, interaction windows, the HUD, the monitor-mode help card, a
+loading sky, and `canvas::Scene::animating`: Overview, overlays and fades, pins, drags, pulses, cues and hints). A view or
+pan change beyond a quarter glasses pixel, a state change or an animation draws and holds drawing for
+0.3 s so easing tails settle; a new capture frame draws once; the animated Tron sky redraws every
+0.25 s; a keepalive draws at least once a second. A skipped direct frame waits out the vblank
+extrapolated from the last flip (`vblankAnchorUs`) while uploading captures, `DirectOutput::skip` keeps
+the idle gap from counting as a missed vblank, and the next tick latches on the extrapolated vblank. The
+environment update runs every tick, drawn or not. `.stats` reports `idleFrames` and `idleSkipped`; the
+Performance line adds `idle skipped N frames`. `OMARCHY_XR_IDLE_FRAMES=0` draws every frame; smoke runs
+always do. Monitor capture waits for damage, so a still desktop sends no frames; parked canvas windows
+that are pulled, and the staged window's region capture, deliver frames at their rate whether or not
+anything changed, and each such frame is drawn.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping

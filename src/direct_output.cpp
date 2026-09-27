@@ -23,7 +23,7 @@ struct DirectOutput::Impl {
     std::vector<wp_drm_lease_device_v1*> devices;
     std::vector<std::unique_ptr<Connector>> outputs;
     wp_drm_lease_v1* lease=nullptr;int fd=-1;bool ended=false,flipping=false;
-    bool haveVblank=false;std::uint64_t lastVblankUs=0;unsigned missed=0;
+    bool haveVblank=false,resumed=false;std::uint64_t lastVblankUs=0;unsigned missed=0;
     uint32_t crtc=0,connector=0;drmModeModeInfo mode{};
     gbm_device* gbm=nullptr;gbm_surface* surface=nullptr;gbm_bo* front=nullptr;
     EGLDisplay egl=EGL_NO_DISPLAY;EGLContext context=EGL_NO_CONTEXT;EGLSurface eglSurface=EGL_NO_SURFACE;
@@ -111,8 +111,9 @@ struct DirectOutput::Impl {
     static void flip(int,unsigned,unsigned sec,unsigned usec,void* d){
         auto& self=*static_cast<Impl*>(d);
         const auto now=static_cast<std::uint64_t>(sec)*1000000ull+usec;
-        if(self.haveVblank && vblankIntervalMissed(self.lastVblankUs,now,self.mode.vrefresh)) ++self.missed;
-        self.lastVblankUs=now;self.haveVblank=true;self.flipping=false;
+        // The first flip after skipped frames spans the idle gap; that is not a late frame.
+        if(self.haveVblank && !self.resumed && vblankIntervalMissed(self.lastVblankUs,now,self.mode.vrefresh)) ++self.missed;
+        self.resumed=false;self.lastVblankUs=now;self.haveVblank=true;self.flipping=false;
     }
     void swap(const std::function<void()>& service){
         if(!eglSwapBuffers(egl,eglSurface))throw std::runtime_error("Direct EGL swap failed");
@@ -154,6 +155,7 @@ int DirectOutput::width()const{return impl->mode.hdisplay;}
 int DirectOutput::height()const{return impl->mode.vdisplay;}
 bool DirectOutput::pump(){return impl->pump();}
 void DirectOutput::swap(const std::function<void()>& service){impl->swap(service);}
+void DirectOutput::skip(){impl->resumed=true;}
 unsigned DirectOutput::refreshHz() const {return impl->mode.vrefresh;}
 unsigned DirectOutput::missedVblanks() const {return impl->missed;}
 bool DirectOutput::hasVblank() const {return impl->haveVblank;}
