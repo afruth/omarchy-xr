@@ -41,6 +41,15 @@ PLUGIN_FILES = (
     "studio/dedicated.py",
     "studio/canvas.py",
     "studio/dedicated_helper.py",
+    # Studio's setup buttons run these from the plugin directory when no package is installed.
+    "scripts/install-helper.py",
+    "packaging/io.github.afruth.omarchy-xr.display.policy",
+    "scripts/install-controls.py",
+    "config/xr-controls.lua",
+    "scripts/install-notifications.py",
+    "notifications/manifest.json.in",
+    "notifications/Bridge.qml",
+    "notifications/Service.qml.in",
 )
 BAR_SECTION_ANCHORS = {"left": "omarchy.workspaces", "center": "omarchy.weather", "right": "omarchy.tray"}
 

@@ -19,6 +19,15 @@ in flat and windowed runs. The canvas requires XR controls version 6: reinstall
 them via **Utilities → Setup & integrations**. See the
 [Window canvas guide](window-canvas.md).
 
+Dedicated stereo now starts on AMD graphics (`amdgpu`). The driver kept
+re-applying its cached EDID, so the compositor never saw the glasses as a
+headset and could not lease them; the stereo helper now refreshes that cache and
+signals the compositor. Intel keeps its previous, unchanged sequence. Setup is
+simpler too: **Utilities → Setup & integrations → Set up everything** installs or
+updates the stereo helper, controls and notifications in one terminal, and the
+Window canvas option offers **Install XR controls** directly when they are
+missing.
+
 The x86_64 package includes the unchanged VITURE Gen1/Gen2 glasses runtime. No
 separate developer SDK download is needed. Carina 6DoF and cameras are not
 supported. Application terms reserve rights; this is not an open-source release.

@@ -77,9 +77,11 @@ stops installation. Oversized downloads stop before excess bytes are written;
 incomplete or unverified downloads are deleted. No downloaded script is executed.
 
 **Utilities → Setup & integrations** also provides buttons to install or update
-the optional shortcuts/gestures and spatial-notification integration. A source
+the optional shortcuts/gestures and spatial-notification integration, and
+**Set up everything**, which runs all of them in one terminal. A source
 installation with a developer-supplied SDK gets an **Install stereo helper**
-button there. These actions keep terms and administrator prompts visible in the
+button there, which becomes **Update stereo helper** when the installed helper
+differs from the one in the checkout. These actions keep terms and administrator prompts visible in the
 terminal, but users do not need to type the underlying setup commands.
 
 If you installed the package directly already, run

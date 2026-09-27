@@ -63,13 +63,51 @@ def clear_own_override(override):
         override.write_text('reset')
 
 
-def restore_connector(status, override):
-    for label, action in (
+def card_directory(connector):
+    return connector.parent / connector.name.split('-')[0]
+
+
+def uses_amdgpu(connector):
+    return (card_directory(connector) / 'device/driver').resolve().name == 'amdgpu'
+
+
+def hotplug_event(connector):
+    # amdgpu sends no uevent for a forced sysfs status, so compositors would not re-probe.
+    (card_directory(connector) / 'uevent').write_text('change')
+
+
+def reprobe_steps(connector, override, write_override):
+    """Apply (hand over) or reset (restore) the override and make the compositor re-read the display."""
+    status = connector / 'status'
+    if not uses_amdgpu(connector):
+        # The original sequence, unchanged for i915 and other drivers.
+        return (
+            ('disable', lambda: status.write_text('off')),
+            ('wait', lambda: time.sleep(.3)),
+            ('override', write_override),
+            ('detect', lambda: status.write_text('detect')),
+        )
+    # amdgpu keeps a cached EDID that it re-applies on every probe and refreshes only in its
+    # force() hook, where the EDID read returns nothing while the connector is forced off.
+    # Forcing "on" before "detect" makes it cache the override (or, on restore, the real EDID).
+    return (
+        ('override', write_override),
         ('disable', lambda: status.write_text('off')),
-        ('wait', lambda: time.sleep(.3)),
-        ('reset', lambda: override.write_text('reset')),
+        ('disable event', lambda: hotplug_event(connector)),
+        ('wait', lambda: time.sleep(1)),
+        ('refresh', lambda: status.write_text('on')),
         ('detect', lambda: status.write_text('detect')),
-    ):
+        ('detect event', lambda: hotplug_event(connector)),
+    )
+
+
+def hand_over(connector, edid, override):
+    for _, action in reprobe_steps(connector, override, lambda: override.write_bytes(edid)):
+        action()
+
+
+def restore_connector(connector, override):
+    for label, action in reprobe_steps(connector, override, lambda: override.write_text('reset')):
         try:
             action()
         except Exception as exc:
@@ -85,7 +123,6 @@ def main():
     lock = Path('/run/omarchy-xr-display.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     clear_own_override(override)
-    status=connector/'status'
     shutting_down=False
     def stop(*_):
         nonlocal shutting_down
@@ -103,17 +140,14 @@ def main():
     touched=False
     try:
         touched=True
-        status.write_text('off')
-        time.sleep(.3)
-        override.write_bytes(edid)
-        status.write_text('detect')
+        hand_over(connector, edid, override)
         print('ready',flush=True)
         # The owning manager retains this pipe. Crash/exit closes it automatically.
         for line in sys.stdin:
             if line.strip()=='stop':break
     finally:
         if touched:
-            restore_connector(status, override)
+            restore_connector(connector, override)
         lock.close()
 
 if __name__=='__main__':

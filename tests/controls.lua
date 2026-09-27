@@ -1,5 +1,6 @@
 -- Exercise actual Lua callbacks without a compositor or any input devices.
 local files,bindings,gestures,events,unbound,bindLists={}, {}, {}, {}, {}, {}
+expiredHandleCrashes=0
 package.preload["hypr.xr-touchpads"]=function()return {"test-touchpad"} end
 local now=100
 files["/proc/uptime"]="100"
@@ -25,15 +26,24 @@ hl={
         events[name]=subscription;return subscription
     end,
     get_config=function(_)return "lrm" end,
+    -- Like Hyprland 0.56: a handle is a weak reference, remove() erases every bind on its chord, and
+    -- remove()/set_enabled() on an expired handle dereference null (counted here as a crash).
     bind=function(key,callback,options)
-        local binding={options=options,callback=callback,set_enabled=function(self,value)self.enabled=value end}
+        local binding=setmetatable({options=options,callback=callback},
+            {__tostring=function(self) return self.expired and "HL.Keybind(expired)" or "HL.Keybind(0x1)" end})
+        binding.set_enabled=function(self,value) if self.expired then expiredHandleCrashes=expiredHandleCrashes+1;return end self.enabled=value end
         binding.remove=function(self)
-            if bindings[key]==self then bindings[key]=nil end
-            for i,other in ipairs(bindLists[key] or {}) do if other==self then table.remove(bindLists[key],i);break end end
+            if self.expired then expiredHandleCrashes=expiredHandleCrashes+1;return end
+            for _,other in ipairs(bindLists[key] or {}) do other.expired=true end
+            bindings[key]=nil;bindLists[key]=nil
         end
         bindings[key]=binding;bindLists[key]=bindLists[key] or {};table.insert(bindLists[key],binding);return binding
     end,
-    unbind=function(chord) unbound[#unbound+1]=chord;bindings[chord]=nil;bindLists[chord]=nil end,
+    unbind=function(chord)
+        unbound[#unbound+1]=chord
+        for _,other in ipairs(bindLists[chord] or {}) do other.expired=true end
+        bindings[chord]=nil;bindLists[chord]=nil
+    end,
     gesture=function(spec) gestures[#gestures+1]=spec end,
     timer=function(callback,options) return {callback=callback, timeout=options and options.timeout, enabled=true, set_enabled=function(self,value) self.enabled=value end} end,
 }
@@ -1011,3 +1021,5 @@ testStageDrag()
 testResizeKeys()
 testScrollKeys()
 testStageReclamp()
+assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")
+print("Keybind handles: no remove/set_enabled on an expired handle passed")

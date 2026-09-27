@@ -5,6 +5,12 @@ import subprocess
 import time
 
 HELPER = Path('/usr/lib/omarchy-xr/omarchy-xr-display')
+BUNDLED_HELPER = Path(__file__).with_name('dedicated_helper.py')
+
+def helper_current(installed=HELPER, bundled=BUNDLED_HELPER):
+    """Whether the installed helper is the one shipped with this Studio (false if either is missing)."""
+    try:return installed.read_bytes()==bundled.read_bytes()
+    except OSError:return False
 
 class Dedicated:
     def __init__(self,directory,renderer):

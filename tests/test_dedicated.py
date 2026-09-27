@@ -48,3 +48,37 @@ class AuthorizationTests(unittest.TestCase):
             with patch('dedicated_helper.os.geteuid',return_value=0), patch('sys.argv',['helper',connector]), patch('dedicated_helper.Path') as path:
                 with self.assertRaises(ValueError):dedicated_helper.main()
                 path.assert_not_called()
+
+class HandoffSequenceTests(unittest.TestCase):
+    # Recorded (file, value) writes against a fake sysfs tree whose card uses the given driver.
+    def run_sequence(self,step,driver='amdgpu',fail_on=None):
+        import tempfile, dedicated_helper
+        from unittest.mock import patch
+        writes=[]
+        def record(path,data,*_):
+            if (path.name,data)==fail_on:raise OSError('busy')
+            writes.append((path.name,data if isinstance(data,str) else len(data)))
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'drivers'/driver).mkdir(parents=True);(root/'card1/device').mkdir(parents=True)
+            (root/'card1/device/driver').symlink_to(root/'drivers'/driver)
+            connector=root/'card1-DP-2';override=root/'edid_override'
+            with patch.object(Path,'write_text',record), patch.object(Path,'write_bytes',record), patch('dedicated_helper.time.sleep'):
+                step(dedicated_helper,connector,override)
+        return writes
+    # amdgpu only refreshes its cached EDID while forced on, and sends no events for forced status.
+    AMD=[('status','off'),('uevent','change'),('status','on'),('status','detect'),('uevent','change')]
+    def test_amdgpu_hand_over_writes_override_then_reprobes(self):
+        writes=self.run_sequence(lambda h,c,o:h.hand_over(c,b'x'*384,o))
+        self.assertEqual(writes,[('edid_override',384)]+self.AMD)
+    def test_amdgpu_restore_resets_override_then_reprobes(self):
+        writes=self.run_sequence(lambda h,c,o:h.restore_connector(c,o))
+        self.assertEqual(writes,[('edid_override','reset')]+self.AMD)
+    def test_restore_continues_after_a_failed_step(self):
+        writes=self.run_sequence(lambda h,c,o:h.restore_connector(c,o),fail_on=('status','off'))
+        self.assertEqual(writes,[('edid_override','reset')]+self.AMD[1:])
+    def test_other_drivers_keep_the_original_sequence(self):
+        for driver in ('i915','xe'):
+            self.assertEqual(self.run_sequence(lambda h,c,o:h.hand_over(c,b'x'*384,o),driver),
+                             [('status','off'),('edid_override',384),('status','detect')])
+            self.assertEqual(self.run_sequence(lambda h,c,o:h.restore_connector(c,o),driver),
+                             [('status','off'),('edid_override','reset'),('status','detect')])

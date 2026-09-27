@@ -59,8 +59,13 @@ with `omarchy bar move afruth.omarchy-xr --section right`.
 Marketplace users do not need to run the setup targets above manually. A missing
 runtime is shown as an install card on the **Controls** tab, and **Utilities →
 Setup & integrations** provides buttons for the runtime, stereo helper, controls,
-and spatial notifications. Setup still opens a terminal so package-manager,
-licence, and administrator prompts remain visible.
+and spatial notifications. Once the runtime is installed, **Set up everything**
+there installs or updates the stereo helper, controls and notifications in one
+go. When a source build's stereo helper is older than the Studio that ships it,
+the Controls tab offers **Update stereo helper**, and a missing controls adapter
+gets an **Install XR controls** button under the mode selector. Setup still opens
+a terminal so package-manager, licence, and administrator prompts remain visible;
+the terminal stays open until you press Enter.
 
 Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**):
 - **Controls**: start/stop stereo, recenter, fit, and zoom, with live connection status.
@@ -575,9 +580,15 @@ No username, home directory, GPU number, or connector number is baked into setup
 The helper discovers the connected VITURE connector and validates its EDID at runtime.
 It requires polkit, Python 3, kernel debugfs EDID override support, and Hyprland DRM
 leasing; hardware/driver support still determines whether dedicated stereo works.
+On AMD (`amdgpu`) the driver caches the display's EDID and re-applies it on every
+probe, refreshing the cache only while the connector is forced on. The helper
+therefore forces the connector off, then on, then back to detection, and sends a
+DRM change event after each step (amdgpu sends none for forced status changes).
+Intel and other drivers keep the original off → override → detect sequence.
 The packaged VITURE runtime targets Linux x86_64. Developer-supplied SDKs must match the machine's architecture.
 
-After updating helper source, rerun `make install-helper` with XR closed. Ordinary
+After updating helper source, rerun `make install-helper` with XR closed (Studio
+shows **Update stereo helper** while the installed copy differs). Ordinary
 `make install-studio` updates do not change privileged code. To remove system
 integration, close XR and run `make uninstall-helper`; windowed preview remains
 available. USB-C controller reset remains a separate administrator-only action.

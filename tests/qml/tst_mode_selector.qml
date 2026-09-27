@@ -14,11 +14,14 @@ TestCase {
         width: 400
     }
     SignalSpy { id: spy; target: selector; signalName: "picked" }
+    SignalSpy { id: actionSpy; target: selector; signalName: "actionRequested" }
     function init() {
         selector.mode = "monitors";
         selector.locked = false;
         selector.hint = "";
+        selector.actionText = "";
         spy.clear();
+        actionSpy.clear();
     }
     function segment(value) { return findChild(selector, "mode-" + value); }
     function click(value) { var s = segment(value); mouseClick(s, s.width / 2, s.height / 2); }
@@ -58,6 +61,24 @@ TestCase {
         compare(spy.count, 1);
         selector.hint = "";
         verify(!text.visible);
+    }
+    function test_hint_action_button() {
+        var button = findChild(selector, "mode-action");
+        selector.actionText = "Install XR controls";
+        verify(!button.visible);
+        selector.hint = "Window canvas needs XR controls v6.";
+        verify(button.visible);
+        waitForRendering(selector);
+        compare(button.Accessible.name, "Install XR controls");
+        mouseClick(button, button.width / 2, button.height / 2);
+        compare(actionSpy.count, 1);
+        compare(spy.count, 0);
+        selector.locked = true;
+        verify(!button.enabled);
+        mouseClick(button, button.width / 2, button.height / 2);
+        compare(actionSpy.count, 1);
+        selector.hint = "";
+        verify(!button.visible);
     }
     function test_keyboard_arrows() {
         selector.forceActiveFocus();

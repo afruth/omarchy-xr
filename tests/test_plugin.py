@@ -66,6 +66,12 @@ class PluginContractTests(unittest.TestCase):
             self.assertTrue((target / "studio/BarWidget.qml").is_file())
             self.assertEqual(json.loads((target / "manifest.json").read_text())["id"], "afruth.omarchy-xr")
             self.assertTrue((target / "bin/omarchy-xr").is_file())
+            # Setup buttons resolve these relative to the installed studio directory.
+            self.assertTrue((target / "scripts/install-controls.py").is_file())
+            self.assertTrue((target / "scripts/install-helper.py").is_file())
+            self.assertTrue((target / "packaging/io.github.afruth.omarchy-xr.display.policy").is_file())
+            self.assertTrue((target / "config/xr-controls.lua").is_file())
+            self.assertTrue((target / "notifications/Service.qml.in").is_file())
             self.assertTrue((data_home / "applications/omarchy-xr-studio.desktop").is_file())
             layout = json.loads(shell.read_text())
             self.assertTrue(install_studio.widget_in_bar(layout))
