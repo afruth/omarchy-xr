@@ -10,14 +10,17 @@ It arrived with milestone M3; search, Fill, the window switcher, arranging, pinn
 and the F1 key help arrived with M4; the capture ladder with M5; the live mode switch, notifications
 inside the ring, new-window cues and the Overview mouse drag arrived with M6; focusing and moving
 windows in the glasses with M7; the full cylinder (windows at any height, vertical scroll) with M8.
+XR controls v7 replaced the canvas's own keys, and its takeovers of Omarchy chords, with one XR key
+layer shared by both modes (see **Keys**).
 
 ## Requirements
 
-- **XR controls v6.** Window canvas relies on the controls adapter (`xr-controls.lua`) to list
-  windows, stage them and keep them out of fullscreen. After updating, reinstall the controls once:
-  **Utilities → Setup & integrations → Set up shortcuts & gestures**, or `make install-controls` in
-  a source checkout. Until then the **Window canvas** option is disabled with a hint, and the renderer
-  refuses `--canvas`.
+- **XR controls v7.** Window canvas relies on the controls adapter (`xr-controls.lua`) to list
+  windows, stage them, bind the XR keys and keep windows out of fullscreen. After updating, reinstall
+  the controls once: **Utilities → Setup & integrations**, then **Set up everything** or the shortcuts
+  & gestures button, or `make install-controls` in a source checkout. Until then Studio says "Window
+  canvas needs XR controls v7", the **Window canvas** option is disabled, and the renderer refuses
+  `--canvas`.
 - Hyprland with `hyprland_toplevel_export_manager_v1` v2 (the Lua generation of Omarchy has it).
 
 ## Turning it on
@@ -46,7 +49,9 @@ changes:
 2. It then tells the running renderer: the `mode:canvas` or `mode:monitors` message on `pose.sock`.
    The renderer builds the new scene in place and reports the new mode in `pose.sock.stats` at once.
 3. Only after that acknowledgement does Studio remove the other mode's outputs (the monitor outputs,
-   or the canvas output and its rules; SUPER+F and the other taken keys become Omarchy's again).
+   or the canvas output and its rules). The XR keys stay bound; the canvas-only ones (nudge, resize,
+   pin, arrange, undo, scroll) are bound only in the canvas and pass through to applications in
+   virtual monitors mode.
 
 If the renderer does not answer within 3 seconds, Studio stops XR and starts it again in the new mode,
 in the same presentation (stereo or the preview). The new mode is saved before that, so even if the
@@ -81,7 +86,7 @@ rounding, shadows, blur, dimming or animations, so the captured image is just th
 its original workspace. A tiled window is tiled again; a floating one gets back its size and
 position. A window you moved off the canvas yourself stays where you put it; if it was tiled
 before, it is tiled again. Windows that had no recorded origin go to the laptop's active workspace.
-Then the canvas output and its rules are removed. SUPER+F is Omarchy's again.
+Then the canvas output and its rules are removed, and the XR keys are unbound.
 
 ## New windows
 
@@ -93,35 +98,35 @@ to the canvas at start, and a canvas you switch to, show neither.
 
 ## Moving windows
 
-In the glasses, **SUPER+left-drag** moves the window you work in, in any direction, snapped to 20 px:
-it follows the pointer's travel (also past the edge of the window), and the new place is remembered for
-the next start. Windows never overlap: the ones in the way slide aside as you drag, pushing their own
+**XR+left-drag** moves the window you work in, in any direction, snapped to 20 px: it follows the
+pointer's travel (also past the edge of the window), and the new place is remembered for the next
+start. Windows never overlap: the ones in the way slide aside as you drag, pushing their own
 neighbours on in turn, and flow back to where they were once the dragged window has passed. What is
-still pushed aside when you let go stays there, and **Ctrl+Z** puts everything back in one step. Letting go of SUPER before the button also drops it, and a drag that
-holds still for 3 s ends there. **Ctrl+Z** undoes it. Only the panel moves: the real window stays where
-the canvas keeps it, so the pointer, menus and the native cursor stay right. When the window leaves your
+still pushed aside when you let go stays there, and **XR+Z** puts everything back in one step. Letting
+go of the XR modifier before the button also drops it (the plain button release still ends the drag),
+and a drag that holds still for 3 s ends there. Only the panel moves: the real window stays where the
+canvas keeps it, so the pointer, menus and the native cursor stay right. When the window leaves your
 view, the camera follows it after the drop.
 
-**SUPER+right-drag** resizes the window you work in, from any corner; the panel follows. Half a second
+**XR+right-drag** resizes the window you work in, from any corner; the panel follows. Half a second
 after you let go, the window is put back at the stage origin and trimmed to the canvas output, so a
-top-left corner drag cannot leave it misplaced. **SUPER+CTRL+arrows** resize it in 100 px steps. A
-window that grows pushes its neighbours aside the same way; they do not come back when it shrinks.
-**SUPER+F** (Fill) pushes them aside too, and restoring the window lets them flow back, unless you moved
-it into their old places in between.
-**SUPER+SHIFT+arrows** nudges it by 100 px, **Shift+Enter** in the search summons a window next to
-you, and **Ctrl+A** arranges the windows (see **Keys**).
+top-left corner drag cannot leave it misplaced. **XR+comma** / **XR+period** make it narrower or wider
+and **XR+Shift+comma** / **XR+Shift+period** shorter or taller, in 100 px steps. A window that grows
+pushes its neighbours aside the same way; they do not come back when it shrinks. **XR+Return** (Fill)
+pushes them aside too, and restoring the window lets them flow back, unless you moved it into their
+old places in between. **XR+Shift+arrows** nudges it by 100 px, **Shift+Enter** in the search summons
+a window next to you, and **XR+A** arranges the windows (see **Keys**).
 
-In the windowed preview (and a flat `--display` run) you can also drag with the mouse, without SUPER:
-in Overview or the search, a left-drag moves the window under the pointer over the cylinder, with the same
-snapping, memory and undo. A press that moves less than 4 px is an ordinary click: it selects
-the window and puts the pointer there. In Work a plain press never drags. The spectator has no mouse
-drag.
+The windowed preview has no mouse drag of its own; the XR keys and XR+drag work there as in the
+glasses, because they are Hyprland bindings. The spectator has no mouse drag either.
 
 ## Notifications
 
 Notifications work in both modes. In canvas mode the cards float inside the ring, never behind a
-window, in the lower part of your view, and are drawn over the windows. Look at a card and flick up
-with three fingers to dismiss it, or down to cycle through the stack, exactly as in monitor mode.
+window, in the lower part of your view, and are drawn over the windows. **XR+N** dismisses the card
+you look at (with none gazed, the front card) and **XR+Shift+N** cycles through the stack, exactly as
+in monitor mode. With a multitouch touchpad, a three-finger flick up on a card dismisses it and a flick
+down cycles.
 
 The cards also show in the flat glasses view and in the windowed preview whenever the XR controls are
 set up (the renderer then has a pose socket), not only in stereo.
@@ -192,46 +197,48 @@ of live slivers. The development machine handles about 330–370 Mpix/s before c
 
 ## Keys
 
-These are the canvas keys; **F1** shows the same table in the glasses (and in the preview).
+The canvas uses the XR key layer, the same keys as virtual monitors mode. **XR** is a held modifier,
+**CTRL+ALT** by default. The layer is bound only while XR runs, and nothing of Omarchy's is taken over:
+SUPER+TAB, SUPER+F, ALT+TAB, SUPER+arrows and SUPER+wheel keep Omarchy's meaning during a canvas
+session. **XR+H** shows the keys in the glasses (and in the preview); the help is generated from the
+keys actually bound, so it always matches your settings. These are the defaults:
 
 | Keys | What they do |
 |---|---|
-| **SUPER+CTRL+G** | Search your windows by title, class or kind (browser, terminal, editor, …). After you zoom out to Overview (SUPER+TAB or a flick out) you can also just start typing: the search field opens with it. |
+| **XR+Space** | Recenter. |
+| **XR+G**, held | Grab: the scene follows your head while you hold it and stays where it is when you let go, so looking at a window, holding XR+G and turning back to straight ahead brings that window to the front. Head pitch also scrolls the cylinder. The grab ends on release, on a second press, on any other XR action, when tracking goes stale or after 30 s. |
+| **XR+=** / **XR+-** | Zoom in / out one step; repeats while held. |
+| **XR+/** | Search your windows by title, class or kind (browser, terminal, editor, …). After you zoom out to Overview (XR+Up or a flick out) you can also just start typing: the search field opens with it. |
 | type, **↑/↓**, **Tab/Shift+Tab** | Filter and move the selection; the camera follows the best match and the other windows dim. |
 | **Enter** / **Shift+Enter** | Land on the selection / summon it next to you first. A window that is not on the canvas yet is marked *bring to canvas* and is brought over. |
 | **Ctrl+1…8** | Land on that row of the results. |
 | **Esc** | Clears the text; a second Esc closes the search and puts the camera and focus back where they were. An open help closes first. |
-| **ALT+TAB** / **ALT+SHIFT+TAB** | Recent-window switcher: a quick tap flips to the previous window, holding shows the list (after 0.2 s), releasing Alt lands. |
-| **SUPER+F** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, SUPER+F focuses the window you look at first and then fills it. |
-| **SUPER+TAB** | Overview on and off. Leaving the Overview lands on and focuses the window you look at. |
-| **Ctrl+Down** (your `fit_target` key) or a **three-finger tap** | Focus the window you look at: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
-| **SUPER+arrows** | Land on the neighbouring window in that direction; every landing brings its window to eye level. |
-| **SUPER+wheel** | Scroll the cylinder up or down, a fifth of the view per notch. A takeover of Omarchy's workspace scroll. |
-| **SUPER+CTRL+Page_Up / Page_Down** | Scroll the cylinder a page up or down. |
-| **4-finger pan** | Sideways turns the view along the ring; up and down scrolls the cylinder. |
-| **SUPER+SHIFT+arrows** | Nudge the window you work in by 100 px, also up and down; the windows in the way slide aside. |
-| **SUPER+left-drag** | Move the window you work in, in any direction (20 px steps, **Ctrl+Z** undoes it, the place is remembered). |
-| **SUPER+right-drag** | Resize it; the panel follows. When the drag ends the window is put back at the stage origin. |
-| **SUPER+CTRL+arrows** | Resize it by 100 px: Left/Right narrower/wider, Up/Down shorter/taller. |
-| **Ctrl+A**, **Ctrl+Z**, **Ctrl+Shift+Z** (in the search field) | Arrange: group windows by kind, then application, into a block around where you look, without overlap, and show the Overview; undo and redo arrange, nudge and summon. Studio's **Arrange** and **Undo** work from any view. |
-| **SUPER+ALT+P** | Pin the window you work in to your view (body-locked), or unpin it. |
-| **F1** (in the search field) | This help. It lists the takeover keys only while the takeover switch is on. |
+| **XR+Up** | Overview on and off. Leaving the Overview lands on and focuses the window you look at. |
+| **XR+Down** or a **three-finger tap** | Focus the window you look at: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
+| **XR+Return** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, XR+Return focuses the window you look at first and then fills it. |
+| **XR+Left** / **XR+Right** | Land on the previous / next window in ring order, wrapping from the last to the first; every landing brings its window to eye level. Windows above or below are reached by scrolling or the search. |
+| **XR+Shift+wheel** | Scroll the cylinder up or down, a fifth of the view per notch. |
+| **XR+Page_Up / Page_Down** | Scroll the cylinder a page up or down. |
+| **XR+wheel** | Zoom in / out. |
+| **XR+middle button**, held | Grab, as XR+G. |
+| **4-finger pan** | Sideways turns the view along the ring; up and down scrolls the cylinder (multitouch touchpads only). |
+| **XR+Shift+arrows** | Nudge the window you work in by 100 px, also up and down; the windows in the way slide aside. |
+| **XR+left-drag** | Move the window you work in, in any direction (20 px steps, **XR+Z** undoes it, the place is remembered). |
+| **XR+right-drag** | Resize it; the panel follows. When the drag ends the window is put back at the stage origin. |
+| **XR+comma** / **XR+period** | Resize it by 100 px: narrower / wider. With **Shift**: shorter / taller. |
+| **XR+A**, **XR+Z**, **XR+Shift+Z** | Arrange: group windows by kind, then application, into a block around where you look, without overlap, and show the Overview; undo and redo arrange, nudge, move and summon. They work from any view; **Ctrl+A**, **Ctrl+Z** and **Ctrl+Shift+Z** still work in the search field. Studio's **Arrange** and **Undo** work too. |
+| **XR+P** | Pin the window you work in to your view (body-locked), or unpin it. |
+| **XR+N** / **XR+Shift+N** | Dismiss the notification card you look at (else the front card) / show the next one. |
+| **XR+Home** | Move the pointer back to the centre of your laptop screen, for example to use Studio. |
+| **XR+H** | This help, from any view. **F1** still opens it in the search field. |
 
-**Take over Omarchy window keys in canvas mode** (Studio, **Canvas** tab, on by default) governs
-SUPER+TAB, ALT+TAB, ALT+SHIFT+TAB, SUPER+arrows, SUPER+SHIFT+arrows and SUPER+wheel. Turned off, those keep
-Omarchy's meaning (next workspace, window cycling, focus and swap, workspace scroll) and the canvas uses only
-SUPER+F, SUPER+CTRL+G, SUPER+ALT+P, SUPER+left-drag, SUPER+CTRL+arrows and SUPER+CTRL+Page_Up/Page_Down,
-which are always taken while
-the canvas runs. When the
-canvas stops, every taken chord gets Omarchy's default binding back; a chord you customised in
-your Hyprland config returns with the next `hyprctl reload`. Studio's XR hotkeys (Input tab) cannot
-use these canvas chords, in either mode.
-
-Two of these shadow Omarchy chords while the canvas runs. **SUPER+CTRL+Left/Right** are Omarchy's
-*Move grouped window focus* keys; they come back when the canvas stops. **SUPER+left-drag** is caught
-everywhere, so windows on the laptop screen cannot be dragged with it during a canvas session (use
-SUPER+right-drag or the keyboard there, or stop the canvas). The F1 help always says Ctrl+Down; the
-first-dwell hint in the glasses shows the key you actually configured.
+Every key is editable in Studio under **Controls → XR keys**, the key map: pick another modifier at
+the top, or click a row and press a key. Conflicts with another XR key, an Omarchy binding (named) or a
+reserved chord (such as CTRL+ALT+F1…F12) are shown inline on the row, and **Save** stays disabled while
+there are any. The canvas-only keys (scroll, nudge, resize, pin, arrange, undo and redo) carry a
+"canvas" tag and are bound only while the canvas runs. The mouse actions are fixed but follow the
+modifier. A compositor fullscreen (Omarchy's SUPER+F, or F11 in a browser) is reverted at once in the
+canvas and fills the window instead (see **The pointer and other keys**).
 
 The **radar strip** under the view in Overview and search shows the whole ring around you and the
 height above and below eye level: every window as a mark, the window you work in in the accent colour,
@@ -240,26 +247,24 @@ and the rectangle you are looking at.
 Studio's **View controls** show **Overview**, **Land on window**, **Search**, **Fill**, **Arrange**
 and **Undo** in canvas mode.
 
-**In the windowed preview** the renderer window takes these keys itself while it has keyboard focus:
-`/` search (then type), `F` Fill, `O` Overview, `P` pin, `Tab`/`Shift+Tab` switcher (Return, or 1.5 s without a step, lands),
-`Alt+arrows` neighbour, `Alt+Shift+arrows` nudge, `PageUp`/`PageDown` scroll, `Ctrl+A`, `Ctrl+Z`, `Ctrl+Shift+Z`, `F1`, and
-`Esc`, which closes overlays before it quits. Without keyboard focus (and in the glasses) search
-typing goes to a small search field that Studio keeps loaded on the canvas output; it holds the
-keyboard only while the search is open.
+**The windowed preview** is presentational: it has no keys of its own and takes no clicks, mouse
+drags, mouse look, pan or zoom; only **Esc** closes it. The XR layer drives it through Hyprland,
+exactly as it drives the glasses. Search typing (in the preview and in the glasses) goes to a small
+search field that Studio keeps loaded on the canvas output; it holds the keyboard only while the
+search is open.
 
 ## Gaze, dwell and focus
 
 Looking at a window **selects** it: after a short dwell (500 ms of steady gaze) it gets the halo, and
 the search, Fill and nudges act on it. Looking never moves the keyboard or the pointer by itself, so a
 glance at another window does not steal your typing. To work in the window you look at, **confirm**:
-press **Ctrl+Down** (the `fit_target` key from Studio's Input tab) or tap the touchpad once with three
-fingers. The window is staged, raised and gets the keyboard, and the pointer goes to the point you are
-looking at. Leaving the Overview with a flick in or SUPER+TAB confirms the window you land on the same
-way.
+press **XR+Down** or, with a multitouch touchpad, tap it once with three fingers. The window is
+staged, raised and gets the keyboard, and the pointer goes to the point you are looking at. Leaving
+the Overview with a flick in or XR+Up confirms the window you land on the same way.
 
 For the first three windows you dwell on in a session, a small hint under the window's label says
-which key confirms ("Ctrl+Down or a three-finger tap to focus", with your configured key). It stops
-after your first confirm.
+which key confirms ("Ctrl+Alt+Down or a three-finger tap to focus", with your configured chord). It
+stops after your first confirm.
 
 ## The pointer and other keys
 
@@ -267,10 +272,11 @@ after your first confirm.
   closes or leaves the canvas, the most recently used one is staged and the camera lands on it. This
   staging is quiet: it never takes the keyboard or moves the pointer. Only a confirm, a click or the
   pointer crossing into a window does.
-- **SUPER+F** is taken over while the canvas runs: it is *Fill* (see Keys) and never makes a
-  window fullscreen. A window that asks for fullscreen itself, such as a browser after F11, is put
-  back at once and filled instead, because a fullscreen window would cover the canvas output. With
-  no window on the stage, SUPER+F confirms the window you look at first and fills it once it is staged.
+- **Fullscreen** never sticks in the canvas. **SUPER+F** stays Omarchy's fullscreen key, but a
+  window made fullscreen by the compositor, with SUPER+F or by itself (a browser after F11), is put
+  back at once and filled instead, because a fullscreen window would cover the canvas output. Fill
+  itself is **XR+Return**; with no window on the stage, it confirms the window you look at first and
+  fills it once it is staged.
 - SUPER+number, SUPER+SHIFT+number and the scratchpad work as usual. A foreign workspace or the
   scratchpad that lands on the canvas output is sent to the laptop so the canvas never freezes.
   SUPER+SHIFT+number takes a window off the canvas and gives it back its borders and its tiled
@@ -280,16 +286,19 @@ after your first confirm.
   front and puts the pointer on it. In the glasses the pointer you see is the real one, drawn into
   the window image with its menus. When that image is unavailable, the renderer draws an arrow
   instead. The spectator and the windowed preview show the same.
-- **Three-finger taps**: a single tap confirms 0.4 s after it (when no second tap follows); a
-  **double tap** still recenters and moves the pointer back to the centre of your laptop screen (the
-  first display that is not an XR output), for example to use Studio. A swipe cancels a pending tap.
-- A click in the windowed preview or the spectator selects the window under it and puts the
-  pointer there. Studio's **Land on window** confirms like Ctrl+Down.
+- **XR+Home** moves the pointer back to the centre of your laptop screen (the first display that is
+  not an XR output), for example to use Studio.
+- **Three-finger taps** (multitouch touchpads only; Studio shows the gesture settings only when it
+  found one): a single tap confirms 0.4 s after it (when no second tap follows); a **double tap**
+  recenters and moves the pointer back to the laptop screen, like XR+Home. A swipe cancels a pending
+  tap.
+- The windowed preview and the spectator take no clicks. Studio's **Land on window** confirms like
+  XR+Down.
 
 ## Troubleshooting
 
-- **I can look at windows but not type or click**: looking only selects; press your `fit_target` key
-  (Ctrl+Down by default) or tap once with three fingers. After it, `pose.sock.controls.hover` in the
+- **I can look at windows but not type or click**: looking only selects; press XR+Down
+  (Ctrl+Alt+Down by default) or tap once with three fingers. After it, `pose.sock.controls.hover` in the
   runtime directory shows `v4 … 1 0x…` (the window address) and `viewer.log` shows `Canvas: confirm 0x…`
   and `Canvas: land on …`. When the confirm is logged but the pointer does not move, the controls are
   older than this release: reinstall them.
@@ -302,26 +311,28 @@ after your first confirm.
   failed to leave side-by-side. Studio now starts without the recording window and says so in the
   Recording card and in `display-events.jsonl` (`spectator-skipped`). Turn the laptop display on
   (Controls) to get the recording window back; turning it on by hand still refuses without a display.
-- **SUPER+left-drag moves the real window** (the panel stays, the window slides off the stage and the
-  pointer confinement looks wrong): the controls were not reinstalled after the update, so Omarchy's
-  *Move window* drag is still bound. Reinstall them and restart the canvas.
-- **SUPER+left-drag does nothing on the laptop screen** during a canvas session: expected, the canvas
-  takes the chord everywhere. SUPER+CTRL+Left/Right (Omarchy's group focus keys) are resize keys during
-  the session too; both come back when the canvas stops.
-- **Typing in Overview or SUPER+CTRL+G does nothing in the glasses**: the search field lives in the
+- **XR keys do nothing**: the layer is bound only while XR runs, and it needs XR controls v7
+  (see Requirements). Check **Controls → XR keys** in Studio for conflicts: a chord that collides with
+  an Omarchy binding or another XR key is shown there, and the XR+H help lists only the keys actually
+  bound. An application that uses the same chord (for example CTRL+ALT+arrows) loses it while XR runs;
+  pick another modifier there if that gets in the way.
+- **SUPER+left-drag moves the real window, not the panel**: SUPER+left-drag is Omarchy's *Move
+  window* drag again. To move a window along the ring use XR+left-drag.
+- **Typing in Overview or XR+/ does nothing in the glasses**: the search field lives in the
   Studio plugin, so Studio must have been started once in this Quickshell session (it stays loaded
   when hidden). Check that `pose.sock.controls.prompt` in the runtime directory says `v1 <pid> <seq> 1 …`
   while the search is open; the field answers in `pose.sock.controls.search`. The field opens by itself
   only when you zoom out from a window; an Overview shown at start or after Esc closed a search has
-  none (so it never grabs the keyboard unasked): press SUPER+CTRL+G.
-- **ALT+TAB, SUPER+TAB or SUPER+arrows do Omarchy's thing during a canvas session**: the takeover
-  switch is off (Canvas tab), or the controls predate M4: reinstall them.
-- **SUPER+wheel switches workspaces during a canvas session**: the takeover switch is off (Canvas tab),
-  or the controls are older than this release: reinstall the shortcuts (`make install-controls`, or
-  Studio's setup). SUPER+CTRL+Page_Up/Page_Down scroll either way once the controls are current.
-- **A window vanished above or below the view**: the cylinder has no top or bottom row. Scroll
-  (SUPER+wheel, SUPER+CTRL+Page_Up/Page_Down, a vertical 4-finger pan), land on it with SUPER+Up/Down,
-  or open the Overview, which shows the whole height (the radar strip too).
+  none (so it never grabs the keyboard unasked): press XR+/.
+- **ALT+TAB, SUPER+TAB, SUPER+arrows or SUPER+wheel do Omarchy's thing during a canvas session**:
+  expected, the canvas no longer takes them over. Use XR+Left/Right or the search to change windows,
+  XR+Up for the Overview and XR+Shift+wheel or XR+Page_Up/Page_Down to scroll.
+- **The view keeps turning with my head**: a grab is running (XR+G or the XR+middle button). It ends
+  on release, on a second press, on any other XR action or after 30 s.
+- **A window vanished above or below the view**: the cylinder has no top or bottom row, and
+  XR+Left/Right only walk the ring. Scroll (XR+Shift+wheel, XR+Page_Up/Page_Down, a vertical
+  4-finger pan, or head pitch during a grab), find it with XR+/, or open the Overview, which shows the
+  whole height (the radar strip too).
 
 - **A thin strip of windows at the right edge of the canvas output** (8 px wide, visible on the
   canvas output or in a screenshot of it): these are live slivers, windows the canvas captures above
@@ -332,13 +343,12 @@ after your first confirm.
   down. The budget line in Studio's Canvas tab shows the use. Raise the capture budget (the
   development machine handled up to about 350 Mpix/s) or close or exclude windows you do not need;
   zooming in on a window also brings its neighbours back to life.
-- **"Window canvas needs XR controls v6"**: reinstall the controls (see Requirements). A controls
+- **"Window canvas needs XR controls v7"**: reinstall the controls (see Requirements). A controls
   file edited by hand, or an older one restored by a sync tool, shows the same hint.
-- **SUPER+F makes windows fullscreen during a canvas session**: the controls are not active for this
-  session. Check that the session was started from Studio and that `pose.sock.controls.mode` in the
-  runtime directory (`$XDG_RUNTIME_DIR/omarchy-xr/`, next to `pose.sock.stats`) says `canvas`. If
-  you customised SUPER+F in your Hyprland config, your binding comes back after the next
-  `hyprctl reload`; until then SUPER+F has Omarchy's default fullscreen binding.
+- **A window stays fullscreen during a canvas session** (after SUPER+F or F11): the controls are not
+  active for this session. Check that the session was started from Studio and that
+  `pose.sock.controls.mode` in the runtime directory (`$XDG_RUNTIME_DIR/omarchy-xr/`, next to
+  `pose.sock.stats`) says `canvas`.
 - **A window shows "capture unavailable" or stays grey**: its capture failed or the window closed.
   The canvas retries every 0.5–5 s. `pose.sock.stats` in the runtime directory lists every
   window's tier, rate and status.
@@ -383,13 +393,13 @@ during stereo.
 
 | Mode | Presentation | Expected |
 |---|---|---|
-| ☐ Virtual monitors | Direct stereo | Monitors in SBS stereo; the lease is held (no VITURE desktop output); notification cards beside the monitors; flick up dismisses, flick down cycles. |
+| ☐ Virtual monitors | Direct stereo | Monitors in SBS stereo; the lease is held (no VITURE desktop output); notification cards beside the monitors; XR+N dismisses, XR+Shift+N cycles (with a touchpad, flick up and down too). |
 | ☐ Virtual monitors | Glasses flat | Same monitors in mono; the notification card shows (mono HUD). |
-| ☐ Virtual monitors | Windowed preview | Same in a window; card shows; **R**, **F**, wheel, **Esc** work. |
+| ☐ Virtual monitors | Windowed preview | Same in a window; card shows; the XR keys drive it; clicks, drags and the wheel do nothing in it; **Esc** closes it. |
 | ☐ Virtual monitors | Spectator | Mirrors the stereo view including the card; unchanged from 0.3.1. |
-| ☐ Window canvas | Direct stereo | Windows on the cylinder in SBS stereo; SUPER+wheel and SUPER+CTRL+Page_Up/Down scroll it; the staged window live with menus and the native cursor; the card floats inside the ring in the lower part of the view, over the windows. |
+| ☐ Window canvas | Direct stereo | Windows on the cylinder in SBS stereo; XR+Shift+wheel and XR+Page_Up/Page_Down scroll it; the staged window live with menus and the native cursor; the card floats inside the ring in the lower part of the view, over the windows. |
 | ☐ Window canvas | Glasses flat | Same cylinder in mono, scrolling the same; card inside the ring; XR cursor or native cursor on the staged window. |
-| ☐ Window canvas | Windowed preview | Same in a window; windowed keys (`/ F O P Tab Alt+arrows PageUp PageDown F1 Esc`); Overview drag works, also up and down. |
+| ☐ Window canvas | Windowed preview | Same in a window; the XR keys drive it as in the glasses (XR+/, XR+Up, XR+Return, XR+Left/Right, scrolling); no keys, clicks or mouse drag of its own; **Esc** closes it. |
 | ☐ Window canvas | Spectator | Same picture as the glasses (overlays, cues, card, cursor). |
 
 ### Start, stop, migration and restore
@@ -397,9 +407,14 @@ during stereo.
 - [ ] Window canvas → Start stereo: the `OMXR-…-canvas` output is created, every regular window moves to
   `omxr-park` (special workspaces and excluded classes stay), `canvas-session.json` lists their origins.
 - [ ] Stop: every window returns to its origin workspace, tiled windows tiled again, floating ones at
-  their size and position; the canvas output and its rules are gone; SUPER+F is Omarchy's fullscreen
-  again (`hyprctl binds -j` equals `/tmp/binds-before.json` for the canvas chords).
-- [ ] `hyprctl reload` mid-session: rules reinstalled, the canvas keeps working, SUPER+F still Fill.
+  their size and position; the canvas output and its rules are gone; the XR layer is unbound
+  (`hyprctl binds -j` equals `/tmp/binds-before.json`), and the XR chords reach applications again
+  within 250 ms.
+- [ ] No Omarchy chord changes while XR runs: during a canvas session and a monitor session, `hyprctl
+  binds -j` holds `/tmp/binds-before.json` unchanged plus only the `XR: …` bindings; SUPER+TAB,
+  SUPER+F, ALT+TAB, SUPER+arrows and SUPER+wheel do what they do without XR.
+- [ ] `hyprctl reload` mid-session: rules and the XR layer reinstalled, the canvas keeps working,
+  XR+Return still Fill.
 - [ ] `kill -9` the backend during a canvas session, reopen Studio: windows restored, output and rules
   removed.
 - [ ] After a canvas session `layout.json` and `viewer.tsv` hash as before, and monitor mode still
@@ -416,8 +431,8 @@ Run in direct stereo and once in the windowed preview.
   `OpenGL:` start line); windows migrate to `omxr-park`; the monitor outputs disappear only after
   `pose.sock.stats` reports `"mode":"canvas"`.
 - [ ] Window canvas → Monitors while in stereo: windows return to their origin workspaces and tiling,
-  the monitor layout comes back at its saved size, the canvas output and rules are removed, the canvas
-  chords are Omarchy's again, SUPER+F is fullscreen again.
+  the monitor layout comes back at its saved size, the canvas output and rules are removed, the
+  canvas-only XR keys (nudge, resize, pin, arrange, undo, scroll) pass through to applications again.
 - [ ] No workspace other than `omxr-canvas`/`omxr-park` sits on the canvas output at any point
   (`hyprctl workspaces -j`), and no output overlaps another during the switch (`hyprctl monitors -j`).
 - [ ] Monitors → canvas → monitors: `layout.json` and `viewer.tsv` hash as before.
@@ -432,51 +447,61 @@ Run in direct stereo and once in the windowed preview.
 
 ### Input
 
-- [ ] Click and type into windows via `fit_target`, mouse crossing and the SDL click in the preview;
-  stage + warp within 50 ms.
+- [ ] Click and type into windows via XR+Down and mouse crossing; stage + warp within 50 ms. A click
+  in the windowed preview does nothing.
 - [ ] Menus, tooltips and the native cursor on the staged window (`pose.sock.stats` `stage.shown`
   true); the spectator and preview show the XR cursor when the region is unavailable.
 - [ ] 60 s real-mouse sweep with the laptop display off, across the right edge of the canvas output:
   focus never moves, a live sliver is never focused, the staged window never covers the strip.
-- [ ] SUPER+F and browser F11 never make a window fullscreen (F11 fills instead).
-- [ ] The three-finger double tap releases the pointer to the laptop screen centre.
+- [ ] SUPER+F and browser F11 never leave a window fullscreen in the canvas (both fill instead).
+- [ ] XR+Home, and with a touchpad the three-finger double tap, release the pointer to the laptop
+  screen centre.
 - [ ] (M7) Canvas start: `viewer.log` shows `staged 0x…` with the first list; the keyboard stays where it
   was until a confirm.
-- [ ] (M7) Ctrl+Down and a three-finger single tap on a gazed window: staged, raised, focused, pointer at
-  the gaze point, typing arrives; `viewer.log` `Canvas: confirm 0x…`; the double tap still releases.
-- [ ] (M7) The confirm hint shows under the label on the first dwells, is readable with a visible accent
-  tint, and never shows after the first confirm.
+- [ ] (M7) XR+Down and (with a touchpad) a three-finger single tap on a gazed window: staged, raised,
+  focused, pointer at the gaze point, typing arrives; `viewer.log` `Canvas: confirm 0x…`; the double
+  tap still releases.
+- [ ] (M7) The confirm hint shows under the label on the first dwells with the configured chord
+  ("Ctrl+Alt+Down or a three-finger tap to focus"), is readable with a visible accent tint, and never
+  shows after the first confirm.
 - [ ] (M7) Stereo start with the laptop display off starts without the recording window and says so.
 
 ### Navigation
 
-- [ ] SUPER+CTRL+G opens the search in stereo, typing in Overview searches too; the camera follows the
+- [ ] XR+/ opens the search in stereo, typing in Overview searches too; the camera follows the
   best match and the palette never covers it; Enter lands, Shift+Enter summons, Esc clears then
   reverts; a window off the canvas is brought over.
 - [ ] The Quickshell prompt holds the keyboard only while open; focus returns to the staged window.
-- [ ] ALT+TAB: tap flips to the previous window, hold shows the list, release lands (1.5 s fallback).
-- [ ] SUPER+TAB, SUPER+arrows, SUPER+SHIFT+arrows drive the canvas; with the takeover switch off they
-  are Omarchy's while SUPER+F, SUPER+CTRL+G, SUPER+ALT+P stay canvas keys.
-- [ ] Fill: ≈ 90 % of the view with native text; restore in the three cases (untouched, moved,
-  resized).
-- [ ] Ctrl+A arranges by kind without overlap; Ctrl+Z / Ctrl+Shift+Z undo and redo.
-- [ ] SUPER+ALT+P pins body-locked and readable while turning; unpin puts it back.
-- [ ] Radar strip and F1 help readable; overlays follow the head lazily (no jitter within 12°).
+- [ ] XR+Left/Right land on the previous/next window in ring order and wrap from the last to the
+  first; held, they repeat.
+- [ ] XR+Up toggles the Overview; XR+Shift+arrows nudge (repeating while held); XR+Space recenters;
+  XR+= / XR+- and XR+wheel zoom, the keys repeating while held.
+- [ ] Grab: hold XR+G while looking at a window and turn the head; the window stays fixed in view, head
+  pitch scrolls the cylinder, and after release the window stays in front. The same with the XR+middle
+  button. Letting go of the modifier first still ends it (by the next press, any other XR action or
+  within 30 s); `viewer.log` logs every start and end.
+- [ ] Fill (XR+Return): ≈ 90 % of the view with native text; restore in the three cases (untouched,
+  moved, resized).
+- [ ] XR+A arranges by kind without overlap; XR+Z / XR+Shift+Z undo and redo from any view; Ctrl+A,
+  Ctrl+Z, Ctrl+Shift+Z still work in the search field.
+- [ ] XR+P pins body-locked and readable while turning; unpin puts it back.
+- [ ] Radar strip readable; XR+H shows the help in both scenes (and F1 in the search field), listing
+  exactly the keys bound, also after an edit in Studio; overlays follow the head lazily (no jitter
+  within 12°).
 - [ ] A new window pulses briefly where it lands; one placed behind you shows the accent chevron at the
   view edge, which disappears when you look at it or after 3 s.
-- [ ] In the windowed preview, a left-drag in Overview moves the window under the pointer in any
-  direction in 20 px steps; the place survives a restart; Ctrl+Z undoes;
-  a still click selects instead.
-- [ ] (M7) SUPER+F with nothing staged fills the gazed window; SUPER+F again restores.
-- [ ] (M7) SUPER+left-drag moves the staged window along the ring (20 px snap), Ctrl+Z undoes, the place
+- [ ] In the windowed preview, a mouse drag, a click and the wheel do nothing; XR+left-drag moves the
+  staged window as in the glasses.
+- [ ] (M7) XR+Return with nothing staged fills the gazed window; XR+Return again restores.
+- [ ] (M7) XR+left-drag moves the staged window along the ring (20 px snap), XR+Z undoes, the place
   survives a restart; the real window stays at the stage origin (`hyprctl clients -j`).
-- [ ] (M7) Let go of SUPER before the mouse button: the drag ends on the button release (plain release bind).
-- [ ] (M7) SUPER+right-drag from any corner resizes, the panel follows, the window is back at the origin
-  within a second; SUPER+CTRL+arrows step 100 px.
+- [ ] (M7) Let go of the XR modifier before the mouse button: the drag ends on the button release
+  (plain release bind); a drag held still for 3 s ends there.
+- [ ] (M7) XR+right-drag from any corner resizes, the panel follows, the window is back at the origin
+  within a second; XR+comma / XR+period and XR+Shift+comma / XR+Shift+period step 100 px.
 - [ ] (M7) Closing the staged window stages and lands on the next most recent one.
-- [ ] (M7) Stop: SUPER+mouse:272 is Omarchy's *Move window* again and SUPER+CTRL+Left/Right its group
-  focus keys (`hyprctl binds -j`), SUPER+CTRL+Up/Down unbound.
-- [ ] (M7) Studio's Input tab: the title "Fit selected monitor / focus window" fits its column.
+- [ ] (M7) Stop: SUPER+mouse:272 is still Omarchy's *Move window* and SUPER+CTRL+arrows its own keys
+  (`hyprctl binds -j`); no `XR: …` binding is left.
 
 ### Capture rates
 
@@ -493,7 +518,10 @@ Run in direct stereo and once in the windowed preview.
 - [ ] Monitor mode: cards beside the workspace in view, in stereo, flat and preview.
 - [ ] Canvas mode: cards inside the ring in the lower part of the view, over the windows, never behind
   a window or overhead, also after turning 180°.
-- [ ] Flick up dismisses the gazed card (in XR and on the desktop), flick down cycles, in both modes.
+- [ ] XR+N dismisses the gazed card, or the front card when none is gazed; XR+Shift+N cycles; in both
+  modes.
+- [ ] With a touchpad: flick up dismisses the gazed card (in XR and on the desktop), flick down cycles,
+  in both modes.
 - [ ] Glasses flat and windowed preview show the cards (mono HUD); `make check-preview` is
   pixel-identical.
 
@@ -505,9 +533,15 @@ Run in direct stereo and once in the windowed preview.
 
 ### Studio
 
-- [ ] The mode selector works while stopped and while viewing; it is disabled with the v6 hint for
-  older controls.
-- [ ] The Canvas tab saves its settings (decimal fields, exclusions, takeover switch).
+- [ ] The mode selector works while stopped and while viewing; it is disabled with "Window canvas
+  needs XR controls v7" for older controls.
+- [ ] The Canvas tab saves its settings (decimal fields, exclusions); it has no takeover switch.
+- [ ] **Controls → XR keys**: changing the modifier re-renders every chord and re-binds live after
+  Save (`hyprctl binds -j`, the XR+H help); capture, clear and reset a row; a chord that collides
+  with an Omarchy binding or another XR key shows the conflict inline, names the binding, and Save
+  stays disabled.
+- [ ] The gesture settings show only on a machine with a multitouch touchpad; otherwise one line says
+  gestures need one.
 - [ ] The footer shows "Window canvas · N windows"; the budget readout updates.
 - [ ] View controls: Overview, Land on window, Search, Fill, Arrange, Undo in canvas mode; the monitor
   controls in monitor mode.
@@ -518,6 +552,10 @@ Run in direct stereo and once in the windowed preview.
 - [ ] `kill -9` the renderer: Studio cleans up (canvas windows restored, outputs removed) in both modes.
 
 ### M7 glasses PR checklist
+
+*These PR checklists record the v6 keys that were tested at the time; with the XR layer, SUPER+F is
+XR+Return, SUPER+left/right-drag is XR+left/right-drag, SUPER+CTRL+arrows are XR+comma/period (Shift
+for height), SUPER+wheel is XR+Shift+wheel, SUPER+arrows are XR+Left/Right and Ctrl+Down is XR+Down.*
 
 Copied from the plan (§7 M7); the items above cover the same ground inside the full pass.
 
