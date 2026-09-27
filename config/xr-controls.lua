@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 6
+local CONTROLS_VERSION = 7
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 -- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops
@@ -13,8 +13,12 @@ local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 local SLIVER_PX, SLIVER_STEP, SLIVER_FLOOR = 8, 24, 64
 local CANVAS_MONITOR_PATTERN = "^OMXR%-%x%x%x%x%x%x%x%x%-canvas$"
 local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=true}
-local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19}
-local setHoverTimer, updateCanvas, releasePointer
+-- Renderer action codes (.controls "fit" field). 8+ carry a token; the renderer gives each its meaning in the
+-- current scene (docs/xr-controls-plan.md §5.1), so the XR key layer publishes the same code in both modes.
+local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19,
+    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28}
+local setHoverTimer, updateCanvas, releasePointer, installLayer, parseLayerSettings
+local layerModifier,layerKeys
 local fingers=3
 omarchy_xr_controls = omarchy_xr_controls or {version=CONTROLS_VERSION}
 -- A keybind handle is a weak reference: unbind, a reload, or remove() of any bind on the same chord
@@ -86,48 +90,9 @@ local function restoreDrag()
     hl.unbind(DRAG_CHORD)
     hl.bind(DRAG_CHORD,hl.dsp.window.drag(),{mouse=true,description="Move window"})
 end
--- Canvas key set (§5.5), an explicit action->mode map. SUPER+CTRL+G and SUPER+ALT+P are free in Omarchy
--- and always bound; the takeovers (canvas.tsv takeoverKeys) replace Omarchy's defaults from
--- bindings/tiling.lua and rebind them on exit, like SUPER+F. The ALT release binds end the switcher.
--- Arrange (13) and help (17) arrive as keys of the search prompt, which holds the keyboard in Overview.
--- SUPER+CTRL+arrows resize the staged window in Lua (M7); Left/Right are Omarchy's group focus keys, given back on exit.
--- SUPER+CTRL+Page_Up/Down scroll the cylinder (M8, mode 19) and are free, so always bound; SUPER+wheel is a takeover
--- (Omarchy's workspace scroll). A notch counts within its run (wheelToken), so none is lost between renderer polls.
-local CANVAS_KEYS={{chord="SUPER + CTRL + G",mode=CANVAS_MODES.search,desc="search window (canvas)"},
-    {chord="SUPER + ALT + P",mode=CANVAS_MODES.pin,desc="pin window (canvas)"},
-    {chord="SUPER + CTRL + LEFT",resize={dw=-100},desc="narrower window (canvas)",
-        restore={{desc="Move grouped window focus left",dsp=function() return hl.dsp.group.prev() end}}},
-    {chord="SUPER + CTRL + RIGHT",resize={dw=100},desc="wider window (canvas)",
-        restore={{desc="Move grouped window focus right",dsp=function() return hl.dsp.group.next() end}}},
-    {chord="SUPER + CTRL + UP",resize={dh=-100},desc="shorter window (canvas)"},
-    {chord="SUPER + CTRL + DOWN",resize={dh=100},desc="taller window (canvas)"},
-    {chord="SUPER + CTRL + Page_Up",mode=CANVAS_MODES.scroll,token="pageup",desc="scroll canvas up (canvas)"},
-    {chord="SUPER + CTRL + Page_Down",mode=CANVAS_MODES.scroll,token="pagedown",desc="scroll canvas down (canvas)"}}
-local ON_TOP={desc="Reveal active window on top",dsp=function() return hl.dsp.window.bring_to_top() end}
-local TAKEOVER_KEYS={
-    {chord="SUPER + TAB",mode=CANVAS_MODES.overview,desc="overview (canvas)",
-        restore={{desc="Next workspace",dsp=function() return hl.dsp.focus({workspace="e+1"}) end}}},
-    {chord="ALT + TAB",mode=CANVAS_MODES.mru_next,desc="next window (canvas)",
-        restore={{desc="Focus on next window",dsp=function() return hl.dsp.window.cycle_next() end},ON_TOP}},
-    {chord="ALT + SHIFT + TAB",mode=CANVAS_MODES.mru_prev,desc="previous window (canvas)",
-        restore={{desc="Focus on previous window",dsp=function() return hl.dsp.window.cycle_next({next=false}) end},ON_TOP}},
-    {chord="ALT + ALT_L",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
-    {chord="ALT + ALT_R",mode=CANVAS_MODES.mru_next,token="release",release=true,desc="switcher release (canvas)"},
-    {chord="SUPER + mouse_up",mode=CANVAS_MODES.scroll,token="up",wheel=-1,desc="scroll canvas up (canvas)",
-        restore={{desc="Scroll active workspace backward",dsp=function() return hl.dsp.focus({workspace="e-1"}) end}}},
-    {chord="SUPER + mouse_down",mode=CANVAS_MODES.scroll,token="down",wheel=1,desc="scroll canvas down (canvas)",
-        restore={{desc="Scroll active workspace forward",dsp=function() return hl.dsp.focus({workspace="e+1"}) end}}},
-}
-local function directionKeys(key,token,direction,focus,swap)
-    TAKEOVER_KEYS[#TAKEOVER_KEYS+1]={chord="SUPER + "..key,mode=CANVAS_MODES.neighbour,token=token,desc="neighbour "..token.." (canvas)",
-        restore={{desc=focus,dsp=function() return hl.dsp.focus({direction=direction}) end}}}
-    TAKEOVER_KEYS[#TAKEOVER_KEYS+1]={chord="SUPER + SHIFT + "..key,mode=CANVAS_MODES.nudge,token=token,desc="nudge "..token.." (canvas)",
-        restore={{desc=swap,dsp=function() return hl.dsp.window.swap({direction=direction}) end}}}
-end
-directionKeys("LEFT","left","l","Focus on left window","Swap window to the left")
-directionKeys("RIGHT","right","r","Focus on right window","Swap window to the right")
-directionKeys("UP","up","u","Focus on above window","Swap window up")
-directionKeys("DOWN","down","d","Focus on below window","Swap window down")
+-- Controls v6 bound a canvas key set and optional takeovers of Omarchy chords (SUPER+F, SUPER+TAB, ALT+TAB,
+-- SUPER+arrows, SUPER+wheel, SUPER+left-drag). v7 binds only the XR key layer; the retire helpers below
+-- still give a v6 takeover back when this chunk loads over it.
 -- Our binds go; a taken-over chord gets every Omarchy default back (ALT+TAB has two).
 local function retireKeys(list)
     for _,key in ipairs(list or {}) do
@@ -310,47 +275,26 @@ if ok and #touchpads>0 then
         {description="XR: three-finger double tap recenter",device={inclusive=true,list=touchpads}})
     enableBinding(taps[1],false)
 end
-local keys={"CTRL + Up","CTRL + Down","","",""}
-local descriptions={"fit all monitors","fit selected monitor","recenter","zoom in","zoom out"}
-local bindings={}
 local settingsText
-local function configure(nextFingers,nextKeys)
+-- Gesture fingers only; the key layer is (re)bound by installLayer.
+local function setFingers(count)
+    if count==fingers then return end
     if active then registerVertical(false) end
-    swipe=nil;cancelTap()
-    for _,binding in ipairs(bindings) do removeBinding(binding) end
-    bindings={};keys=nextKeys;fingers=nextFingers==4 and 3 or nextFingers
-    for mode,key in ipairs(keys) do
-        if key~="" then
-            local action=mode
-            -- In canvas mode fit_target confirms the gazed window; the flick-in gesture keeps mode 2.
-            local binding=hl.bind(key,function() publish(0,(action==2 and canvasMode) and CANVAS_MODES.confirm or action) end,
-                {description="XR: "..descriptions[mode]})
-            enableBinding(binding,active);bindings[#bindings+1]=binding
-        end
-    end
+    swipe=nil;cancelTap();fingers=count
     if active then registerVertical(true) end
-    if omarchy_xr_controls then omarchy_xr_controls.bindings=bindings;omarchy_xr_controls.fingers=fingers end
-end
-configure(fingers,keys)
-local function settingKeys(lines, count)
-    if #lines~=6 or not count or count%1~=0 or count<3 or count>5 then return nil end
-    local nextKeys={}
-    for i=2,6 do
-        if #lines[i]>100 or lines[i]:find("[^%w_ +]") then return nil end
-        nextKeys[#nextKeys+1]=lines[i]
-    end
-    return nextKeys
+    if omarchy_xr_controls then omarchy_xr_controls.fingers=fingers end
 end
 local function readSettings()
     local file=io.open(state.."/omarchy-xr/controls-settings.tsv","r")
     if not file then return end
     local text=file:read("*a");file:close()
     if text==settingsText then return end
-    local lines={};for line in text:gmatch("(.-)\n") do lines[#lines+1]=line end
-    local count=tonumber(lines[1])
-    local nextKeys=settingKeys(lines, count)
-    if not nextKeys then return end
-    configure(count,nextKeys);settingsText=text
+    settingsText=text
+    local modifier,count,keys=parseLayerSettings(text)
+    if not modifier then return end
+    setFingers(count)
+    layerModifier,layerKeys=modifier,keys
+    installLayer()
 end
 local function adoptSession(owner)
     session = tostring(owner); serial = 0; total = 0; fit_serial = 0; fit_mode = 0
@@ -382,8 +326,8 @@ local function applyLive(live)
     if active then publishPan() end
     hl.gesture({fingers=4,direction="swipe",action=active and panGesture or "unset"})
     for _,binding in ipairs(taps) do enableBinding(binding,active) end
-    for _,binding in ipairs(bindings) do enableBinding(binding,active) end
     registerVertical(active)
+    installLayer()
 end
 local function writeControlsVersion()
     local versionFile=io.open(runtime_root.."/controls.version","w")
@@ -405,7 +349,7 @@ local function refresh()
 end
 local timer = hl.timer(refresh, {timeout=250, type="repeat"})
 -- Keep the timer alive and expose the exact callbacks for integration checks.
-omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=function() publish(0,3) end,bindings=bindings, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,canvasMode and CANVAS_MODES.confirm or 2) end}
+omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=function() publish(0,3) end, fingers=fingers, timer=timer, refresh=refresh, gesture=gesture, pan=panGesture, fit_all=function() publish(0,1) end, fit_target=function() publish(0,CANVAS_MODES.confirm) end}
 
 -- Halo target changes select the target's existing workspace once. Coordinate
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
@@ -828,12 +772,17 @@ local function canvasTick()
     updateDrag(x,y,now)
     flushFocus()
 end
--- The 3-finger double tap hands the pointer back to the first non-XR monitor.
+-- pointer_home and the 3-finger double tap hand the pointer back to the first non-XR monitor, from the
+-- canvas output or any XR monitor.
 releasePointer=function()
-    if not canvasMode then return end
-    local mon,laptop=canvasMonitor(),laptopMonitor()
+    local listed,monitors=pcall(hl.get_monitors)
     local fine,c=pcall(hl.get_cursor_pos)
-    if not (mon and laptop and fine and c and onMonitor(mon,c.x,c.y)) then return end
+    if not (listed and fine and c and type(monitors)=="table") then return end
+    local laptop,onXr
+    for _,m in ipairs(monitors) do
+        if m.name and m.name:match("^OMXR%-") then onXr=onXr or onMonitor(m,c.x,c.y) elseif m.name and not laptop then laptop=m end
+    end
+    if not (laptop and onXr) then return end
     local w,h=logicalSize(laptop)
     hl.dispatch(hl.dsp.cursor.move({x=math.floor(laptop.x+w/2),y=math.floor(laptop.y+h/2)}))
     overflowX,overflowY=0,0
@@ -962,14 +911,15 @@ end
 local CANVAS_EVENTS={["window.open"]=onOpen, ["window.close"]=onClose, ["window.destroy"]=onClose,
     ["window.title"]=markWindowsDirty, ["window.class"]=markWindowsDirty, ["window.active"]=onActive,
     ["window.fullscreen"]=onFullscreen, ["window.move_to_workspace"]=onMove, ["window.urgent"]=markWindowsDirty}
--- Canvas mode and the optional takeover flag from the renderer's heartbeat.
+-- Canvas mode from the renderer's heartbeat (the v6 takeover flag after it is ignored).
 local function readMode()
     local file=io.open(path..".mode","r")
-    if not file then return false,false end
+    if not file then return false end
     local line=file:read("*l") or "";file:close()
-    local owner,mode,takeover,stamp=line:match("^v1 (%d+) (%a+) ([01]) (%d+)")
-    return owner==session and mode=="canvas" and fresh(tonumber(stamp)),takeover=="1"
+    local owner,mode,stamp=line:match("^v1 (%d+) (%a+) [01] (%d+)")
+    return owner==session and mode=="canvas" and fresh(tonumber(stamp))
 end
+do
 -- .controls is last-writer, so a wheel notch is "up:<run>:<count>": a run starts with a turn or after any
 -- other mode press, and the renderer scrolls every notch of the run since the line it last read.
 local wheelRun={id=0,count=0,dir=0,at=-1}
@@ -979,24 +929,131 @@ local function publishWheel(entry)
     publish(0,entry.mode,hexToken(entry.token..":"..wheelRun.id..":"..wheelRun.count))
     wheelRun.at=fit_serial
 end
-local function bindCanvasKey(entry)
-    if entry.restore then hl.unbind(entry.chord) end
-    local mode,token,step=entry.mode,entry.token and hexToken(entry.token) or nil,entry.resize
-    local callback=step and function() resizeStaged(step) end or function() publish(0,mode,token) end
-    if entry.wheel then callback=function() publishWheel(entry) end end
-    local binding=hl.bind(entry.chord,callback,{description="XR: "..entry.desc,release=entry.release})
-    return {chord=entry.chord,restore=entry.restore,binding=binding}
+-- The XR key layer (docs/xr-controls-plan.md §3): one held modifier plus one key per action, bound only
+-- while the viewer runs. The order, ids and default keys match studio/input_settings.py ACTIONS (checked by
+-- tests/test_input_settings.py). `canvas`: bound only in canvas mode, otherwise the chord reaches
+-- applications. An action publishes a renderer code (the renderer gives it its per-scene meaning), resizes
+-- the staged window, or runs Lua. `hold`: a press and a release bind (begin/end).
+local LAYER_ACTIONS={
+    {"recenter",key="space",code=3},
+    {"grab",key="G",code=CANVAS_MODES.grab,hold=true},
+    {"zoom_in",key="equal",code=4,repeating=true},
+    {"zoom_out",key="minus",code=5,repeating=true},
+    {"overview",key="Up",code=CANVAS_MODES.overview},
+    {"focus",key="Down",code=CANVAS_MODES.confirm},
+    {"fill",key="Return",code=CANVAS_MODES.fill},
+    {"previous",key="Left",code=CANVAS_MODES.cycle,token="prev",repeating=true},
+    {"next",key="Right",code=CANVAS_MODES.cycle,token="next",repeating=true},
+    {"scroll_up",key="Page_Up",code=CANVAS_MODES.scroll,token="pageup",canvas=true,repeating=true},
+    {"scroll_down",key="Page_Down",code=CANVAS_MODES.scroll,token="pagedown",canvas=true,repeating=true},
+    {"search",key="slash",code=CANVAS_MODES.search},
+    {"nudge_left",key="SHIFT + Left",code=CANVAS_MODES.nudge,token="left",canvas=true,repeating=true},
+    {"nudge_right",key="SHIFT + Right",code=CANVAS_MODES.nudge,token="right",canvas=true,repeating=true},
+    {"nudge_up",key="SHIFT + Up",code=CANVAS_MODES.nudge,token="up",canvas=true,repeating=true},
+    {"nudge_down",key="SHIFT + Down",code=CANVAS_MODES.nudge,token="down",canvas=true,repeating=true},
+    {"narrower",key="comma",resize={dw=-100},canvas=true,repeating=true},
+    {"wider",key="period",resize={dw=100},canvas=true,repeating=true},
+    {"shorter",key="SHIFT + comma",resize={dh=-100},canvas=true,repeating=true},
+    {"taller",key="SHIFT + period",resize={dh=100},canvas=true,repeating=true},
+    {"pin",key="P",code=CANVAS_MODES.pin,canvas=true},
+    {"arrange",key="A",code=CANVAS_MODES.arrange,canvas=true},
+    {"undo",key="Z",code=CANVAS_MODES.undo,canvas=true},
+    {"redo",key="SHIFT + Z",code=CANVAS_MODES.redo,canvas=true},
+    {"notification_dismiss",key="N",notification=CANVAS_MODES.dismiss},
+    {"notification_next",key="SHIFT + N",notification=CANVAS_MODES.notify_next},
+    {"pointer_home",key="Home",run=function() releasePointer() end},
+    {"help",key="H",code=CANVAS_MODES.help},
+}
+local LAYER_BY_ID={}
+for _,action in ipairs(LAYER_ACTIONS) do LAYER_BY_ID[action[1]]=action end
+layerModifier,layerKeys="CTRL + ALT",{}
+for _,action in ipairs(LAYER_ACTIONS) do layerKeys[action[1]]=action.key end
+-- Handles survive a config reload in a global so the next chunk can remove them (they may be expired).
+omarchy_xr_layer=omarchy_xr_layer or {bindings={}}
+local function retireLayer()
+    for _,binding in ipairs(omarchy_xr_layer.bindings) do removeBinding(binding) end
+    omarchy_xr_layer.bindings={}
 end
-local function installTakeovers(takeover)
-    retireTakeovers()
-    canvas.takeover=takeover
-    if not takeover then return end
-    for _,entry in ipairs(TAKEOVER_KEYS) do canvas.takeovers[#canvas.takeovers+1]=bindCanvasKey(entry) end
+retireLayer()
+local function bindLayer(chord,callback,options)
+    local binding=hl.bind(chord,callback,options)
+    omarchy_xr_layer.bindings[#omarchy_xr_layer.bindings+1]=binding
+    return binding
 end
-local function installCanvasKeys(takeover)
-    canvas.keys=retireKeys(canvas.keys)
-    for _,entry in ipairs(CANVAS_KEYS) do canvas.keys[#canvas.keys+1]=bindCanvasKey(entry) end
-    installTakeovers(takeover)
+local function layerCallback(action)
+    if action.run then return action.run end
+    if action.resize then return function() resizeStaged(action.resize) end end
+    if action.notification then return function() publish(0,action.notification,notificationTarget() or "-") end end
+    local token=action.token and hexToken(action.token) or nil
+    return function() publish(0,action.code,token) end
+end
+local function bindAction(action,chord)
+    local description="XR: "..action[1]:gsub("_"," ")
+    if action.hold then
+        bindLayer(chord,function() publish(0,action.code,hexToken("begin")) end,{description=description})
+        bindLayer(chord,function() publish(0,action.code,hexToken("end")) end,{release=true,description=description.." (release)"})
+    else
+        bindLayer(chord,layerCallback(action),{repeating=action.repeating,description=description})
+    end
+end
+-- Mouse actions follow the modifier (§3.2): wheel zoom, SHIFT+wheel scroll (canvas), left-drag move and
+-- right-drag resize (canvas), middle button held grabs.
+local function bindMouse()
+    local mod=layerModifier
+    bindLayer(mod.." + mouse_up",function() publish(0,4) end,{description="XR: zoom in (wheel)"})
+    bindLayer(mod.." + mouse_down",function() publish(0,5) end,{description="XR: zoom out (wheel)"})
+    bindAction(LAYER_BY_ID.grab,mod.." + mouse:274")
+    if not canvasMode then return end
+    if not mod:find("SHIFT",1,true) then
+        bindLayer(mod.." + SHIFT + mouse_up",function() publishWheel({mode=CANVAS_MODES.scroll,token="up",wheel=-1}) end,{description="XR: scroll canvas up"})
+        bindLayer(mod.." + SHIFT + mouse_down",function() publishWheel({mode=CANVAS_MODES.scroll,token="down",wheel=1}) end,{description="XR: scroll canvas down"})
+    end
+    bindLayer(mod.." + mouse:272",beginDrag,{description="XR: move window along the ring"})
+    bindLayer(mod.." + mouse:272",endDrag,{release=true,description="XR: end window move"})
+    bindLayer(mod.." + mouse:273",hl.dsp.window.resize(),{mouse=true,description="XR: resize window"})
+end
+-- `.keys`: the chords actually bound, for the renderer's help and Studio. v1 <owner> <seq> <stamp>, then
+-- "<action>\t<chord>\t<live>" rows; live=0 is a canvas-only action outside the canvas.
+local keysSerial,keysText=0,nil
+local function publishKeys(rows)
+    local body=table.concat(rows,"\n")
+    if body==keysText then return end
+    keysText=body;keysSerial=keysSerial+1
+    writeMailbox(".keys",string.format("v1 %s %d %d\n",tostring(session or 0),keysSerial,math.floor(bootSeconds()))..body..(body~="" and "\n" or ""))
+end
+installLayer=function()
+    retireLayer()
+    if not active then publishKeys({});return end
+    local rows={}
+    for _,action in ipairs(LAYER_ACTIONS) do
+        local key=layerKeys[action[1]]
+        if key and key~="" then
+            local chord=layerModifier.." + "..key
+            local live=not action.canvas or canvasMode
+            rows[#rows+1]=action[1].."\t"..chord.."\t"..(live and 1 or 0)
+            if live then bindAction(action,chord) end
+        end
+    end
+    bindMouse()
+    publishKeys(rows)
+end
+-- controls-settings.tsv v2 (studio/input_settings.py tsv()): the modifier, the gesture fingers, then
+-- `key<TAB>action<TAB>key` rows. Values are checked against the known actions and a strict character set;
+-- anything else (a v1 file, a bad line) keeps the defaults for that value.
+local function validChord(text) return #text<=100 and not text:find("[^%w_ +]") end
+parseLayerSettings=function(text)
+    local lines={};for line in text:gmatch("(.-)\n") do lines[#lines+1]=line end
+    if lines[1]~="v2" then return nil end
+    local modifier,count=layerModifier,fingers
+    local keys={};for _,action in ipairs(LAYER_ACTIONS) do keys[action[1]]=action.key end
+    for i=2,#lines do
+        local kind,a,b=lines[i]:match("^(%a+)\t([^\t]*)\t?([^\t]*)$")
+        if kind=="modifier" and a:match("^%u+ %+ [%u +]+$") and validChord(a) then modifier=a
+        elseif kind=="fingers" and (a=="3" or a=="5") then count=tonumber(a)
+        elseif kind=="key" and LAYER_BY_ID[a] and validChord(b) then keys[a]=b end
+    end
+    return modifier,count,keys
+end
 end
 -- adoptPolicy is field 8 of the `# canvas v1 ...` header Studio writes (field 9 is takeoverKeys); `exclude` rows follow.
 local function readCanvasSettings()
@@ -1008,16 +1065,9 @@ local function readCanvasSettings()
     canvasPolicy=policy=="empty" and "empty" or "all"
     for token in text:gmatch("\nexclude%s+(%S+)") do canvasExcludes[token]=true end
 end
-local function enterCanvas(takeover)
+local function enterCanvas()
     canvasMode=true
-    retireFill()
-    hl.unbind("SUPER + F")
-    canvas.fill=hl.bind("SUPER + F",function() publish(0,CANVAS_MODES.fill) end,{description="XR: fill window (canvas)"})
-    retireDragBinds()
-    hl.unbind(DRAG_CHORD)
-    canvas.dragBinds={hl.bind(DRAG_CHORD,beginDrag,{description="XR: move window along the ring (canvas)"}),
-        hl.bind(DRAG_CHORD,endDrag,{release=true,description="XR: end window move (canvas)"})}
-    installCanvasKeys(takeover)
+    installLayer()
     retireCanvasEvents()
     for name,callback in pairs(CANVAS_EVENTS) do canvas.events[#canvas.events+1]=hl.on(name,callback) end
     windowsDirty=true;lastWindowsWrite=-math.huge;readCanvasSettings()
@@ -1025,10 +1075,8 @@ local function enterCanvas(takeover)
 end
 local function leaveCanvas()
     canvasMode=false
-    restoreFullscreen()
     endDrag()
-    restoreDrag()
-    retireCanvasKeys()
+    installLayer()
     retireCanvasEvents()
     for address in pairs(canvas.origin) do undecorate(address) end
     for address in pairs(canvas.slivers) do dropSliver(address) end
@@ -1037,10 +1085,8 @@ local function leaveCanvas()
     focusAddress=nil;focusPending=nil
 end
 local function switchCanvas()
-    local wanted,takeover=false,false
-    if active then wanted,takeover=readMode() end
-    if wanted and not canvasMode then enterCanvas(takeover) elseif canvasMode and not wanted then leaveCanvas() end
-    if canvasMode and takeover~=canvas.takeover then installTakeovers(takeover) end
+    local wanted=active and readMode()
+    if wanted and not canvasMode then enterCanvas() elseif canvasMode and not wanted then leaveCanvas() end
 end
 updateCanvas=function()
     switchCanvas()

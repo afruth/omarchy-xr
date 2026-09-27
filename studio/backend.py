@@ -25,7 +25,7 @@ from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
 import socket
-from input_settings import DEFAULTS, load_controls, save_controls
+from input_settings import ACTIONS as CONTROL_ACTIONS, DEFAULTS, desktop_bindings, load_controls, save_controls
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
 from atomic_file import atomic_write
 from clock import boot_time
@@ -1239,10 +1239,16 @@ def read_saved(manager, warnings, saved):
 def action_load(manager, _request):
     warnings: list[str] = []
     layout = read_saved(manager, warnings, (manager.load, manager.profile, default_layout(), "Layout file was invalid and was set aside", "layout load"))
-    controls = read_saved(manager, warnings, (lambda: load_controls(manager.directory), manager.directory / "controls-settings.json", dict(DEFAULTS), "Control settings were invalid and were set aside", "controls load"))
+    controls = read_saved(manager, warnings, (lambda: load_controls(manager.directory), manager.directory / "controls-settings.json", json.loads(json.dumps(DEFAULTS)), "Control settings were invalid and were set aside", "controls load"))
     setups = read_saved(manager, warnings, (manager.setups, manager.directory / "setups.json", {"version": 1, "selected": "", "items": []}, "Saved setups were invalid and were set aside", "setups load"))
     canvas = read_saved(manager, warnings, (manager.canvas.load, manager.canvas.profile, dict(CANVAS_DEFAULTS), "Canvas settings were invalid and were set aside", "canvas load"))
-    response = {"layout": layout, "controls": controls, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
+    try:
+        bindings = desktop_bindings(manager.runner)
+    except Exception:  # Conflicts are also checked on save; the key map just shows none.
+        bindings = []
+    controls_meta = {"actions": [{"id": a[0], "group": a[1], "title": a[2], "default": a[3], "scope": a[4]} for a in CONTROL_ACTIONS],
+                     "defaults": DEFAULTS, "desktopBindings": bindings}
+    response = {"layout": layout, "controls": controls, "controlsMeta": controls_meta, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
     if warnings:
         response["message"] = " ".join(warnings)
     return response
@@ -1279,7 +1285,7 @@ def action_use_setup(manager, request):
 
 def action_save_controls(manager, request):
     settings = save_controls(manager.directory, request["controls"], manager.runner)
-    return {"controls": settings, "message": "Shortcuts and gestures saved."}
+    return {"controls": settings, "message": "XR keys saved."}
 
 
 def action_save(manager, request):
