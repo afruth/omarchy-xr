@@ -7,6 +7,7 @@ mailbox written here and binds only while the viewer runs.
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 from atomic_file import atomic_write
 
@@ -44,7 +45,8 @@ ACTIONS=(
 )
 ACTION_IDS=tuple(a[0] for a in ACTIONS)
 DEFAULT_MODIFIER='CTRL + ALT'
-DEFAULTS={'version':2,'modifier':DEFAULT_MODIFIER,'fingers':3,'keys':{a[0]:a[3] for a in ACTIONS}}
+DEFAULT_KEYS={a[0]:a[3] for a in ACTIONS}
+DEFAULTS: dict[str, Any]={'version':2,'modifier':DEFAULT_MODIFIER,'fingers':3,'keys':DEFAULT_KEYS}
 MODS={'SHIFT':1,'CTRL':4,'ALT':8,'SUPER':64}
 _NAMED=('Up','Down','Left','Right','Home','End','Page_Up','Page_Down','Return','space','Tab','BackSpace','Insert',
         'Delete','minus','equal','comma','period','slash','semicolon','apostrophe','bracketleft','bracketright',
@@ -88,7 +90,7 @@ def key(value):
 def conflicts(value,bindings=()):
     """[(action, message)] for every key that cannot be bound; value is already normalized."""
     layer,mask=modifier(value['modifier'])
-    found=[];seen={}
+    found: list[tuple[str, str]]=[];seen: dict[tuple[int, str], str]={}
     for action in ACTION_IDS:
         text,extra,name=key(value['keys'].get(action,''))
         if not text:continue
@@ -135,7 +137,7 @@ def migrate(value):
     """Profiles before the XR layer (version 1: fingers plus five CTRL+arrow chords) load as the defaults."""
     if isinstance(value,dict) and value.get('version')!=2:
         fingers=value.get('fingers')
-        return dict(DEFAULTS,keys=dict(DEFAULTS['keys']),fingers=3 if fingers==4 or fingers not in (3,5) else fingers)
+        return dict(DEFAULTS,keys=dict(DEFAULT_KEYS),fingers=3 if fingers==4 or fingers not in (3,5) else fingers)
     return value
 
 

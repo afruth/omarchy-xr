@@ -132,9 +132,10 @@ class CanvasSession:
         header = " ".join(format(s[key], "g") for key in TSV_FIELDS)
         # Studio's backend and its Quickshell parent are never adopted.
         rows = [*s["exclude"], str(os.getpid()), str(os.getppid())]
-        # Field 9 switches the optional window-key takeovers (read by the renderer, announced to Lua in .mode).
-        takeover = 1 if s["takeoverKeys"] else 0
-        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} {takeover} {s['refresh']}\n" + "".join(f"exclude {t}\n" for t in rows))
+        # Field 9 was the optional window-key takeover; controls v7 bind the XR key layer instead and take
+        # nothing over, so it is always 0 (kept so older readers still find field 10). takeoverKeys stays in
+        # the profile only so older profiles load.
+        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} 0 {s['refresh']}\n" + "".join(f"exclude {t}\n" for t in rows))
 
     def monitor_rule(self, settings, x):
         return (f'hl.monitor({{output="{self.name}", mode="{WIDTH}x{HEIGHT}@{settings["refresh"]}", '

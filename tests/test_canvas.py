@@ -15,7 +15,7 @@ from backend import Manager, default_layout, perform, validate as validate_layou
 from canvas import DEFAULTS, validate
 from test_studio import FakeHypr
 
-GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 1 60"
+GOLDEN = "# canvas v1 60 2.4 60 0.35 0.8 1 300 all 0 60"
 NAMED = {"omxr-canvas": -1338, "omxr-park": -1337}
 
 
@@ -368,8 +368,9 @@ class CanvasTests(unittest.TestCase):
             saved = manager.canvas.save({"refresh": 120, "outputScale": 1.25, "exclude": ["firefox"], "radius": 3})
             self.assertEqual(manager.canvas.load(), saved)
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
-            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all 1 120", "exclude firefox", f"exclude {os.getpid()}"])
-            manager.canvas.save({**saved, "takeoverKeys": False})
+            self.assertEqual(lines[:3], ["# canvas v1 60 3 60 0.35 0.8 1.25 300 all 0 120", "exclude firefox", f"exclude {os.getpid()}"])
+            # Field 9 (the v6 key takeover) is always 0: controls v7 take nothing over, whatever an old profile says.
+            manager.canvas.save({**saved, "takeoverKeys": True})
             header = (manager.directory / "canvas.tsv").read_text().splitlines()[0]
             self.assertEqual(header, "# canvas v1 60 3 60 0.35 0.8 1.25 300 all 0 120")
             # The Lua adapter's adopt-policy pattern still finds field 8 with fields 9 and 10 appended.
@@ -467,7 +468,7 @@ class CanvasTests(unittest.TestCase):
             manager.canvas.ensure(manager.monitors())
             self.assertFalse(fake.evals("window.move"))
             self.assertFalse(manager.canvas.journal.exists())
-            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 1 60"))
+            self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 0 60"))
         finally: self.close(manager)
 
     def test_laptop_off_adoption_targets_park(self):

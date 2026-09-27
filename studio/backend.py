@@ -1225,6 +1225,15 @@ class Manager:
         self.viewer_exit = ""
 
 
+def touchpad_found():
+    """Whether install-controls found a multitouch touchpad (it lists them in xr-touchpads.lua)."""
+    config = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    try:
+        return '"' in (config / "hypr/xr-touchpads.lua").read_text()
+    except OSError:
+        return False
+
+
 def read_saved(manager, warnings, saved):
     load, path, fallback, warning, label = saved
     try:
@@ -1247,7 +1256,7 @@ def action_load(manager, _request):
     except Exception:  # Conflicts are also checked on save; the key map just shows none.
         bindings = []
     controls_meta = {"actions": [{"id": a[0], "group": a[1], "title": a[2], "default": a[3], "scope": a[4]} for a in CONTROL_ACTIONS],
-                     "defaults": DEFAULTS, "desktopBindings": bindings}
+                     "defaults": DEFAULTS, "desktopBindings": bindings, "touchpad": touchpad_found()}
     response = {"layout": layout, "controls": controls, "controlsMeta": controls_meta, "setups": setups, "canvas": canvas, "graphicsLimits": manager.hardware_limits(), "environment": manager.environment.snapshot(), "builtInSetups": built_in_setups()}
     if warnings:
         response["message"] = " ".join(warnings)
