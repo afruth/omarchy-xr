@@ -91,10 +91,12 @@ Then the canvas output and its rules are removed, and the XR keys are unbound.
 ## New windows
 
 A new window opens next to where you look, sideways and up or down, without overlap. A window that
-opens while the canvas runs gets a short halo pulse (300 ms) where it lands, so you see
-where it went. When it is placed outside your view, an accent-coloured chevron at the edge of the view
-points towards it for up to 3 seconds, or until you turn and its centre is in view. The windows moved
-to the canvas at start, and a canvas you switch to, show neither.
+opens while the canvas runs is landed on at once: the camera brings it to the middle of your view at its
+working zoom, and it is staged and gets the keyboard, so a window you open is never lost beside or behind
+you (not while the search is open; several at once: the last one). It also gets a short halo pulse
+(300 ms). If the camera cannot follow, an accent-coloured chevron at the edge of the view points towards
+it for up to 3 seconds, or until you turn and its centre is in view. The windows moved to the canvas at
+start, and a canvas you switch to, are not landed on and show neither.
 
 ## Moving windows
 

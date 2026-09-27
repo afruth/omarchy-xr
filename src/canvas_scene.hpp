@@ -199,6 +199,8 @@ public:
     std::optional<FillRequest> fillRequest;
     std::string filled, bringRequested, focusRequest;
     bool helpOpen=false;
+    // The latest window that opened while the canvas runs; the renderer lands on it (centred, focused).
+    std::string arrived;
     // The help card's rows (help_keys.hpp), set by the renderer from the controls adapter's `.keys`.
     std::vector<helpkeys::Row> helpRows=helpkeys::rows({}, true);
     Overlays overlays;
@@ -276,7 +278,7 @@ public:
         w.rect=place(r, float(w.pixelW), float(w.pixelH), now);
         memory.note(r.cls, r.title, w.rect, now);
         if(primed) {
-            w.pulseUntil=now+.3;
+            w.pulseUntil=now+.3; arrived=w.name;
             const auto [middle, half]=viewBand();
             if(offView(project(w.rect, camera, ring), heading, halfSpan, ring, middle, half)) w.cueUntil=now+3;
         }

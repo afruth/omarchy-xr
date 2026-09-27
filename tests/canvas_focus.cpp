@@ -1159,12 +1159,13 @@ void newWindowCues(View& v) {
     s.adopt(next, now);
     const auto* in=s.find("0xc0de1"); assert(in && sameRect(in->rect, near));
     assert(in->pulseUntil>s.clock && s.haloTarget("0xc0de1")==1 && in->cueUntil==0 && s.newWindowCues().empty());
+    assert(s.arrived=="0xc0de1"); s.arrived.clear();
     s.tick(now+.35, 0); assert(s.haloTarget("0xc0de1")==0);
     const auto away=freeNear(s, far, 400, 300);
     assert(canvas::offView(canvas::project(away, s.camera, s.ring), s.heading, s.halfSpan, s.ring));
     next.records.push_back(remembered(v, 0xc0de2, away, now+.4));
     s.adopt(next, now+.4);
-    const auto* out=s.find("0xc0de2"); assert(out && sameRect(out->rect, away));
+    const auto* out=s.find("0xc0de2"); assert(out && sameRect(out->rect, away) && s.arrived=="0xc0de2"); s.arrived.clear();
     assert(out->pulseUntil>s.clock && out->cueUntil>s.clock && s.newWindowCues().size()==1);
     const auto cue=s.newWindowCues()[0]; assert(cue.name=="0xc0de2" && cue.alpha==1);
     s.expireCues(v.overlayScene(v.currentView())); assert(s.newWindowCues().size()==1);
@@ -1180,8 +1181,16 @@ void newWindowCues(View& v) {
     fresh.adopt(listOf({record(0xd001, "a", 800, 600, 0, 1), record(0xd002, "b", 800, 600, 1, 2)}), 1);
     for (auto& r:fresh.lastList.records) r.canvas=true;
     fresh.adopt(fresh.lastList, 1);
-    assert(fresh.primed && fresh.live()==2);
+    assert(fresh.primed && fresh.live()==2 && fresh.arrived.empty());   // the start's windows are not new
     for (const auto& w:fresh.windows) assert(w.pulseUntil==0 && w.cueUntil==0);
+    // Through the View: a window opened behind you is landed on (centred, focused) as it arrives.
+    work(v); landOn(v, "0x5005");
+    auto opened=s.lastList; opened.records.push_back(remembered(v, 0xc0de4, freeNear(s, far, 400, 300), monotonicSeconds()));
+    opened.seq=v.windowsSeq+1; v.adoptList(opened);
+    const auto serial=v.pointerSerial;
+    assert(s.landed=="0xc0de4" && v.hoverOutput=="0xc0de4" && s.arrived.empty());
+    auto back=s.lastList; back.records.pop_back(); back.seq=v.windowsSeq+1; v.adoptList(back);
+    assert(v.pointerSerial==serial && s.arrived.empty());                  // a close lands nowhere
 }
 // (x) The Overview mouse drag: snapped, neighbours make room (M9), free in y (M8), remembered and undoable; a
 // press without motion is a click, and in Work a press never drags.

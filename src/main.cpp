@@ -924,6 +924,12 @@ struct View {
             std::cout << "Canvas: brought " << canvas->bringRequested << " to the canvas" << std::endl;
             applyAim(canvas->land(std::exchange(canvas->bringRequested, {}), baseView()));
         }
+        // A window you open while the canvas runs lands in the middle of your view and gets the keyboard, so it
+        // is never lost beside or behind you. Not during a search; several at once: the last one.
+        if (const auto name=std::exchange(canvas->arrived, {}); !name.empty() && canvas->find(name) && !canvas->search.open) {
+            std::cout << "Canvas: new window " << name << std::endl;
+            navigate({.verb=Verb::Focus, .output=name});
+        }
         // --canvas-windows-file runs only: a new focus_history_id 0 window stands in for the .focus
         // mailbox, which the mailbox path follows (it leaves out XR's own staging, §4.2).
         if (!windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
