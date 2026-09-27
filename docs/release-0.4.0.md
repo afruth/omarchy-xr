@@ -59,8 +59,5 @@ to the 0.3.1 baselines, and the live canvas checks (`make check-canvas-live`,
 `make smoke-canvas`) pass on the development machine. The end-to-end manual
 checklist with the glasses is in the [Window canvas guide](window-canvas.md).
 
-The marketplace installer still pins the 0.3.1 package: its URL, size and
-SHA-256 can only be pinned once the 0.4.0 package exists. After publishing, the
-maintainer tags `v0.4.0`, builds the archive and package with
-`scripts/package-release.py`, publishes them with `SHA256SUMS`, and then pins
-the installer (`studio/install_runtime.py` and its test) in a separate commit.
+The marketplace installer (**Install XR runtime** in Monitor Studio) pins this
+release's package by URL, size (5,638,571 bytes) and SHA-256.
