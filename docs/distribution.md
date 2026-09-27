@@ -72,6 +72,9 @@ streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
 It then runs setup as your desktop user to display the terms and enable controls
 and notifications. Neither an AUR account nor the vendor SDK download is needed.
+When the installed package is older than the pinned one (a marketplace update
+of the plugin on an older runtime), Studio shows **Update XR runtime**, which
+runs the same installer.
 The package manager runs only after verification; a failed download or checksum
 stops installation. Oversized downloads stop before excess bytes are written;
 incomplete or unverified downloads are deleted. No downloaded script is executed.
