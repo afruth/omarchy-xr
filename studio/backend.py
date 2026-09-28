@@ -93,8 +93,8 @@ def _layout_monitors(layout):
     monitors = layout.get("monitors")
     if not isinstance(monitors, list) or not monitors:
         raise ValueError("Add at least one monitor")
-    if len(monitors) > 16:
-        raise ValueError("Use at most 16 monitors")
+    if len(monitors) > 30:
+        raise ValueError("Use at most 30 monitors")
     _curvature(layout.get("curvature", 0))
     if type(layout.get("workspaceFollow", False)) is not bool:
         raise ValueError("Match monitor bend to workspace must be on or off.")

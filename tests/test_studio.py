@@ -422,11 +422,11 @@ class LayoutTests(unittest.TestCase):
         for change in (lambda x:x.update(fps=0),lambda x:x["monitors"][0].update(width=0),lambda x:x["monitors"][1].update(x=0),lambda x:x["monitors"][0].update(id='bad"name')):
             layout=default_layout();change(layout)
             with self.assertRaises(ValueError):validate(layout)
-    def test_monitor_count_is_capped_at_sixteen(self):
-        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":640,"height":480,"x":(i%4)*664,"y":(i//4)*504} for i in range(16)]
+    def test_monitor_count_is_capped_at_thirty(self):
+        layout=default_layout();layout["monitors"]=[{"id":str(i),"width":1920,"height":1080,"x":(i%6)*1950,"y":(i//6)*1110} for i in range(30)]
         validate(layout)
-        layout["monitors"].append({"id":"16","width":640,"height":480,"x":0,"y":20000})
-        with self.assertRaisesRegex(ValueError,"16"):
+        layout["monitors"].append({"id":"30","width":1920,"height":1080,"x":0,"y":5550})
+        with self.assertRaisesRegex(ValueError,"30"):
             validate(layout)
     def test_spacing(self):
         for gap in (0,-1,True,1.5,float("nan"),8193):

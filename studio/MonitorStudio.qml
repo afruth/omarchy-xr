@@ -319,7 +319,7 @@ Item {
         dragSnap = null;
     }
     function setCount(count) {
-        count = Math.max(1, Math.min(16, count));
+        count = Math.max(1, Math.min(30, count));
         var copy = JSON.parse(JSON.stringify(monitors));
         while (copy.length > count)
             copy.pop();
@@ -1279,7 +1279,7 @@ Item {
                                 }
                                 Action {
                                     text: "Add monitor"
-                                    enabled: root.loaded && !root.busy && root.monitors.length < 16
+                                    enabled: root.loaded && !root.busy && root.monitors.length < 30
                                     helpText: "Add a monitor to the draft layout"
                                     onClicked: root.setCount(root.monitors.length + 1)
                                 }
