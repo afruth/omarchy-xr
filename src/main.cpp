@@ -488,15 +488,15 @@ struct View {
         if (focusSelected(true, 0)) { level=Level::Monitor; levelOutput=selection.output; std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl; }
         else std::cout << "Camera: no selected monitor; fit ignored" << std::endl;
     }
-    // The flick gestures step through the levels. In: workspace -> monitor -> the active window on
-    // that monitor. Out: pane -> monitor -> workspace. A monitor fit on a different monitor than the
-    // current level's restarts at the monitor level.
+    // The zoom levels (XR Up/Down and the flick gestures). In: all monitors -> the gazed monitor -> the
+    // window you look at, focused and filling the view. Out: window -> its monitor -> all monitors.
     void flickIn() {
-        if (gaze.current) { const auto previous=selection.output; selection.observe(gaze.current); if (selection.output!=previous) selectionAnchor=baseView(); }
-        if (level==Level::Monitor && levelOutput==selection.output && fitPane()) return;
-        fitTarget();
+        selectGazed();
+        if (level==Level::Overview) { fitTarget(); return; }
+        focusGazedWindow();
     }
     void flickOut() {
+        if (level==Level::Pane && findLayout(levelOutput)) { fitOutput(levelOutput); return; }
         if (level==Level::Pane) { fitTarget(); return; }
         fit(); tracking.camera.recenter(monotonicSeconds());
     }
@@ -556,7 +556,10 @@ struct View {
         case Verb::Undo: applyAim(canvas->undo(anchor)); break;
         case Verb::Redo: applyAim(canvas->redo(anchor)); break;
         case Verb::Neighbour: if (direction) applyAim(canvas->neighbourOf(*direction, anchor)); break;
-        case Verb::Cycle: applyAim(canvas->cycleBy(m.x>0 ? 1 : -1, anchor)); break;
+        case Verb::Cycle:
+            applyAim(canvas->cycleBy(m.x>0 ? 1 : -1, anchor));
+            if (canvas->zoomedOut() && !canvas->cycled.empty()) selection.output=canvas->cycled;   // zoomed out: select only
+            break;
         case Verb::Nudge: if (direction) applyAim(canvas->nudgeBy(*direction, anchor)); break;
         case Verb::Pin: canvas->pinToggle(m.output.empty() ? canvas->pinTarget() : m.output); break;
         case Verb::Help: canvas->helpOpen=!canvas->helpOpen; break;
@@ -654,7 +657,9 @@ struct View {
         applyAim(canvas->recenter());
         std::cout << "Camera: canvas recenter" << std::endl;
     }
-    bool fitPane() {
+    // monitorZoom: centre the window at the zoom that fits its monitor (previous/next at monitor level), not
+    // fitted to the view; the camera may then show the neighbouring monitors.
+    bool fitPane(bool monitorZoom=false) {
         if (!controls->paneValid || controls->paneOutput!=selection.output) { std::cout << "Camera: no active window known on " << selection.output << "; pane fit ignored" << std::endl; return false; }
         const auto* found=findLayout(selection.output);
         if (!found) return false;
@@ -668,15 +673,14 @@ struct View {
         focusOutput=p.output; focusAnchor=selectionAnchor;
         focusX=(controls->paneX+controls->paneW/2-p.width/2)/900;
         focusY=-(controls->paneY+controls->paneH/2-p.height/2)/900;
-        focusDepth=navigation::rectDistance(controls->paneW, controls->paneH, fov, aspect);
+        focusDepth=monitorZoom ? navigation::frontHeightDistance(p, pose, fov) : navigation::rectDistance(controls->paneW, controls->paneH, fov, aspect);
         const float sag=spatial::bendZ(p.width/1800, pose.surfaceBend);
         focusDepth=std::max(focusDepth, sag+.15f);
-        const auto limited=navigation::applyPanLimits(p, pose, focusDepth, fov, aspect, {focusX, focusY, 0}, false);
-        focusX=limited.x; focusY=limited.y;
+        if (!monitorZoom) { const auto limited=navigation::applyPanLimits(p, pose, focusDepth, fov, aspect, {focusX, focusY, 0}, false); focusX=limited.x; focusY=limited.y; }
         const auto target=navigation::panFocus(pose, focusAnchor, focusDepth, focusX, focusY);
         targetRotation=target.rotation; targetPanX=target.pan.x; targetPanY=target.pan.y; targetPanZ=target.pan.z;
-        level=Level::Pane; levelOutput=p.output;
-        std::cout << "Camera: fit active window " << int(controls->paneW) << "x" << int(controls->paneH) << " on " << p.output << std::endl;
+        level=monitorZoom ? Level::Monitor : Level::Pane; levelOutput=p.output;
+        std::cout << "Camera: " << (monitorZoom ? "centre active window at monitor zoom " : "fit active window ") << int(controls->paneW) << "x" << int(controls->paneH) << " on " << p.output << std::endl;
         return true;
     }
     bool ensureLease() {
@@ -1126,6 +1130,7 @@ struct View {
         }
         if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
         if (mode==29) { toggleStats(monotonicSeconds()); return; }
+        if (mode==30 || mode==31) { navigate({mode==30 ? Verb::FlickIn : Verb::FlickOut}); return; }   // zoom levels
         if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
     }
     // Monitor scene (docs/xr-controls-plan.md §5.2-5.4): overview fits every monitor; focus, fill and
@@ -1137,7 +1142,7 @@ struct View {
         case 18: focusGazedWindow(); break;
         case 9: monitorSearchOpen(); break;
         case 17: monitorHelpOpen=!monitorHelpOpen; break;
-        case 22: awaitPane(PaneFallback::Pane, controls->paneChanged); break;
+        case 22: awaitPane(PaneFallback::Pane, controls->paneChanged, cycleFrame()); break;
         default: break;
         }
     }
@@ -1243,9 +1248,11 @@ struct View {
         awaitPane(PaneFallback::Monitor, inside);
     }
     enum class PaneFallback { Monitor, Pane, None };
-    double paneWaitUntil=0; unsigned paneWaitSeen=0; PaneFallback paneFallback=PaneFallback::Monitor;
-    void awaitPane(PaneFallback fallback, bool ready) {
-        paneWaitUntil=monotonicSeconds()+.5; paneWaitSeen=controls->paneUpdates; paneFallback=fallback;
+    // How a published pane is shown: fitted to the view, centred at monitor zoom, or only selected.
+    enum class PaneFrame { Window, Centre, Select };
+    double paneWaitUntil=0; unsigned paneWaitSeen=0; PaneFallback paneFallback=PaneFallback::Monitor; PaneFrame paneFrame=PaneFrame::Window;
+    void awaitPane(PaneFallback fallback, bool ready, PaneFrame frame=PaneFrame::Window) {
+        paneWaitUntil=monotonicSeconds()+.5; paneWaitSeen=controls->paneUpdates; paneFallback=fallback; paneFrame=frame;
         if (ready) framePane();
     }
     void framePane() {
@@ -1253,8 +1260,11 @@ struct View {
         const auto previous=selection.output;
         if (findLayout(controls->paneOutput)) selection.output=controls->paneOutput;
         if (selection.output!=previous) selectionAnchor=baseView();
-        if (!fitPane()) fitTarget();
+        if (paneFrame==PaneFrame::Select) return;
+        if (!fitPane(paneFrame==PaneFrame::Centre)) fitTarget();
     }
+    // Previous/next keep the zoom level: all monitors only select, monitor level centres, window level fits.
+    PaneFrame cycleFrame() const { return level==Level::Overview ? PaneFrame::Select : level==Level::Monitor ? PaneFrame::Centre : PaneFrame::Window; }
     // A pane published after the request frames it; without one in 0.5 s, focus frames the monitor and
     // previous/next the last pane.
     void steerPaneWait(double now) {
@@ -1833,7 +1843,7 @@ struct View {
     float statsZoomDepth() const { return canvas ? canvas->ring.radius-std::hypot(panX, panY, panZ) : (focusOutput.empty()?distance-panZ:focusDepth); }
     float statsMaxZoomDepth() const { return canvas ? canvas->ring.radius : maxZoomDepth(); }
     const char* zoomLevelName() const {
-        if (canvas) return canvas->zoomedOut() ? "overview" : canvas->state==canvas::Scene::State::Fill ? "pane" : "window";
+        if (canvas) return canvas->zoomedOut() ? "overview" : canvas->state==canvas::Scene::State::Fill ? "pane" : canvas->framed ? "monitor" : "window";
         return level==Level::Overview ? "workspace" : level==Level::Monitor ? "monitor" : "pane";
     }
     void writeCanvasStats(std::ostringstream& stats) const {

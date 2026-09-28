@@ -208,6 +208,9 @@ public:
     // drag: the window, its rect and the layout when it started.
     bool primed=false;
     std::string dragName;
+    // The Work landing is framed (the middle zoom level); cycled: a window previous/next selected while zoomed out.
+    bool framed=false;
+    std::string cycled;
     Rect dragFrom;
     Snapshot dragStart;
 
@@ -622,18 +625,27 @@ public:
         camera.targetScrollY=std::clamp(camera.targetScrollY+dy, lo, hi);
         return {};
     }
-    // Work on one window: centred at its Work zoom, the eye at the depth where it fills the view.
-    Aim land(const std::string& name, const tracking::Quaternion& anchor) {
+    // Work on one window: centred at its Work zoom, the eye at the depth where it fills the view. Framed
+    // (the middle zoom level): the same window centred in a monitor-sized frame, so its neighbours show.
+    Aim land(const std::string& name, const tracking::Quaternion& anchor, bool frame=false) {
         const auto* w=find(name);
         if(!w) return {};
-        endSearch(); resetGesture(); landed=name; mru.note(name, double(++landings));
+        endSearch(); resetGesture(); landed=name; cycled.clear(); mru.note(name, double(++landings));
         // A filled window lands in Fill: zoom 1 at the depth where the fill size covers the view.
         state=w->beforeFill ? State::Fill : State::Work;
+        framed=frame && !w->beforeFill;
         if(w->beforeFill) filled=name;
-        const float zoom=w->beforeFill ? 1.f : workZoom(w->rect, metrics);
+        const Rect shown=framed ? monitorFrame(w->rect) : w->rect;
+        const float zoom=w->beforeFill ? 1.f : workZoom(shown, metrics);
         camera.targetZoom=zoom; focusOn(w->rect.cx(), w->rect.cy());
-        return aim(camera.targetFocusX, 0, fitDepth(w->rect.w*zoom, w->rect.h*zoom), anchor);
+        return aim(camera.targetFocusX, 0, fitDepth(shown.w*zoom, shown.h*zoom), anchor);
     }
+    // A 1920x1080 frame (one glasses eye) centred on r, never smaller than r.
+    static Rect monitorFrame(const Rect& r) {
+        const float w=std::max(r.w, monitorW), h=std::max(r.h, monitorH);
+        return {r.cx()-w/2, r.cy()-h/2, w, h};
+    }
+    static constexpr float monitorW=1920, monitorH=1080;
     // rectDistance for a flat rectangle, then deep enough that the curved window's arc fits the
     // horizontal view from inside the ring (its edges bend towards the eye).
     float fitDepth(float w, float h) const {
@@ -646,7 +658,7 @@ public:
     // fitBounds fills the view edge to edge; a 4 % margin per side keeps edges and labels inside.
     Aim overview(const tracking::Quaternion& anchor) {
         const auto fit=fitBounds(liveRects(), ring, metrics);
-        state=State::Overview; resetGesture();
+        state=State::Overview; resetGesture(); cycled.clear();
         focusOn(fit.focusX, fit.focusY); camera.targetZoom=std::max(.08f, .92f*fit.zoom);
         return aim(fit.focusX, 0, ring.radius, anchor);
     }
@@ -691,21 +703,24 @@ public:
     }
     // A landing from Overview is explicit (M7): the View focuses the window (land itself stays focus-free,
     // so XR's own staging and focus follow never loop).
-    Aim landFocused(const std::string& name, const tracking::Quaternion& anchor) {
+    Aim landFocused(const std::string& name, const tracking::Quaternion& anchor, bool frame=false) {
         if(find(name)) focusRequest=name;
-        return land(name, anchor);
+        return land(name, anchor, frame);
     }
     Aim toggleOverview(const tracking::Quaternion& anchor, double now) {
         return zoomedOut() ? landFocused(landingTarget(now), anchor) : overview(anchor);
     }
-    // Flick out: Fill -> Work (restore) -> Overview. Flick in: Overview/Search -> Work (land) -> Fill.
+    // The zoom levels (XR Up/Down and the flicks): Overview -> the window in a monitor frame -> the window
+    // filling the view, and back; Fill restores first. Zooming in focuses the window.
     Aim flickOut(const tracking::Quaternion& anchor) {
         if(state==State::Fill) return fillToggle(anchor);
-        return state==State::Work ? overview(anchor) : Aim{};
+        if(state!=State::Work) return {};
+        // Framed, or the landed window is gone: all windows.
+        return framed || !find(landed) ? overview(anchor) : land(landed, anchor, true);
     }
     Aim flickIn(const tracking::Quaternion& anchor, double now) {
-        if(zoomedOut()) return landFocused(landingTarget(now), anchor);
-        return state==State::Work ? fillToggle(anchor) : Aim{};
+        if(zoomedOut()) return landFocused(landingTarget(now), anchor, true);
+        return state==State::Work && framed ? landFocused(landed, anchor) : Aim{};
     }
     // A zoom gesture latches its anchor at the first step after 0.4 s idle: the gazed point (projected
     // px, unprojected with the current camera), else the focus.
@@ -1115,12 +1130,15 @@ public:
         focusRequest=*target;
         return land(*target, anchor);
     }
-    // XR previous/next (§5.4 of docs/xr-controls-plan.md): the next window in ring order, wrapping.
+    // XR previous/next (§5.4 of docs/xr-controls-plan.md): the next window in ring order, wrapping, at the
+    // current zoom level: zoomed out it is only selected (focused, the camera stays), else landed on.
     Aim cycleBy(int step, const tracking::Quaternion& anchor) {
-        const auto target=canvas::cycle(current(), step, arrangeable(), ring);
+        const auto from=zoomedOut() && find(cycled) ? cycled : current();
+        const auto target=canvas::cycle(from, step, arrangeable(), ring);
         if(!target) return {};
         focusRequest=*target;
-        return land(*target, anchor);
+        if(zoomedOut()) { cycled=*target; return {}; }
+        return land(*target, anchor, state==State::Work && framed);
     }
     // One grid step, neighbours make room; the camera chases only a window leaving the view.
     Aim nudgeBy(Direction dir, const tracking::Quaternion& anchor) {

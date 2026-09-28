@@ -54,8 +54,10 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 | `grab` | XR + `G`, **held** | Scene follows your head while held, stays on release (§5.7) | same; head pitch scrolls the canvas | new |
 | `zoom_in` | XR + `equal` (repeats) | Zoom one step in | same | mode 4, unbound by default |
 | `zoom_out` | XR + `minus` (repeats) | Zoom one step out | same | mode 5, unbound by default |
-| `overview` | XR + `Up` | Fit all monitors | Overview on/off | mode 1 / mode 8 |
-| `focus` | XR + `Down` | Fit the gazed **window** and focus it | Focus (confirm) the gazed window | monitors fit only the monitor (mode 2); canvas mode 18 |
+| `zoom_level_in` | XR + `Up` | All monitors → the gazed monitor → the gazed **window**, focused | Overview → the window in a 1920×1080 monitor frame → the window filling the view, focused | the flick in (mode 2) |
+| `zoom_level_out` | XR + `Down` | Window → its monitor → all monitors | Fill restores, then window → monitor frame → Overview | the flick out (mode 1) |
+| `overview` | unbound | Fit all monitors | Overview on/off | mode 8 |
+| `focus` | unbound | Fit the gazed **window** and focus it | Focus (confirm) the gazed window | canvas mode 18 (three-finger tap) |
 | `fill` | XR + `Return` | Fill the view with the selected window (§5.3) | Fill / restore | canvas mode 10 only |
 | **Windows** |||||
 | `previous` / `next` | XR + `Left` / `Right` | Previous / next window across the XR monitors, camera follows (§5.4) | Previous / next window along the ring, wrapping | canvas neighbour (mode 14) only |
@@ -74,6 +76,12 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 | `pointer_home` | XR + `Home` | Pointer to the laptop screen's centre | same | double-tap gesture only |
 | `help` | XR + `H` | Help overlay listing the current keys | same | canvas F1 in the search field only |
 | `stats` | XR + `` ` `` | Performance card: frames, display, timing, captures, CPU/GPU, battery, saver, tracking | same | — |
+
+**Zoom levels.** Both scenes have three: everything fitted into the glasses (1920 px per eye), one monitor
+(virtual monitors: the gazed monitor fills the view; window canvas: the selected window centred in a
+1920×1080 frame, neighbours visible), and one window filling the view. XR + Up and XR + Down step through
+them, as the flick gestures do; zooming in to the window focuses it. Previous/next keep the level. Settings
+from before the levels move the old `overview` Up and `focus` Down defaults to them; custom keys stay.
 
 "—" actions are not bound in virtual monitors mode (the key passes through to applications).
 
@@ -155,10 +163,11 @@ both scenes**, and the renderer's `sceneKey(mode, token)` gives it the scene's m
 | 17 | `help` | — | help card | help card |
 | 18 | `focus` | — | frame the gazed window (§5.3) | confirm |
 | 20 / 21 | `notification_dismiss` / `notification_next` | gazed card or `-` (front card) | same | same |
-| 22 | `previous` / `next` | `prev` / `next` | frame the pane Lua published (§5.4) | ring order, wrapping |
+| 22 | `previous` / `next` | `prev` / `next` | the pane Lua published, at the current level: all monitors select it, monitor level centres it at monitor zoom, window level fits it (§5.4) | ring order, wrapping, at the current level: Overview selects (focus, halo), monitor frame and window land |
 | 26 | `grab` | `begin` / `end` | §5.7 | §5.7 |
 | 27 / 28 | `undo` / `redo` | — | — | undo / redo |
 | 29 | `stats` | — | performance card (renderer only) | performance card |
+| 30 / 31 | `zoom_level_in` / `zoom_level_out` | — | the zoom levels (flickIn/flickOut) | the zoom levels (flickIn/flickOut) |
 
 `pointer_home` stays in Lua (`releasePointer()`, now for any XR monitor). In virtual monitors mode Lua
 runs `fill`, `previous`/`next` and `search` itself first (maximize, focus and pane, window list) and then

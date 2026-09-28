@@ -203,7 +203,7 @@ inline int paintRadar(cairo_t* cr, const Radar& r, const Style& s) {
 }
 // Help (the XR layer's help key, F1 in the search field): the XR keys from help_keys.hpp, i.e. the chords the
 // controls adapter bound, so the card always matches the keyboard. Two columns, filled top to bottom.
-constexpr int helpWidth=1056, helpHeight=820, helpTop=76, helpRowHeight=30, helpHeaderHeight=36, helpColumn=512, helpColumns=2;
+constexpr int helpWidth=1056, helpHeight=900, helpTop=76, helpRowHeight=30, helpHeaderHeight=36, helpColumn=512, helpColumns=2;
 inline std::string helpKey(const std::vector<helpkeys::Row>& rows, const std::string& title, const Style& s) {
     std::string key="help "+colorKey(s.accent)+' '+title;
     for(const auto& r:rows) key+='\n'+r.section+'\t'+r.keys+'\t'+r.action;

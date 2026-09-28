@@ -87,7 +87,7 @@ assert(files[path]:find("0.100000000",1,true))
 gmove(1150,10);gend(1200)
 assert(files[path]:find("0.060000000",1,true))
 bindings["CTRL + ALT + Down"].callback()
-assert(files[path]:match(" 3 18 %- %d+\n$")) -- focus: one code in both scenes
+assert(files[path]:match(" 3 31 %- %d+\n$")) -- zoom out a level: one code in both scenes
 -- Reload preserves cumulative zoom and disables the timer from the previous chunk.
 dofile("config/xr-controls.lua")
 assert(firstTimer.enabled==false)
@@ -212,7 +212,13 @@ bindings["CTRL + ALT + grave"].callback();assert(files[path]:match("^v3 %S+ %d+ 
 -- A v1 file (before the XR layer) keeps the defaults.
 files["/state/omarchy-xr/controls-settings.tsv"]="5\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
 omarchy_xr_controls.refresh();assert(bindings["CTRL + ALT + Up"] and not bindings["ALT + Up"] and omarchy_xr_controls.fingers==3)
-files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tSUPER + ALT\nfingers\t5\nkey\trecenter\tR\nkey\tzoom_in\tI\nkey\tzoom_out\tO\nkey\toverview\t\n"
+-- A v2 file from before the zoom levels: its overview Up and focus Down move to zoom in/out a level.
+files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tCTRL + ALT\nfingers\t3\nkey\toverview\tUp\nkey\tfocus\tDown\nkey\thelp\tH\n"
+omarchy_xr_controls.refresh()
+bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 30 %- %d+\n$"))
+bindings["CTRL + ALT + Down"].callback();assert(files[path]:match(" 31 %- %d+\n$"))
+assert(files[path..".keys"]:match("\nzoom_level_in\tCTRL %+ ALT %+ Up\t1\n") and not files[path..".keys"]:match("\noverview\t"))
+files["/state/omarchy-xr/controls-settings.tsv"]="v2\nmodifier\tSUPER + ALT\nfingers\t5\nkey\trecenter\tR\nkey\tzoom_in\tI\nkey\tzoom_out\tO\nkey\tzoom_level_in\t\n"
     .."key\tbogus\tX\nkey\thelp\tH);os.exit(\n"
 omarchy_xr_controls.refresh()
 assert(not bindings["CTRL + ALT + Up"] and not bindings["CTRL + ALT + space"] and bindings["SUPER + ALT + R"])
@@ -450,7 +456,7 @@ local function testCanvasKeys()
     local start=#unbound
     clock(146);omarchy_xr_controls.refresh()
     assert(#unbound==start);assertOmarchy()
-    local expect={["Up"]={"8","-"},["Down"]={"18","-"},["Return"]={"10","-"},["Left"]={"22",hex("prev")},["Right"]={"22",hex("next")},
+    local expect={["Up"]={"30","-"},["Down"]={"31","-"},["Return"]={"10","-"},["Left"]={"22",hex("prev")},["Right"]={"22",hex("next")},
         ["Page_Up"]={"19",hex("pageup")},["Page_Down"]={"19",hex("pagedown")},["slash"]={"9","-"},["P"]={"16","-"},["A"]={"13","-"},
         ["Z"]={"27","-"},["SHIFT + Z"]={"28","-"},["H"]={"17","-"}}
     for key,d in pairs(DIRECTIONS) do expect["SHIFT + "..key:sub(1,1)..key:sub(2):lower()]={"15",hex(d[1])} end
@@ -878,14 +884,14 @@ testSliverFloor()
 local DRAG="CTRL + ALT + mouse:272"
 local function testConfirmHotkey()
     clock(200);omarchy_xr_controls.refresh()
-    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 18 %- 200\n$"))
+    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match("^v3 42 %d+ %S+ %d+ 31 %- 200\n$"))
     omarchy_xr_controls.fit_target();assert(files[path]:match(" 18 %- 200\n$"))
-    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 8 %- 200\n$"))
+    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 30 %- 200\n$"))
     gstart(20000);gmove(20050,-60);gend(20100);assert(files[path]:match("^v2 .* 2\n$")) -- the flick-in keeps mode 2
     clock(200.5,"monitors");omarchy_xr_controls.refresh()
-    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match(" 18 %- 200\n$")) -- the renderer picks the scene's meaning
-    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 8 %- 200\n$"))
-    print("Focus and overview keys publish one code in both scenes; the flick keeps 2 passed")
+    bindings["CTRL + ALT + Down"].callback();assert(files[path]:match(" 31 %- 200\n$")) -- the renderer picks the scene's meaning
+    bindings["CTRL + ALT + Up"].callback();assert(files[path]:match(" 30 %- 200\n$"))
+    print("Zoom level keys publish one code (30/31) in both scenes; the confirm tap keeps 18 and the flick 2 passed")
 end
 local function testTapConfirm()
     clock(201);omarchy_xr_controls.refresh()

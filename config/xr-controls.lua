@@ -16,7 +16,7 @@ local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=t
 -- Renderer action codes (.controls "fit" field). 8+ carry a token; the renderer gives each its meaning in the
 -- current scene (docs/xr-controls-plan.md §5.1), so the XR key layer publishes the same code in both modes.
 local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19,
-    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28, stats=29}
+    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28, stats=29, level_in=30, level_out=31}
 local setHoverTimer, updateCanvas, releasePointer, installLayer, parseLayerSettings
 local layerModifier,layerKeys
 local fingers=3
@@ -1064,8 +1064,10 @@ local LAYER_ACTIONS={
     {"grab",key="G",code=CANVAS_MODES.grab,hold=true},
     {"zoom_in",key="equal",code=4,repeating=true},
     {"zoom_out",key="minus",code=5,repeating=true},
-    {"overview",key="Up",code=CANVAS_MODES.overview},
-    {"focus",key="Down",code=CANVAS_MODES.confirm},
+    {"zoom_level_in",key="Up",code=CANVAS_MODES.level_in},
+    {"zoom_level_out",key="Down",code=CANVAS_MODES.level_out},
+    {"overview",key="",code=CANVAS_MODES.overview},
+    {"focus",key="",code=CANVAS_MODES.confirm},
     {"fill",key="Return",code=CANVAS_MODES.fill,monitors=monitorFill},
     {"previous",key="Left",code=CANVAS_MODES.cycle,token="prev",repeating=true,monitors=function() monitorCycle(-1) end},
     {"next",key="Right",code=CANVAS_MODES.cycle,token="next",repeating=true,monitors=function() monitorCycle(1) end},
@@ -1189,12 +1191,17 @@ parseLayerSettings=function(text)
     local lines={};for line in text:gmatch("(.-)\n") do lines[#lines+1]=line end
     if lines[1]~="v2" then return nil end
     local modifier,count=layerModifier,fingers
-    local keys={};for _,action in ipairs(LAYER_ACTIONS) do keys[action[1]]=action.key end
+    local keys,seen={},{};for _,action in ipairs(LAYER_ACTIONS) do keys[action[1]]=action.key end
     for i=2,#lines do
         local kind,a,b=lines[i]:match("^(%a+)\t([^\t]*)\t?([^\t]*)$")
         if kind=="modifier" and a:match("^%u+ %+ [%u +]+$") and validChord(a) then modifier=a
         elseif kind=="fingers" and (a=="3" or a=="5") then count=tonumber(a)
-        elseif kind=="key" and LAYER_BY_ID[a] and validChord(b) then keys[a]=b end
+        elseif kind=="key" and LAYER_BY_ID[a] and validChord(b) then keys[a]=b;seen[a]=true end
+    end
+    -- A file from before the zoom levels: Up and Down (the old overview and focus defaults) move to them.
+    if not seen.zoom_level_in then
+        if keys.overview=="Up" then keys.overview="" end
+        if keys.focus=="Down" then keys.focus="" end
     end
     return modifier,count,keys
 end
