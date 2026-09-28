@@ -27,6 +27,14 @@ struct MissPenalty {
     void miss(double now, unsigned count = 1) { ms = std::min(6.0, value(now) + count); }
 };
 
+// The latest vblank at or before now, extrapolated in whole periods while frames are skipped
+// (no flip, so no new vblank timestamp).
+inline std::uint64_t vblankAnchorUs(std::uint64_t lastVblankUs, std::uint64_t nowUs, unsigned refreshHz) {
+    if (!refreshHz || nowUs <= lastVblankUs) return lastVblankUs;
+    const std::uint64_t period = 1000000ull / refreshHz;
+    return lastVblankUs + (nowUs - lastVblankUs) / period * period;
+}
+
 inline bool latchWaiting(std::uint64_t nowUs, std::uint64_t lastVblankUs, unsigned refreshHz, double marginMs) {
     if (!refreshHz || !lastVblankUs || marginMs < 0) return false;
     const std::uint64_t period = 1000000ull / refreshHz;

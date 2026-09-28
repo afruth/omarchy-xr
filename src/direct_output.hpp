@@ -14,6 +14,8 @@ public:
     int height() const;
     bool pump();
     void swap(const std::function<void()>& service = {});
+    // A frame was not presented; the scanout keeps the last buffer.
+    void skip();
     unsigned refreshHz() const;
     unsigned missedVblanks() const;
     bool hasVblank() const;

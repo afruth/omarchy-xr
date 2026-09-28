@@ -24,6 +24,7 @@
 #include "notification_hud.hpp"
 #include "canvas_scene.hpp"
 #include "power.hpp"
+#include "idle_frames.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -195,6 +196,7 @@ struct View {
     unsigned skyCulled=0;
     GpuTimers gpuTimers;
     MissPenalty missPenalty;
+    idle::Gate idleGate;
     std::filesystem::file_time_type layoutVersion{}, trackingVersion{}, gazeVersion{};
     bool trackingLoaded=false, gazeLoaded=false;
     std::string trackingPath, gazePath, powerPath;
@@ -705,6 +707,7 @@ struct View {
                 gpuTimers.probe();
                 seenMisses=output->missedVblanks();
                 missedBaseline=seenMisses;
+                idleGate.invalidate();
                 return true;
             } catch (const std::exception& error) {
                 std::cerr << error.what() << '\n';
@@ -872,9 +875,11 @@ struct View {
         const auto hz=output->refreshHz();
         const auto periodUs=hz?1000000ull/hz:0;
         const auto marginUs=static_cast<std::uint64_t>(lastMarginMs*1000.0);
-        const auto next=output->lastVblankUs()+periodUs;
+        // After skipped frames the last flip is old: aim at the vblank that follows the extrapolated one.
+        const auto anchor=vblankAnchorUs(output->lastVblankUs(), static_cast<std::uint64_t>(monotonicSeconds()*1e6), hz);
+        const auto next=anchor+periodUs;
         const auto deadline=next>marginUs?next-marginUs:next;
-        while (latchWaiting(static_cast<std::uint64_t>(monotonicSeconds()*1e6), output->lastVblankUs(), hz, lastMarginMs) && !interrupted) {
+        while (latchWaiting(static_cast<std::uint64_t>(monotonicSeconds()*1e6), anchor, hz, lastMarginMs) && !interrupted) {
             if (!ensureLease()) { running=false; break; }
             serviceCaptures();
             if (nearDeadline(deadline)) break;
@@ -1404,6 +1409,7 @@ struct View {
         while (SDL_PollEvent(&event)) {
             if (event.type==SDL_QUIT) running=false;
             if (event.type==SDL_KEYDOWN && event.key.keysym.sym==SDLK_ESCAPE) running=false;
+            if (event.type==SDL_WINDOWEVENT) idleGate.invalidate();
         }
     }
     float easeCamera() {
@@ -1665,10 +1671,8 @@ struct View {
         for (auto& p:panels) { const float target=selection.output==p.layout.output ? 1.f:0.f; p.halo+=(target-p.halo)*std::min(1.f, cameraDt/.12f); }
         if (canvas) for (auto& w:canvas->windows) { const float target=canvas->haloTarget(w.name); w.halo+=(target-w.halo)*std::min(1.f, cameraDt/.12f); }
     }
-    bool draw(float cameraDt, int w, int h) {
-        easeHalos(cameraDt);
+    bool draw(int w, int h) {
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-        environment->update(monotonicSeconds());
         // The spectator render queues ahead of the stereo scene, so both must finish before the flip;
         // they are timed one after the other and summed for the latch margin.
         presentSpectator(w, h);
@@ -1712,12 +1716,14 @@ struct View {
         if (!latchWork.empty()) { auto ranked=latchWork; std::sort(ranked.begin(), ranked.end()); workP99=ranked[(ranked.size()-1)*99/100]; }
         const double now=monotonicSeconds(); lastFrameMs=(now-frameStarted)*1000; frameTimes.push_back(lastFrameMs);
         if (output) { const unsigned missedNow=output->missedVblanks(); if (missedNow>seenMisses) { missPenalty.miss(now, missedNow-seenMisses); seenMisses=missedNow; } }
-        if (reportDue || now-reportTime>=5) { reportDue=false; report(now); }
+        maybeReport(now);
         if (smoke && drawn>=10 && (canvas ? canvas->smokeDone() : std::all_of(panels.begin(), panels.end(), [](const Panel& p){ return !p.capture || p.frames>=10; }))) running=false;
     }
+    void maybeReport(double now) { if (reportDue || now-reportTime>=5) { reportDue=false; report(now); } }
     void report(double now) {
         std::sort(workTimes.begin(), workTimes.end()); std::sort(frameTimes.begin(), frameTimes.end());
-        const double workP95=workTimes[workTimes.size()*95/100], frameP95=frameTimes[frameTimes.size()*95/100];
+        // A window of only skipped frames has no work samples.
+        const double workP95=workTimes.empty()?0:workTimes[workTimes.size()*95/100], frameP95=frameTimes.empty()?0:frameTimes[frameTimes.size()*95/100];
         const bool gpu=!gpuCaptureTimes.empty() && gpuCaptureTimes.size()==gpuSceneTimes.size() && gpuSpectatorTimes.size()==gpuSceneTimes.size();
         if (gpu) { std::sort(gpuCaptureTimes.begin(), gpuCaptureTimes.end()); std::sort(gpuSpectatorTimes.begin(), gpuSpectatorTimes.end()); std::sort(gpuSceneTimes.begin(), gpuSceneTimes.end()); }
         const double gpuCaptureP95=gpu?gpuCaptureTimes[gpuCaptureTimes.size()*95/100]:0;
@@ -1727,13 +1733,14 @@ struct View {
         printPerformance(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
         writeStats(now, workP95, frameP95, gpu, gpuCaptureP95, gpuSpectatorP95, gpuSceneP95, missed);
         if (canvas) for (auto& w:canvas->windows) w.reportFrames=w.stageReportFrames=0;
-        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; skyCulled=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
+        missedBaseline=missed; reportTime=now; reportFrames=0; workMax=0; skyCulled=0; idleGate.skipped=0; workTimes.clear(); frameTimes.clear(); gpuCaptureTimes.clear(); gpuSpectatorTimes.clear(); gpuSceneTimes.clear();
     }
     void printPerformance(double now, double workP95, double frameP95, bool gpu, double gpuCaptureP95, double gpuSpectatorP95, double gpuSceneP95, unsigned missed) const {
         std::cout << "Performance: " << reportFrames/(now-reportTime) << " present fps, work p95 " << workP95 << " ms, work max " << workMax << " ms, frame p95 " << frameP95 << " ms";
         if (gpu) std::cout << ", gpu capture p95 " << gpuCaptureP95 << " ms, gpu spectator p95 " << gpuSpectatorP95 << " ms, gpu scene p95 " << gpuSceneP95 << " ms";
         if (spectator) std::cout << ", spectator " << governor.name();
         std::cout << ", sky skipped " << skyCulled << " eye draws";
+        if (idleGate.enabled) std::cout << ", idle skipped " << idleGate.skipped << " frames";
         if (output) std::cout << ", missed vblanks " << missed-missedBaseline << " (" << missed << " session)";
         std::cout << std::endl;
         if (canvas) { printBudget(); printWindowCaptures(now); }
@@ -1826,6 +1833,7 @@ struct View {
         stats << ",\"spectatorRate\":" << std::quoted(governor.name()) << ",\"skyCulledEyeDraws\":" << skyCulled;
         stats << ",\"power\":{\"batterySaver\":" << (power.enabled?"true":"false") << ",\"onBattery\":" << (power.battery?"true":"false")
               << ",\"active\":" << (power.active()?"true":"false") << ",\"captureCapHz\":" << (power.active()?power::captureCapHz:0) << "}";
+        stats << ",\"idleFrames\":" << (idleGate.enabled?"true":"false") << ",\"idleSkipped\":" << idleGate.skipped;
         if (output) stats << ",\"refreshHz\":" << output->refreshHz() << ",\"missedVblanks\":" << missed << ",\"missedVblanksWindow\":" << missed-missedBaseline;
         if (canvas) writeCanvasStats(stats);
         stats << ",\"captures\":[";
@@ -1872,12 +1880,67 @@ struct View {
         gpuTimers.probe();
         missedBaseline=output?output->missedVblanks():0; seenMisses=missedBaseline;
         lastMarginMs=latchMarginMs(0, gpuP99);
+        // The scanout (direct) or the compositor (windowed) keeps showing the last buffer.
+        const char* idleEnv=std::getenv("OMARCHY_XR_IDLE_FRAMES");
+        idleGate.enabled=!smoke && !(idleEnv && std::string_view(idleEnv)=="0");
+        std::cout << "Idle frames: " << (idleGate.enabled ? "skipped while the image is unchanged" : "off") << std::endl;
         // Optional, live-reloaded stabilisation settings; see tracking::Prediction.
         trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
         describePrediction("defaults");
         gazePath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"gaze.tsv").string();
         powerPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"power.tsv").string();
         describeGaze("defaults");
+    }
+    // What the next frame would show (idle_frames.hpp): the view, the capture frames uploaded so far, a
+    // hash of everything else drawn, and whether something animates by time alone.
+    idle::Frame describeFrame(double now) const {
+        idle::Frame f;
+        const auto v=currentView();
+        f.view[0]=float(v.w); f.view[1]=float(v.x); f.view[2]=float(v.y); f.view[3]=float(v.z);
+        f.pan[0]=panX; f.pan[1]=panY; f.pan[2]=panZ;
+        idle::Hash state;
+        if (canvas) for (const auto& w:canvas->windows) { f.content+=w.frames; state.add(std::uint64_t(std::hash<std::string>{}(w.record.title))); }
+        else for (const auto& p:panels) f.content+=p.frames;
+        forEachSurface([&](const SurfaceView& s) {
+            const auto& l=*s.layout;
+            state.add(l.x, .01f).add(l.y, .01f).add(l.width, .01f).add(l.height, .01f).add(l.curvature).add(l.brightness, .1f)
+                 .add(s.texture).add(s.width).add(s.height).add(s.status && s.status->empty()).add(s.halo).add(s.visible).add(s.alpha);
+        });
+        const auto c=sceneCylinder();
+        state.add(c.cx, .01f).add(c.cy, .01f).add(c.span).add(c.distance);
+        int w=0, h=0; drawable(w, h); state.add(w).add(h);
+        for (float channel:accent.rgb) state.add(channel);
+        state.add(xrCursor.valid).add(std::uint64_t(std::hash<std::string>{}(xrCursor.window))).add(xrCursor.px, .25f).add(xrCursor.py, .25f);
+        state.add(std::uint64_t(environment->revision())).add(notificationHud ? notificationHud->count() : 0);
+        f.state=state.value;
+        f.animating=cameraMoving() || panCamera || panGestureActive || now<recenterUntil || now<interactionUntil || promptShown || tracking.spectator>=0 || monitorHelpOpen || monitorHelpAlpha>0
+            || (notificationHud && notificationHud->visible()) || environment->loadingImage() || (canvas && canvas->animating(now));
+        f.ambient=environment->ambientPeriod();
+        return f;
+    }
+    // An unchanged frame: no draw and no flip, the glasses keep the last buffer. Wait out this vblank as the
+    // flip would have, uploading captures meanwhile, so the next tick samples at its latch deadline again.
+    // The wait extrapolates the nominal refresh; the gate's keepalive flips at least once a second, which
+    // bounds the drift from a 59.94 Hz panel reported as 60.
+    void skipFrame() {
+        if (output) output->skip();
+        const auto hz=output ? output->refreshHz() : windowRefreshHz();
+        const auto nowUs=[]{ return static_cast<std::uint64_t>(monotonicSeconds()*1e6); };
+        const auto next=output && hz ? vblankAnchorUs(output->lastVblankUs(), nowUs(), hz)+1000000ull/hz : nowUs()+1000000ull/std::max(hz, 1u);
+        while (!interrupted) {
+            const auto now=nowUs();
+            if (now>=next) break;
+            updateCaptures();
+            const timespec step{0, long(std::min<std::uint64_t>(next-now, 2000)*1000)};
+            nanosleep(&step, nullptr);
+        }
+        maybeReport(monotonicSeconds());
+    }
+    // Windowed, a skipped frame waits one refresh of the window's display (60 Hz when unknown).
+    unsigned windowRefreshHz() const {
+        SDL_DisplayMode mode{};
+        const int index=window ? SDL_GetWindowDisplayIndex(window) : -1;
+        return index>=0 && SDL_GetCurrentDisplayMode(index, &mode)==0 && mode.refresh_rate>0 ? unsigned(mode.refresh_rate) : 60u;
     }
     bool tick() {
         const double frameStarted=monotonicSeconds();
@@ -1920,7 +1983,12 @@ struct View {
         updateCaptures();
         if (timeCapture) gpuTimers.end(GpuTimers::Capture);
         if (smoke && (result || SDL_GetTicks64()-started>15000)) { result=1; return false; }
-        if (!draw(cameraDt, w, h)) return false;
+        // Every tick: it streams a loading sky and reloads environment.tsv, drawn or not.
+        environment->update(workStarted);
+        // Halos ease every tick, so a selection change reaches the frame description.
+        easeHalos(cameraDt);
+        if (!idleGate.due(describeFrame(workStarted), workStarted)) { skipFrame(); return true; }
+        if (!draw(w, h)) return false;
         double workMs=(monotonicSeconds()-workStarted)*1000;
         if (!swapFrame(workMs)) return false;
         recordWork(workMs, frameStarted);
