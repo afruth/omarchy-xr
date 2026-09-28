@@ -2,7 +2,7 @@ import json,re,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'studio'))
-from input_settings import ACTION_IDS,DEFAULTS,conflicts,key,modifier,migrate,tsv,validate_controls,save_controls,load_controls
+from input_settings import ACTION_IDS,DEFAULT_KEYS,DEFAULTS,conflicts,key,modifier,migrate,tsv,validate_controls,save_controls,load_controls
 
 
 def settings(**keys):
@@ -83,6 +83,15 @@ class InputSettingsTests(unittest.TestCase):
         self.assertIsNotNone(table,'LAYER_ACTIONS table missing from xr-controls.lua')
         rows=re.findall(r'^\s*\{"(\w+)",key="([^"]*)"',table.group(1),re.M)
         self.assertEqual(rows,[(a,DEFAULTS['keys'][a]) for a in ACTION_IDS])
+
+    def test_profile_before_zoom_levels_moves_up_and_down(self):
+        old=dict(DEFAULTS,keys={a:k for a,k in DEFAULT_KEYS.items() if a not in ('zoom_level_in','zoom_level_out')})
+        old['keys'].update(overview='Up',focus='Down')
+        value=validate_controls(migrate(old))
+        self.assertEqual((value['keys']['zoom_level_in'],value['keys']['zoom_level_out']),('Up','Down'))
+        self.assertEqual((value['keys']['overview'],value['keys']['focus']),('',''))
+        custom=dict(old,keys=dict(old['keys'],overview='O'))
+        self.assertEqual(validate_controls(migrate(custom))['keys']['overview'],'O')  # a custom key stays
 
     def test_headset_help_knows_every_action(self):
         header=(ROOT/'src/help_keys.hpp').read_text()

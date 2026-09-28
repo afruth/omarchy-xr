@@ -18,8 +18,10 @@ ACTIONS=(
     ('grab','View','Grab (hold to carry the view)','G','both'),
     ('zoom_in','View','Zoom in','equal','both'),
     ('zoom_out','View','Zoom out','minus','both'),
-    ('overview','View','Overview / fit all','Up','both'),
-    ('focus','View','Focus the window you look at','Down','both'),
+    ('zoom_level_in','View','Zoom in a level (all → monitor → window)','Up','both'),
+    ('zoom_level_out','View','Zoom out a level (window → monitor → all)','Down','both'),
+    ('overview','View','Overview / fit all','','both'),
+    ('focus','View','Focus the window you look at','','both'),
     ('fill','View','Fill with the selected window','Return','both'),
     ('previous','Windows','Previous window','Left','both'),
     ('next','Windows','Next window','Right','both'),
@@ -152,10 +154,18 @@ def chord(value,action):
 
 
 def migrate(value):
-    """Profiles before the XR layer (version 1: fingers plus five CTRL+arrow chords) load as the defaults."""
+    """Profiles before the XR layer (version 1: fingers plus five CTRL+arrow chords) load as the defaults.
+    A v2 profile from before the zoom levels gets their default keys; Up and Down, the old overview and
+    focus defaults, move to them (a customised overview or focus key stays)."""
     if isinstance(value,dict) and value.get('version')!=2:
         fingers=value.get('fingers')
         return dict(DEFAULTS,keys=dict(DEFAULT_KEYS),fingers=3 if fingers==4 or fingers not in (3,5) else fingers)
+    if isinstance(value,dict) and isinstance(value.get('keys'),dict) and 'zoom_level_in' not in value['keys']:
+        keys=dict(value['keys'])
+        if keys.get('overview')=='Up':keys['overview']=''
+        if keys.get('focus')=='Down':keys['focus']=''
+        keys.setdefault('zoom_level_in',DEFAULT_KEYS['zoom_level_in']);keys.setdefault('zoom_level_out',DEFAULT_KEYS['zoom_level_out'])
+        return dict(value,keys=keys)
     return value
 
 

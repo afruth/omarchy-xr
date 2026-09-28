@@ -173,7 +173,7 @@ void run(View& v, const std::filesystem::path& directory) {
     assert(v.canvas->switcher.revealed && v.canvas->overlayOpen());
     still(v, directory, "switcher.png", Kind::Switcher);
     v.navigate({.verb=View::Verb::Switch, .begin=true, .output="cancel"}); assert(!v.canvas->switcher.active);
-    // Every XR key (all 29 actions with long chords), the search field keys and the mouse rows stay on the card.
+    // Every XR key (all 31 actions with long chords), the search field keys and the mouse rows stay on the card.
     namespace ov=canvas::overlay;
     helpkeys::Keys keys{"CTRL + ALT", {}};
     for (const auto& t:helpkeys::titles) keys.entries.push_back({t.id, "CTRL + ALT + SHIFT + Page_Down", true});

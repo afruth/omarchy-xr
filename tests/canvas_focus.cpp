@@ -140,9 +140,18 @@ void navigationInvariants(View& v) {
     step({V::FlickIn}); step({V::FlickOut});
     v.interactionUntil=0; step({.verb=V::FitOutput, .output="0x5007"});
 }
-// (b) Flick out fits every window into the view; flick in lands on a fresh dwell, else on the staged window.
+// The zoom levels out to Overview (window -> monitor frame -> all).
+void toOverview(View& v, int frames=120) {
+    for (int i=0;i<3 && !v.canvas->zoomedOut();++i) v.navigate({View::Verb::FlickOut});
+    assert(v.canvas->zoomedOut()); ease(v, frames);
+}
+// (b) Flick out steps window -> monitor frame -> Overview, which fits every window into the view; flick in lands
+// on a fresh dwell, else on the staged window, in the monitor frame first.
 void workAndOverview(View& v) {
     work(v);
+    const auto landed=v.canvas->landed;
+    v.navigate({View::Verb::FlickOut}); ease(v, 120);
+    assert(v.canvas->state==canvas::Scene::State::Work && v.canvas->framed && v.canvas->landed==landed);
     v.navigate({View::Verb::FlickOut}); ease(v, 120);
     assert(v.canvas->state==canvas::Scene::State::Overview);
     const float heading=View::headingDeg(v.currentView()), half=v.canvasFov().horizontal()/2;
@@ -154,8 +163,8 @@ void workAndOverview(View& v) {
     }
     const double now=monotonicSeconds();
     v.canvas->noteDwell("0x5003", now-1); v.navigate({View::Verb::FlickIn});
-    assert(v.canvas->state==canvas::Scene::State::Work && v.canvas->landed=="0x5003");
-    ease(v, 120); v.navigate({View::Verb::FlickOut}); ease(v, 120);
+    assert(v.canvas->state==canvas::Scene::State::Work && v.canvas->landed=="0x5003" && v.canvas->framed);
+    ease(v, 120); toOverview(v);
     v.canvas->noteDwell("0x5003", now-3); v.navigate({View::Verb::FlickIn});
     assert(v.canvas->landed=="0x5005");
     ease(v, 120);
@@ -176,7 +185,8 @@ void zoomAnchor(View& v) {
         assert(v.canvas->state==canvas::Scene::State::Overview);
     }
     v.gaze.current.reset(); ease(v, 60);
-    v.canvas->lastDwellAt=-1e9; v.navigate({View::Verb::FlickIn}); ease(v, 120);
+    v.canvas->lastDwellAt=-1e9; v.navigate({View::Verb::FlickIn}); v.navigate({View::Verb::FlickIn}); ease(v, 120);
+    assert(!v.canvas->framed);
     const float targetZoom=c.targetZoom;
     for (int i=0;i<10;++i) { v.navigate({View::Verb::ZoomBy, .3f}); ease(v, 30); panInsideRing(v); assert(c.targetZoom==targetZoom && std::abs(c.zoom-targetZoom)<2e-3f); }
     assert(v.canvas->depth<v.canvas->ring.radius-.5f);
@@ -199,9 +209,34 @@ void partlyVisible(View& v, const std::string& name) {
     v.canvas->cull(best, 20, pitch);
     assert(std::abs(v.canvas->visibleShare(*w)-.6f)<.1f);
 }
+// (b2) The XR zoom levels: Up steps Overview -> monitor frame -> window and stops there; Down steps back.
+// Previous/next keep the level: zoomed out they only select (focus, halo), framed and window levels land.
+void zoomLevels(View& v) {
+    using State=canvas::Scene::State;
+    toOverview(v);
+    const auto rotation=v.targetRotation; const float focus=v.canvas->camera.targetFocusX;
+    v.navigate({View::Verb::Cycle, 1.f});
+    const auto first=v.canvas->cycled;
+    assert(!first.empty() && v.canvas->zoomedOut() && v.selection.output==first && v.canvas->camera.targetFocusX==focus);
+    assert(std::abs(v.targetRotation.w-rotation.w)<1e-6 && std::abs(v.targetRotation.y-rotation.y)<1e-6);
+    v.navigate({View::Verb::Cycle, 1.f}); assert(!v.canvas->cycled.empty() && v.canvas->cycled!=first);   // the next one, not again
+    v.canvas->lastDwellAt=-1e9; v.navigate({View::Verb::FlickIn}); ease(v, 60);
+    assert(v.canvas->state==State::Work && v.canvas->framed);
+    const float framedZoom=v.canvas->camera.targetZoom, framedDepth=v.canvas->depth;
+    v.navigate({View::Verb::Cycle, 1.f}); ease(v, 60);
+    assert(v.canvas->state==State::Work && v.canvas->framed);
+    v.navigate({View::Verb::FlickIn}); ease(v, 60);
+    assert(v.canvas->state==State::Work && !v.canvas->framed && v.canvas->depth<=framedDepth && v.canvas->camera.targetZoom>=framedZoom);
+    const auto name=v.canvas->landed;
+    v.navigate({View::Verb::FlickIn}); assert(v.canvas->state==State::Work && !v.canvas->framed && v.canvas->landed==name);   // window is the last level
+    v.navigate({View::Verb::Cycle, 1.f}); ease(v, 60); assert(!v.canvas->framed && v.canvas->landed!=name);
+    v.navigate({View::Verb::FlickOut}); assert(v.canvas->framed);
+    v.navigate({View::Verb::FlickOut}); assert(v.canvas->zoomedOut());
+    ease(v, 60); assert(v.monitorMathCalls==0);
+}
 // (d) Focus follow moves the camera only for a mostly hidden window, and an explicit verb wins.
 void focusFollow(View& v) {
-    work(v); v.navigate({View::Verb::FlickOut}); ease(v, 120); v.interactionUntil=0;
+    work(v); toOverview(v); v.interactionUntil=0;
     auto rotation=v.targetRotation; auto focus=v.canvas->camera.targetFocusX;
     assert(v.canvas->visibleShare(*v.canvas->find("0x5007"))>=.9f);
     refocus(v, 0x5007);
@@ -354,7 +389,7 @@ std::optional<std::pair<float,float>> projectCentre(const View& v, const std::st
 // (i) Focusing a window at its centre (the hit a gaze confirm or Studio's Land on window gives) stages it at
 // its buffer centre; the camera stays. The windowed preview takes no clicks (docs/xr-controls-plan.md §6).
 void focusPath(View& v) {
-    v.navigate({View::Verb::FlickOut}); ease(v, 120);
+    toOverview(v);
     std::string name;
     for (const auto& w:v.canvas->windows) if (!w.gone && !w.staged) if (projectCentre(v, w.name)) { name=w.name; break; }
     assert(!name.empty());
@@ -915,7 +950,7 @@ void fillThreeCase(View& v) {
     assert(v.canvas->state==State::Work && w.rect.w==before.w && w.rect.h==before.h);
     v.canvas->applySnapshot(layout); w.pixelW=unsigned(before.w); w.pixelH=unsigned(before.h); w.sourceWidth=w.sourceHeight=0; w.sized=false;
     v.canvas->refresh(monotonicSeconds());
-    v.navigate({View::Verb::FlickIn}); assert(v.canvas->state==State::Fill);
+    v.navigate({View::Verb::Fill}); assert(v.canvas->state==State::Fill);
     ease(v, 120); panInsideRing(v);
     v.navigate({View::Verb::FlickOut});
     assert(v.canvas->state==State::Work && sameRect(w.rect, before) && sameLayout());
@@ -953,8 +988,7 @@ bool sameLayout(const canvas::Snapshot& a, const canvas::Snapshot& b) {
 }
 // (r) Arrange in Overview keeps windows in the band; undo and redo are exact.
 void arrangeUndo(View& v) {
-    work(v); v.navigate({View::Verb::FlickOut}); ease(v, 60);
-    assert(v.canvas->zoomedOut());
+    work(v); toOverview(v, 60);
     const std::pair<const char*, const char*> classes[]={{"0x5001", "firefox"}, {"0x5004", "code"}, {"0x5008", "firefox"}, {"0x5009", "code"}};
     for (const auto& [name, cls]:classes) v.canvas->findMutable(name)->record.cls=cls;
     const auto before=v.canvas->snapshot(); const float headingX=v.canvas->ring.unwrap(v.canvas->aimX);
@@ -1029,7 +1063,7 @@ void neighbourNudgeSummonPin(View& v) {
     for (int i=0;i<ups;++i) v.navigate({View::Verb::Undo});
     assert(sameRect(w.rect, r0) && v.canvas->history.undo.size()==undos);
     ease(v, 60);
-    v.navigate({View::Verb::FlickOut}); ease(v, 60);
+    toOverview(v, 60);
     const auto* mover=v.canvas->find("0x5003"); auto others=v.canvas->taken();
     std::erase_if(others, [](const auto& p) { return p.name=="0x5003"; });
     float free=-1;
@@ -1196,7 +1230,7 @@ void newWindowCues(View& v) {
 // press without motion is a click, and in Work a press never drags.
 void overviewDrag(View& v) {
     using V=View::Verb;
-    work(v); v.navigate({V::FlickOut}); ease(v, 120); assert(v.canvas->zoomedOut());
+    work(v); toOverview(v);
     auto& s=*v.canvas; const auto* w=s.find("0x5003"); assert(w && !w->pinned);
     const auto start=w->rect; const auto undos=s.history.undo.size();
     s.dragBegin("0x5003"); for (int i=0;i<3;++i) s.dragBy(400, 0);
@@ -1305,7 +1339,7 @@ void stagedNoneAtStart(View& v) {
 void flickInFocuses(View& v) {
     using V=View::Verb;
     for (const auto verb:{V::FlickIn, V::Fit}) {
-        v.navigate({V::FlickOut}); ease(v, 120); v.interactionUntil=0; assert(v.canvas->zoomedOut());
+        toOverview(v); v.interactionUntil=0;
         v.canvas->noteDwell("0x5004", monotonicSeconds());
         const auto serial=v.pointerSerial;
         v.navigate({verb});
@@ -1313,7 +1347,7 @@ void flickInFocuses(View& v) {
         assert(v.restageRequested=="0x5004" && v.canvas->stagedName=="0x5003");
         ease(v, 120); v.interactionUntil=0;
     }
-    v.navigate({V::FlickOut}); ease(v, 120);
+    toOverview(v);
     v.canvas->noteDwell("0x5001", monotonicSeconds()); v.gaze.current=hitOn(v, "0x5001", .25f, .5f);
     v.navigate({V::Fit}); v.gaze.current.reset();
     const auto* w=v.canvas->find("0x5001");
@@ -1384,7 +1418,7 @@ void stageDrag(View& v) {
     assert(w->rect.y==canvas::snap({0, start.y-3000*k2, 1, 1}).y && w->rect.cy()<-1.5f*s.metrics.rowHeight);
     assert(s.history.undo.size()==undos+1 && !v.dragHeld);
     ease(v, 60); v.navigate({View::Verb::Undo}); assert(sameRect(w->rect, start) && s.history.undo.size()==undos);
-    ease(v, 60); v.navigate({View::Verb::FlickOut}); ease(v, 60);
+    ease(v, 60); toOverview(v, 60);
     dragLine(v, 14, 5, 0, 0, true); dragLine(v, 15, 5, 200, 0, false);
     assert(sameRect(w->rect, start) && !v.dragHeld && s.dragName.empty());
     work(v); inRing(v);
@@ -1721,7 +1755,7 @@ int main() {
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
         v.primeCamera(); v.startCanvas();
         placedAndLanded(v); verbs(v); fadeAndPlace(v); reloadFile(v);
-        navigationInvariants(v); workAndOverview(v); zoomAnchor(v); focusFollow(v); dwellInWork(v);
+        navigationInvariants(v); workAndOverview(v); zoomAnchor(v); zoomLevels(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
         mailboxList(v); hoverV4(v); virtualCursor(v); focusPath(v); stageSourceFallback(v); stageRegion(v);
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);

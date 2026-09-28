@@ -344,7 +344,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 29 || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 31 || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;

@@ -210,13 +210,14 @@ keys actually bound, so it always matches your settings. These are the defaults:
 | **XR+Space** | Recenter. |
 | **XR+G**, held | Grab: the scene follows your head while you hold it and stays where it is when you let go, so looking at a window, holding XR+G and turning back to straight ahead brings that window to the front. Head pitch also scrolls the cylinder. The grab ends on release, on a second press, on any other XR action, when tracking goes stale or after 30 s. |
 | **XR+=** / **XR+-** | Zoom in / out one step; repeats while held. |
-| **XR+/** | Search your windows by title, class or kind (browser, terminal, editor, …). After you zoom out to Overview (XR+Up or a flick out) you can also just start typing: the search field opens with it. |
+| **XR+/** | Search your windows by title, class or kind (browser, terminal, editor, …). After you zoom out to Overview (XR+Down or a flick out) you can also just start typing: the search field opens with it. |
 | type, **↑/↓**, **Tab/Shift+Tab** | Filter and move the selection; the camera follows the best match and the other windows dim. |
 | **Enter** / **Shift+Enter** | Land on the selection / summon it next to you first. A window that is not on the canvas yet is marked *bring to canvas* and is brought over. |
 | **Ctrl+1…8** | Land on that row of the results. |
 | **Esc** | Clears the text; a second Esc closes the search and puts the camera and focus back where they were. An open help closes first. |
-| **XR+Up** | Overview on and off. Leaving the Overview lands on and focuses the window you look at. |
-| **XR+Down** or a **three-finger tap** | Focus the window you look at: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
+| **XR+Up** | Zoom in a level: from the Overview to the window you look at in a monitor-sized frame, then to that window filling the view. Zooming in focuses it: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
+| **XR+Down** | Zoom out a level: window → monitor frame → Overview (a filled window is restored first). |
+| **Three-finger tap** | Focus the window you look at without changing the zoom. |
 | **XR+Return** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, XR+Return focuses the window you look at first and then fills it. |
 | **XR+Left** / **XR+Right** | Land on the previous / next window in ring order, wrapping from the last to the first; every landing brings its window to eye level. Windows above or below are reached by scrolling or the search. |
 | **XR+Shift+wheel** | Scroll the cylinder up or down, a fifth of the view per notch. |
@@ -260,9 +261,8 @@ search is open.
 Looking at a window **selects** it: after a short dwell (500 ms of steady gaze) it gets the halo, and
 the search, Fill and nudges act on it. Looking never moves the keyboard or the pointer by itself, so a
 glance at another window does not steal your typing. To work in the window you look at, **confirm**:
-press **XR+Down** or, with a multitouch touchpad, tap it once with three fingers. The window is
-staged, raised and gets the keyboard, and the pointer goes to the point you are looking at. Leaving
-the Overview with a flick in or XR+Up confirms the window you land on the same way.
+zoom in with **XR+Up** (or a flick in), or, with a multitouch touchpad, tap it once with three fingers. The window is
+staged, raised and gets the keyboard, and the pointer goes to the point you are looking at.
 
 For the first three windows you dwell on in a session, a small hint under the window's label says
 which key confirms ("Ctrl+Alt+Down or a three-finger tap to focus", with your configured chord). It
@@ -295,12 +295,12 @@ stops after your first confirm.
   recenters and moves the pointer back to the laptop screen, like XR+Home. A swipe cancels a pending
   tap.
 - The windowed preview and the spectator take no clicks. Studio's **Land on window** confirms like
-  XR+Down.
+  zooming in with XR+Up.
 
 ## Troubleshooting
 
-- **I can look at windows but not type or click**: looking only selects; press XR+Down
-  (Ctrl+Alt+Down by default) or tap once with three fingers. After it, `pose.sock.controls.hover` in the
+- **I can look at windows but not type or click**: looking only selects; zoom in with XR+Up
+  (Ctrl+Alt+Up by default) or tap once with three fingers. After it, `pose.sock.controls.hover` in the
   runtime directory shows `v4 … 1 0x…` (the window address) and `viewer.log` shows `Canvas: confirm 0x…`
   and `Canvas: land on …`. When the confirm is logged but the pointer does not move, the controls are
   older than this release: reinstall them.
@@ -328,7 +328,7 @@ stops after your first confirm.
   none (so it never grabs the keyboard unasked): press XR+/.
 - **ALT+TAB, SUPER+TAB, SUPER+arrows or SUPER+wheel do Omarchy's thing during a canvas session**:
   expected, the canvas no longer takes them over. Use XR+Left/Right or the search to change windows,
-  XR+Up for the Overview and XR+Shift+wheel or XR+Page_Up/Page_Down to scroll.
+  XR+Down for the Overview and XR+Shift+wheel or XR+Page_Up/Page_Down to scroll.
 - **The view keeps turning with my head**: a grab is running (XR+G or the XR+middle button). It ends
   on release, on a second press, on any other XR action or after 30 s.
 - **A window vanished above or below the view**: the cylinder has no top or bottom row, and

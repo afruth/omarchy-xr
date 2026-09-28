@@ -45,7 +45,8 @@ void exerciseFocus(View& view, const std::string& pose) {
 
 // XR layer keys in the monitor scene (docs/xr-controls-plan.md §5.3-5.4): focus frames the gazed window's pane
 // (at once when the pane already holds the look point, else once the adapter publishes it, else the monitor);
-// previous/next frame the pane the adapter published with them; fill frames the gazed monitor.
+// previous/next show the pane the adapter published with them at the current zoom level; Up/Down step the
+// levels; fill frames the gazed monitor.
 void exerciseLayerKeys(View& view, const std::string& pose) {
     int seq=10;
     const auto pane=[&](const std::string& body) {
@@ -69,13 +70,31 @@ void exerciseLayerKeys(View& view, const std::string& pose) {
     view.fit();look("OMXR-left",50,1000);view.monitorKey(18,"");
     view.steerPaneWait(monotonicSeconds()+.6);
     assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-left");         // nothing came: the monitor
-    // Previous/next: the pane arrives with the code (same update) or is the last one after 0.5 s.
+    // Previous/next keep the zoom level. The pane arrives with the code (same update) or is the last one after
+    // 0.5 s. All monitors: only the selection moves; the camera stays.
     view.fit();pane("OMXR-right 0 0 1920 1080");
+    const auto overviewRotation=view.targetRotation;const float overviewZ=view.targetPanZ;
     assert(view.controls->paneChanged);view.monitorKey(22,"next");
-    assert(view.level==View::Level::Pane && view.selection.output=="OMXR-right");
-    view.fit();view.controls->update();assert(!view.controls->paneChanged);
-    view.monitorKey(22,"prev");assert(view.level==View::Level::Overview);
-    view.steerPaneWait(monotonicSeconds()+.6);assert(view.level==View::Level::Pane && view.levelOutput=="OMXR-right");
+    assert(view.level==View::Level::Overview && view.selection.output=="OMXR-right" && view.targetPanZ==overviewZ);
+    assert(std::abs(view.targetRotation.w-overviewRotation.w)<1e-9 && std::abs(view.targetRotation.y-overviewRotation.y)<1e-9);
+    view.controls->update();assert(!view.controls->paneChanged);
+    view.monitorKey(22,"prev");view.steerPaneWait(monotonicSeconds()+.6);assert(view.level==View::Level::Overview);
+    // Monitor level: the next window is centred at the zoom that fits its monitor, even off the monitor centre.
+    view.fitOutput("OMXR-left");const float monitorDepth=view.focusDepth;
+    pane("OMXR-right 100 50 800 600");view.monitorKey(22,"next");
+    assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-right" && std::abs(view.focusDepth-monitorDepth)<1e-4f);
+    assert(std::abs(view.focusX-(500-960)/900.f)<1e-4f && std::abs(view.focusY-(540-350)/900.f)<1e-4f);
+    // Window level: the next window is fitted.
+    view.fitPane();assert(view.level==View::Level::Pane);
+    pane("OMXR-left 1000 500 900 580");view.monitorKey(22,"next");
+    assert(view.level==View::Level::Pane && view.levelOutput=="OMXR-left" && view.focusDepth<monitorDepth);
+    // Up/Down (codes 30/31): all -> the gazed monitor -> the gazed window (focused), and back.
+    view.fit();look("OMXR-left",1200,700);view.sceneKey(30,"");
+    assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-left");
+    serial=view.pointerSerial;view.sceneKey(30,"");
+    assert(view.pointerSerial==serial+1 && view.level==View::Level::Pane && view.levelOutput=="OMXR-left");   // the pane holds the look point
+    view.sceneKey(31,"");assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-left");
+    view.sceneKey(31,"");assert(view.level==View::Level::Overview);
     // Fill: the adapter maximized the window; the camera frames the gazed monitor.
     look("OMXR-left",10,10);view.monitorKey(10,"");
     assert(view.level==View::Level::Monitor && view.levelOutput=="OMXR-left");

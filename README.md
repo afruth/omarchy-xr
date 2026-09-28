@@ -201,7 +201,7 @@ that same origin; its sweep is capped at 160° to prevent folding. Bending prese
 horizontal arc length and the panel's center/tangent. Height remains unchanged.
 
 Head rotation changes the view, not the workspace anchor. Zoom (XR+= / XR+-, XR+wheel)
-changes the viewing distance. XR+Up fits the workspace; XR+Space centers the selected monitor
+changes the viewing distance. XR+Down steps out to the whole workspace; XR+Space centers the selected monitor
 while preserving viewing distance. Curvature-aware separation also limits how close you can zoom; panel surfaces
 and borders stay apart.
 
@@ -617,10 +617,10 @@ Studio (see below); the design is in [`docs/xr-controls-plan.md`](docs/xr-contro
 | XR+Space | recenter | recenter |
 | XR+G (hold) | grab: the scene follows your head while held and stays where you leave it, a quick way to bring any window to the front | same; head pitch also scrolls the cylinder |
 | XR+= / XR+- (repeat) | zoom in / out | zoom in / out |
-| XR+Up | fit every monitor | Overview on/off |
-| XR+Down | fit and focus the window you look at | focus the window you look at |
+| XR+Up | zoom in a level: all monitors → the monitor you look at → the window you look at, focused | zoom in a level: Overview → the window in a monitor-sized frame → the window filling the view, focused |
+| XR+Down | zoom out a level: window → its monitor → all monitors | zoom out a level (Fill restores first) |
 | XR+Return | maximize the gazed monitor's window and fit that monitor | Fill / restore |
-| XR+Left / XR+Right | previous / next window across the XR monitors, camera follows | previous / next window around the ring |
+| XR+Left / XR+Right | previous / next window across the XR monitors at the current level: all monitors only select it, monitor level centres it at monitor zoom, window level fits it | previous / next window around the ring at the current level (Overview only selects) |
 | XR+/ | search every window; Enter brings up its workspace and fits it | search |
 | XR+Page_Up / Page_Down | — | scroll the cylinder |
 | XR+Shift+arrows, XR+, / XR+. (Shift: height) | — | nudge, resize by 100 px |
@@ -634,7 +634,7 @@ left-drag moves the window you work in and right-drag resizes it. "—" keys are
 in virtual monitors mode. **Super+1…0** keeps Omarchy's workspace switching and smoothly fits the XR
 monitor showing that workspace; gaze-driven focus never triggers a fit.
 
-XR+Down fits the window under your gaze with a 4% margin: the controls adapter focuses it and puts the
+XR+Up at monitor level fits the window under your gaze with a 4% margin: the controls adapter focuses it and puts the
 pointer at the look point, then the camera frames it (the monitor when no window is there, and in
 presentations without gaze pointer control). Selection follows headset direction, not eye movements.
 Zoom uses exponential, frame-rate-independent easing. Existing spacing safety limits still apply and
@@ -669,11 +669,11 @@ that target changes, XR selects the monitor's existing workspace once, without a
 dwell delay. Gaps, looking away, and stale tracking preserve the last selected monitor. Looking around within one
 monitor never repeats selection or steers the mouse. Mouse motion never changes
 the gaze target. Workspace selection uses normal Omarchy behavior, including any
-configured one-time cursor warp. XR+Down frames the window you look at on the selected monitor.
+configured one-time cursor warp. XR+Up at monitor level frames the window you look at on the selected monitor.
 Zoom approaches the looked-at point on that monitor along its local
 normal without changing the workspace bend. A zoom gesture keeps that first look
 point until pan, fit, or recenter. With no look hit, zoom uses the selected
-monitor center, then the workspace. XR+Up returns to the full workspace view.
+monitor center, then the workspace. XR+Down steps back out, to the monitor and then the full workspace view.
 
 There is no XR pointer reticle. The native desktop cursor is captured with the
 desktop, so its visible update rate depends on capture delivery. Requires `make install-controls` and
