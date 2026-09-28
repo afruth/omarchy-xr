@@ -77,7 +77,7 @@ class LaptopDisplayTests(unittest.TestCase):
             manager.spectator_enabled=True
             manager.set_laptop_off(True)
             manager.laptop.start.assert_not_called()
-            self.assertEqual(json.loads(manager.presentation_profile.read_text()),{'spectator':True,'laptopOff':True,'renderMode':'monitors'})
+            self.assertEqual(json.loads(manager.presentation_profile.read_text()),{'spectator':True,'laptopOff':True,'renderMode':'monitors','batterySaver':False})
             process=Mock();process.poll.return_value=None;process.pid=123
             manager.viewer=process;manager.direct=True;manager.stereo_active=True;manager.dedicated.output='DP-1'
             (self.root/'pose.sock.stats').write_text(json.dumps({'pid':123,'time':time.monotonic(),'fps':60}))
@@ -91,6 +91,28 @@ class LaptopDisplayTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'Start stereo'):manager.disable_laptop_display()
         finally:
             manager.viewer=None;manager.direct=False;manager.stereo_active=False;manager.lock.close()
+    def test_battery_saver_persists_and_reaches_the_renderer(self):
+        manager=Manager(self.root,'/unused',FakeHypr())
+        try:
+            self.assertEqual((self.root/'power.tsv').read_text(),'power-v1 0\n')
+            self.assertFalse(manager.status()['batterySaverEnabled'])
+            with self.assertRaisesRegex(ValueError,'on or off'):manager.set_battery_saver('yes')
+            manager.set_battery_saver(True)
+            self.assertEqual((self.root/'power.tsv').read_text(),'power-v1 1\n')
+            self.assertTrue(json.loads(manager.presentation_profile.read_text())['batterySaver'])
+            self.assertTrue(manager.status()['batterySaverEnabled'])
+        finally:
+            manager.lock.close()
+        # A new Studio session restores the saved choice and rewrites power.tsv from it.
+        (self.root/'power.tsv').unlink()
+        reopened=Manager(self.root,'/unused',FakeHypr())
+        try:
+            self.assertTrue(reopened.battery_saver_enabled)
+            self.assertEqual((self.root/'power.tsv').read_text(),'power-v1 1\n')
+            reopened.set_battery_saver(False)
+            self.assertEqual((self.root/'power.tsv').read_text(),'power-v1 0\n')
+        finally:
+            reopened.lock.close()
     def test_live_layout_apply_works_with_laptop_disabled(self):
         fake=FakeHypr();manager=Manager(self.root,'/unused',fake)
         manager.graphics_limits={'maxWidth':8192,'maxHeight':8192}

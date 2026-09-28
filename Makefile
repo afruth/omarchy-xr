@@ -19,7 +19,7 @@ UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking 
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
 	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
 	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns \
-	$(BUILD)/test-canvas-search
+	$(BUILD)/test-canvas-search $(BUILD)/test-power
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -140,6 +140,8 @@ $(BUILD)/test-region-turns.o: tests/region_turns.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-canvas-search.o: tests/canvas_search.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-power.o: tests/power.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(UNIT_LIBS)
@@ -172,6 +174,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-capture-governor
 	./$(BUILD)/test-region-turns
 	./$(BUILD)/test-canvas-search
+	./$(BUILD)/test-power
 
 check: all run-units
 	lua tests/controls.lua

@@ -103,6 +103,7 @@ Item {
     property bool directOutput: false
     property bool stereoOutput: false
     property bool laptopOffEnabled: false
+    property bool batterySaverEnabled: false
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
     property string spectatorSkipped: ""
@@ -183,6 +184,7 @@ Item {
             canImportEnvironment: canImportEnvironment,
             workspaceDegrees: workspaceDegrees, workspaceFollow: workspaceFollow,
             laptopOffEnabled: laptopOffEnabled,
+            batterySaverEnabled: batterySaverEnabled,
             laptopDisplay: laptopDisplay,
             spectatorEnabled: spectatorEnabled,
             performance: performance,
@@ -448,6 +450,7 @@ Item {
                     root.spectatorEnabled = !!response.spectatorEnabled;
                     root.spectatorSkipped = response.spectatorSkipped || "";
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
+                    root.batterySaverEnabled = !!response.batterySaverEnabled;
                     if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
                         root.laptopDisplay = response.laptopDisplay;
                     if (replyAction !== "status" || !response.ok)
@@ -1157,6 +1160,43 @@ Item {
                                         helpText: "Show every key as text in a terminal"
                                         onClicked: root.openSetupTerminal(["sh", "-c", "printf '%s\\n' \"$1\" | less", "omarchy-xr-keys", root.cheatSheet()])
                                     }
+                                }
+                            }
+                            Disclosure {
+                                title: "Battery"
+                                helpText: "Lower the capture load while your computer runs on battery"
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        text: "Battery saver"
+                                        Layout.fillWidth: true
+                                        helpText: "On battery, captures run at most 30 fps and the window canvas uses half its capture budget. Full rates return on external power"
+                                    }
+                                    Ui.ToggleSwitch {
+                                        checked: root.batterySaverEnabled
+                                        busy: root.busy
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.CheckBox
+                                        Accessible.name: "Battery saver"
+                                        Accessible.checked: checked
+                                        enabled: root.loaded && !root.busy
+                                        Keys.onSpacePressed: if (enabled) toggled()
+                                        Accessible.onToggleAction: if (enabled) toggled()
+                                        onToggled: root.send("set_battery_saver", !root.batterySaverEnabled)
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            color: "transparent"
+                                            border.width: parent.activeFocus ? 1 : 0
+                                            border.color: Color.accent
+                                            radius: Style.cornerRadius
+                                        }
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: root.batterySaverEnabled && !!root.performance.power
+                                    text: root.performance.power && root.performance.power.active ? "Active: on battery, captures at most 30 fps" : "Waiting: on external power"
                                 }
                             }
                             Disclosure {

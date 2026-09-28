@@ -219,8 +219,13 @@ public:
         if(!memoryPath.empty()) memory.load(memoryPath);
     }
     void configureGovernor() {
-        governor.budget.setMpix=settings.captureBudgetMpix; governor.budget.refreshHz=settings.refreshHz; governor.maxHz=unsigned(settings.fps);
+        governor.budget.setMpix=settings.captureBudgetMpix*powerBudget; governor.budget.refreshHz=settings.refreshHz;
+        governor.maxHz=powerMaxHz ? std::min(unsigned(settings.fps), powerMaxHz) : unsigned(settings.fps);
     }
+    // Battery saver (power.hpp): a top rate (0 = none) and a share of the Studio budget, over canvas.tsv.
+    unsigned powerMaxHz=0;
+    double powerBudget=1;
+    void setPowerCap(unsigned maxHz, double budgetShare) { powerMaxHz=maxHz; powerBudget=budgetShare; configureGovernor(); }
     bool connect(std::string& error) {
         if(offline) return true;
         hub=std::make_unique<WindowCaptureHub>();
