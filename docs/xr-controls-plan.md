@@ -73,6 +73,7 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 | `notification_next` | XR + `SHIFT + N` | Cycle the stack | same | gesture only (mode 7) |
 | `pointer_home` | XR + `Home` | Pointer to the laptop screen's centre | same | double-tap gesture only |
 | `help` | XR + `H` | Help overlay listing the current keys | same | canvas F1 in the search field only |
+| `stats` | XR + `` ` `` | Performance card: frames, display, timing, captures, CPU/GPU, battery, saver, tracking | same | — |
 
 "—" actions are not bound in virtual monitors mode (the key passes through to applications).
 
@@ -157,6 +158,7 @@ both scenes**, and the renderer's `sceneKey(mode, token)` gives it the scene's m
 | 22 | `previous` / `next` | `prev` / `next` | frame the pane Lua published (§5.4) | ring order, wrapping |
 | 26 | `grab` | `begin` / `end` | §5.7 | §5.7 |
 | 27 / 28 | `undo` / `redo` | — | — | undo / redo |
+| 29 | `stats` | — | performance card (renderer only) | performance card |
 
 `pointer_home` stays in Lua (`releasePointer()`, now for any XR monitor). In virtual monitors mode Lua
 runs `fill`, `previous`/`next` and `search` itself first (maximize, focus and pane, window list) and then

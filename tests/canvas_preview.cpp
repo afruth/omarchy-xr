@@ -122,6 +122,25 @@ void still(View& v, const std::filesystem::path& directory, const char* name, Ki
     assertOverlay(v, pixels, kind, name); assertEyesDiffer(pixels);
     screenshot(directory/name, pixels);
 }
+// The performance card (the `stats` key, code 29): head-locked at the upper left, lit in both eyes.
+void statsStill(View& v, const std::filesystem::path& directory) {
+    v.sceneKey(29, ""); assert(v.statsOpen);
+    v.statsSampledAt-=1.5; v.sampleStats(monotonicSeconds());
+    assert(v.statsRows.size()>=7 && v.statsRows[0].label=="Frames");
+    const auto pixels=settle(v);
+    assert(v.statsRaster.texture && v.statsRaster.height>200);
+    const auto scene=overlayScene(v);
+    canvas::OverlayQuad q; q.centre=notifications::space::add(scene.eye, v.statsPlace.wanted(scene, 1));
+    q.width=2*std::tan(9*canvas::overlay::degrees); q.height=q.width*float(v.statsRaster.height)/float(v.statsRaster.width);
+    for(int eye=0;eye<2;++eye) {
+        const auto box=projected(v, q, eye);
+        const double lit=visible(pixels, box);
+        std::cout << "stats.png eye " << eye << ": " << int(lit*100) << "% of the card region lit\n";
+        assert(box.x0<eye*width+width/2 && box.y0>height/2 && lit>.5);
+    }
+    screenshot(directory/"stats.png", pixels);
+    v.sceneKey(29, ""); assert(!v.statsOpen && !v.statsRaster.texture);
+}
 // The staged window's centre in the left eye is lit (Fill has no overlay of its own).
 void fillStill(View& v, const std::filesystem::path& directory) {
     v.navigate({View::Verb::Fill});
@@ -154,7 +173,7 @@ void run(View& v, const std::filesystem::path& directory) {
     assert(v.canvas->switcher.revealed && v.canvas->overlayOpen());
     still(v, directory, "switcher.png", Kind::Switcher);
     v.navigate({.verb=View::Verb::Switch, .begin=true, .output="cancel"}); assert(!v.canvas->switcher.active);
-    // Every XR key (all 28 actions with long chords), the search field keys and the mouse rows stay on the card.
+    // Every XR key (all 29 actions with long chords), the search field keys and the mouse rows stay on the card.
     namespace ov=canvas::overlay;
     helpkeys::Keys keys{"CTRL + ALT", {}};
     for (const auto& t:helpkeys::titles) keys.entries.push_back({t.id, "CTRL + ALT + SHIFT + Page_Down", true});
@@ -166,6 +185,7 @@ void run(View& v, const std::filesystem::path& directory) {
     v.navigate({View::Verb::Help}); assert(v.canvas->helpOpen);
     still(v, directory, "help.png", Kind::Help);
     v.navigate({View::Verb::Help}); assert(!v.canvas->helpOpen);
+    statsStill(v, directory);
     fillStill(v, directory);
     v.navigate({View::Verb::Pin}); assert(v.canvas->pinnedCount()==1 && v.canvas->find("0x5005")->pinned);
     still(v, directory, "pinned.png", Kind::Pinned);

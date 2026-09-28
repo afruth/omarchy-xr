@@ -16,7 +16,7 @@ local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=t
 -- Renderer action codes (.controls "fit" field). 8+ carry a token; the renderer gives each its meaning in the
 -- current scene (docs/xr-controls-plan.md §5.1), so the XR key layer publishes the same code in both modes.
 local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19,
-    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28}
+    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28, stats=29}
 local setHoverTimer, updateCanvas, releasePointer, installLayer, parseLayerSettings
 local layerModifier,layerKeys
 local fingers=3
@@ -1088,6 +1088,7 @@ local LAYER_ACTIONS={
     {"notification_next",key="SHIFT + N",notification=CANVAS_MODES.notify_next},
     {"pointer_home",key="Home",run=function() releasePointer() end},
     {"help",key="H",code=CANVAS_MODES.help},
+    {"stats",key="grave",code=CANVAS_MODES.stats},
 }
 local LAYER_BY_ID={}
 for _,action in ipairs(LAYER_ACTIONS) do LAYER_BY_ID[action[1]]=action end

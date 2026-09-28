@@ -19,7 +19,7 @@ UNIT_BINS = $(BUILD)/test-pixels $(BUILD)/test-curvature $(BUILD)/test-tracking 
 	$(BUILD)/test-capture-plan $(BUILD)/test-vblank $(BUILD)/test-load-governor $(BUILD)/test-sky-cull $(BUILD)/test-dwell \
 	$(BUILD)/test-frame-source $(BUILD)/test-canvas-model $(BUILD)/test-window-list $(BUILD)/test-canvas-placement \
 	$(BUILD)/test-canvas-memory $(BUILD)/test-capture-cadence $(BUILD)/test-capture-governor $(BUILD)/test-region-turns \
-	$(BUILD)/test-canvas-search $(BUILD)/test-power $(BUILD)/test-idle-frames
+	$(BUILD)/test-canvas-search $(BUILD)/test-power $(BUILD)/test-idle-frames $(BUILD)/test-perf-hud
 UNIT_OBJS = $(UNIT_BINS:%=%.o)
 
 .PHONY: all run check run-units check-san smoke clean install-studio studio compile_commands.json spike-canvas
@@ -144,6 +144,8 @@ $(BUILD)/test-power.o: tests/power.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
 $(BUILD)/test-idle-frames.o: tests/idle_frames.cpp | $(BUILD)
 	$(call compile_cxx,$<,$@,-Isrc)
+$(BUILD)/test-perf-hud.o: tests/perf_hud.cpp | $(BUILD)
+	$(call compile_cxx,$<,$@,-Isrc)
 
 $(UNIT_BINS): %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(UNIT_LIBS)
@@ -178,6 +180,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-canvas-search
 	./$(BUILD)/test-power
 	./$(BUILD)/test-idle-frames
+	./$(BUILD)/test-perf-hud
 
 check: all run-units
 	lua tests/controls.lua
@@ -352,7 +355,7 @@ check-preview: $(BUILD)/notification-preview $(BUILD)/image-diff
 # Canvas overlays (palette, switcher, radar, help, pinned window) in the real renderer: six stereo stills in
 # $(BUILD)/canvas-preview-out. A content smoke (lit overlay regions, distinct eyes, no GL error), not a
 # pixel baseline, so fonts and drivers never break it; check-preview stays the monitor-mode pixel gate.
-CANVAS_PREVIEW_STILLS = overview search switcher help fill pinned
+CANVAS_PREVIEW_STILLS = overview search switcher help stats fill pinned
 $(BUILD)/canvas-preview: tests/canvas_preview.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
 check-canvas-preview: $(BUILD)/canvas-preview

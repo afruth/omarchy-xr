@@ -44,6 +44,7 @@ struct Gate {
     bool haveDrawn=false;
     double drawnAt=0, holdUntil=0;
     unsigned skipped=0;   // skipped since the last report
+    std::uint64_t skippedTotal=0;
 
     // True when the frame has to be drawn; the caller then draws and presents it.
     bool due(const Frame& f, double now) {
@@ -55,7 +56,7 @@ struct Gate {
         // costs one frame per blink).
         if (f.content!=drawn.content) return take(f, now, false);
         if (now<holdUntil || now-drawnAt>=settings.keepalive || (f.ambient>0 && now-drawnAt>=f.ambient)) return take(f, now, false);
-        ++skipped;
+        ++skipped; ++skippedTotal;
         return false;
     }
     // A forced frame (a new lease, a scene switch) draws and restarts the hold.
