@@ -1,8 +1,22 @@
 #pragma once
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 struct ScalePass { unsigned width = 0, height = 0; };
+
+// The GPU copy of a native buffer for a demand (the projected size with 1.25 headroom, in a bucket):
+// the native buffer halved k times, the largest k that keeps it at or above the demand without its
+// headroom, so it never falls below screen density. Exact halvings are box filters; a copy at the
+// demand itself ended in a bilinear blit by a ratio like 0.93 or 0.75, which smeared one-pixel glyph
+// strokes before the scene sampled them (docs/architecture.md, "Text crispness").
+inline std::pair<unsigned, unsigned> captureCopySize(unsigned nativeW, unsigned nativeH, unsigned demandW, unsigned demandH) {
+    nativeW = std::max(1u, nativeW); nativeH = std::max(1u, nativeH);
+    int k = 0;
+    while (k < 16 && (nativeW >> (k + 1)) && (nativeH >> (k + 1)) &&
+           (nativeW >> (k + 1)) * 1.25f >= demandW && (nativeH >> (k + 1)) * 1.25f >= demandH) ++k;
+    return {nativeW >> k, nativeH >> k};
+}
 
 // Halve until the source is within 2× of the destination, then finish at the exact size.
 inline std::vector<ScalePass> scalePasses(unsigned sourceWidth, unsigned sourceHeight, unsigned destWidth, unsigned destHeight) {

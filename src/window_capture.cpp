@@ -269,6 +269,7 @@ void WindowCapture::Impl::import(Lane& l,int index,CapturedFrame& frame){
     if(l.gpuMode){
         frame.sourceWidth=nativeW;frame.sourceHeight=nativeH;frame.width=w;frame.height=h;
         frame.texture=l.gpu->present(w,h,l.inverted());
+        if(frame.texture){frame.width=l.gpu->scaledWidth;frame.height=l.gpu->scaledHeight;}   // panel::captureSize
         frame.rgba.clear();
     }else l.copyShm(frame,w,h);
     transport=l.gpuMode?"dmabuf":"shm";
@@ -320,6 +321,7 @@ bool WindowCapture::Impl::rebakeShown(CapturedFrame& frame,unsigned maxW,unsigne
         const auto [w,h]=fit(l.gpu->width(),l.gpu->height(),maxW,maxH);
         frame.sourceWidth=l.gpu->width();frame.sourceHeight=l.gpu->height();frame.width=w;frame.height=h;
         frame.texture=l.gpu->present(w,h,l.gpu->invertY,true);frame.rgba.clear();
+        if(frame.texture){frame.width=l.gpu->scaledWidth;frame.height=l.gpu->scaledHeight;}
         return frame.texture!=0;
     }
     // The lane's next copy reuses its SHM buffer: while one is submitted the compositor may be

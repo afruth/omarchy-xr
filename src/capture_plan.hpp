@@ -4,7 +4,8 @@
 
 namespace adaptive {
 using targeting::Vec;
-struct Plan {bool visible=false;float scale=1;};
+// scale: the capture demand (density with 25% headroom, clamped); density: screen px per layout px.
+struct Plan {bool visible=false;float scale=1,density=0;};
 inline bool intersects(std::vector<Vec> polygon,float tx,float ty,float eye){
     // Clip each triangle against the shared stereo frustum plus a 10% margin.
     for(int plane=0;plane<5 && !polygon.empty();++plane){
@@ -37,7 +38,7 @@ inline Plan project(const PanelLayout& p,const spatial::Pose& pose,tracking::Qua
         result.visible=true;
         density=std::max({density,pixels(a,b,p.height/rows),pixels(c,d,p.height/rows),pixels(a,c,p.width/n),pixels(b,d,p.width/n)});
     }
-    result.scale=std::clamp(density*1.25f,1.f/32,1.f);return result; // 25% sampling headroom
+    result.density=density;result.scale=std::clamp(density*1.25f,1.f/32,1.f);return result; // 25% sampling headroom
 }
 struct Quality {
     float scale=1;double lowerSince=-1;

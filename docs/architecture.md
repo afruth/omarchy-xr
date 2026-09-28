@@ -179,6 +179,22 @@ sets; external power lifts both at once. Outputs are never recreated, and the st
 `captureCapHz`) and Studio shows whether the saver is active. `OMARCHY_XR_POWER_SUPPLY` replaces the
 sysfs directory for live tests.
 
+**Text crispness** (`src/panel_filter.hpp`, `captureCopySize` in `src/capture_scale.hpp`; measured by
+`make check-crispness`, `tests/crispness.cpp`). A capture's demand is its projected size with 25%
+headroom in a quality bucket. The GPU copy (`GpuCapture::present`) used to be that demand exactly, so
+the last scale pass was a bilinear blit by a ratio such as 0.93 (a canvas window at zoom 0.927) or 0.75
+(a fitted ultrawide), which smeared one-pixel glyph strokes; the scene then minified the copy
+trilinearly, blending toward the half-resolution mip. Both softened text (gradient energy 0.75–0.90 of
+a 4x4 supersampled reference). The copy is now the native buffer halved k times, the smallest share
+at or above the demand without its headroom (exact halvings are box filters), and `drawPanel` sets
+the texture's LOD bias from the panel's density (`adaptive::Plan::density`, carried in `SurfaceView`):
+0 up to 1.2 copy px per screen px, then down to −0.5 from 2. Against the old path the harness measures
++1.9 dB PSNR on average (up to +3.6 dB fitted ultrawide, +2.9 dB canvas window at Work), never worse,
+with the worst of eight sub-pixel offsets better too (no added shimmer). Anisotropic filtering and a
+second mip level measured no better. Copies are up to about 1.8x the pixels of the old demand-sized ones
+(our GPU only; the compositor already copies native buffers), and the governor's VRAM estimate counts
+them.
+
 **Idle frames.** The viewer skips the draw and the page flip while the image would not change
 (`src/idle_frames.hpp`); the glasses' scanout, or the compositor for the windowed view, keeps the last
 buffer. Each tick, after its updates, `describeFrame` gives the gate the view quaternion and pan, the sum

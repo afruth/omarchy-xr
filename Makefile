@@ -364,6 +364,14 @@ check-canvas-preview: $(BUILD)/canvas-preview
 	for s in $(CANVAS_PREVIEW_STILLS); do test -s $(BUILD)/canvas-preview-out/$$s.png || exit 1; done
 .PHONY: check-canvas-preview
 
+# Text crispness through the capture scale passes and the panel draw (tests/crispness.cpp): a table of
+# PSNR against a supersampled reference per filtering variant, crops in $(BUILD)/crispness.
+$(BUILD)/crispness: tests/crispness.cpp src/panel_filter.hpp src/capture_plan.hpp src/capture_scale.hpp src/curvature.hpp | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< -o $@ $(LDFLAGS) $(LDLIBS)
+check-crispness: $(BUILD)/crispness
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/crispness $(BUILD)/crispness-out
+.PHONY: check-crispness
+
 -include $(wildcard $(BUILD)/*.d)
 
 # Manual visuals and GPU timings: build/environment-preview OUT_DIR [PANORAMA_BMP]

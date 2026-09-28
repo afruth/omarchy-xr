@@ -10,6 +10,7 @@
 #include <drm_fourcc.h>
 #include "linux-dmabuf-client.h"
 #include "capture_scale.hpp"
+#include "panel_filter.hpp"
 #include <cstdlib>
 
 // Two compositor destinations, the panel texture, and two scratch images.
@@ -157,13 +158,16 @@ struct GpuCapture {
     // blit into a driver-tiled texture per new frame is cheaper than sampling the import two or
     // three times per rendered frame. OMARCHY_XR_DIRECT_SAMPLING restores the old path for A/B runs.
     bool directSampling=std::getenv("OMARCHY_XR_DIRECT_SAMPLING")!=nullptr;
-    // Returns the texture to display.
-    GLuint present(unsigned w,unsigned h,bool inverted,bool rebake=false){
+    // Returns the texture to display, sized by panel::captureSize for the demand w x h (scaledWidth,
+    // scaledHeight).
+    GLuint present(unsigned demandW,unsigned demandH,bool inverted,bool rebake=false){
         if(!rebake)invertY=inverted;
         const int source=capturePresentSlot(captureSlot,shownSlot,rebake);
         if(source<0 || !slots[source].nativeTexture) return 0;
         const unsigned sw=slots[source].width,sh=slots[source].height;
+        const auto [w,h]=panel::captureSize(sw,sh,demandW,demandH);
         if(directSampling && !inverted && w==sw && h==sh){
+            scaledWidth=sw;scaledHeight=sh;
             if(!rebake){shownSlot=source;captureSlot=-1;}
             glFlush();
             return slots[source].nativeTexture;
@@ -181,13 +185,10 @@ struct GpuCapture {
             flip=false;srcFbo=destFbo;cw=passes[i].width;ch=passes[i].height;
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER,0);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
-        // Quality buckets keep the copy 1.25-1.9x denser than the screen, so the scene always
-        // minifies it. One extra level lets trilinear filtering cover that range without shimmer,
-        // for a quarter of the base image in extra writes per new frame.
+        // The copy is up to about 2x denser than the screen; the scene samples it trilinearly with the
+        // LOD bias drawPanel sets from the panel's density.
         glBindTexture(GL_TEXTURE_2D,texture);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,1);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
+        panel::mipmaps();
         glFlush();
         if(!rebake){shownSlot=source;captureSlot=-1;}
         return texture;

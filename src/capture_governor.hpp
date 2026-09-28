@@ -1,5 +1,6 @@
 #pragma once
 #include "capture_cadence.hpp"
+#include "capture_scale.hpp"
 #include "window_list.hpp"
 #include <algorithm>
 #include <cmath>
@@ -252,7 +253,8 @@ struct Ladder {
         if(sum>=raiseBelow*budget.effective()*1e6) hotSince=now;
     }
     static double lanes(unsigned hz){ return hz>30 ? 2 : 1; }
-    static double textureBytes(const Input& w){ return 4.0*std::min(w.demandW,w.pixelW)*std::min(w.demandH,w.pixelH); }
+    // The presented copy (captureCopySize: a power-of-two share of the buffer) and its mip level.
+    static double textureBytes(const Input& w){ const auto [cw,ch]=captureCopySize(w.pixelW,w.pixelH,w.demandW,w.demandH); return 4*1.25*double(cw)*ch; }
     // VRAM estimate (§4.4): lanes × 2 GpuCapture slots × 4 B × native pixels plus the presented texture
     // (the staged window adds its two region lanes); idle windows keep a thumbnail, counted up front for
     // every window. In rank order, windows past the cap go idle; the staged window never does.
