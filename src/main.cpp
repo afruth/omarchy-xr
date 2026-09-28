@@ -14,6 +14,7 @@
 #include "targeting.hpp"
 #include "hover.hpp"
 #include "capture_plan.hpp"
+#include "panel_filter.hpp"
 #include "gpu_timers.hpp"
 #include "vblank.hpp"
 #include "load_governor.hpp"
@@ -60,6 +61,7 @@ struct Panel {
     unsigned sourceWidth=0,sourceHeight=0,cpuWidth=0,cpuHeight=0;
     bool visible=true;
     adaptive::Quality quality;
+    float density=0;   // the last projection's screen px per layout px
 };
 // Tessellate in horizontal strips so each monitor can have its own curvature.
 void surface(const spatial::Pose& pose, float x, float y, float w, float h, float offset) {
@@ -90,6 +92,8 @@ void drawPanel(const SurfaceView& s, const Cylinder& c) {
         const auto content=interaction::content(w,h,s.sourceWidth,s.sourceHeight);
         const float tw=content.width,th=content.height;
         glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s.texture);
+        // The copy is denser than the screen: bias trilinear sampling toward its full level (panel_filter.hpp).
+        if(s.density>0) glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_LOD_BIAS,panel::lodBias(float(s.width)/std::max(tw*900*s.density,1.f)));
         const float dim=s.status->empty()?1.f:.45f;
         glColor3f(p.brightness/100*dim,p.brightness/100*dim,p.brightness/100*dim);
         surface(pose,-tw/2,-th/2,tw,th,.01f);
@@ -271,7 +275,7 @@ struct View {
     // Every drawable surface in the current scene mode, in draw order.
     template<class F> void forEachSurface(F&& f) const {
         if (canvas) { canvas->forEachSurface(f); return; }
-        for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}});
+        for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}, p.density});
     }
     void bindTexture(GLuint texture) const { gltex::bind(texture); }
     // The windowed canvas keys (§5.8) for the title bar; --help lists them all.
@@ -1454,7 +1458,7 @@ struct View {
             const auto pose=monitorPose(l);
             const auto plan=adaptive::project(l, pose, view, {panX, panY, panZ}, std::max(1, viewportWidth/(stereo?2:1)), std::max(1, viewportHeight), fov, stereo?ipd/2000:0);
             p.visible=smoke || plan.visible;
-            const float scale=p.quality.update(plan.scale, cameraTime);
+            const float scale=p.quality.update(plan.scale, cameraTime); p.density=plan.density;
             if (p.capture) p.capture->setDemand(p.visible, std::max(1u, unsigned(std::ceil(l.width*scale))), std::max(1u, unsigned(std::ceil(l.height*scale))));
         }
     }
@@ -1466,7 +1470,7 @@ struct View {
             auto& w=canvas->windows[i]; const auto& l=canvas->projected[i];
             const auto plan=adaptive::project(l, c.pose(l), view, {panX, panY, panZ}, std::max(1, viewportWidth/(stereo?2:1)), std::max(1, viewportHeight), fov, stereo?ipd/2000:0);
             w.visible=!w.gone && (smoke || plan.visible);
-            const float scale=w.quality.update(plan.scale, cameraTime);
+            const float scale=w.quality.update(plan.scale, cameraTime); w.density=plan.density;
             w.demandW=std::max(1u, unsigned(std::ceil(l.width*scale))); w.demandH=std::max(1u, unsigned(std::ceil(l.height*scale)));
         }
         scheduleCanvas(monotonicSeconds());

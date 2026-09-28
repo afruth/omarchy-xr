@@ -299,6 +299,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
             frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
             if(s.gpuMode){
                 frame.texture=s.gpu->present(frame.width,frame.height,s.flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
+                if(frame.texture){frame.width=s.gpu->scaledWidth;frame.height=s.gpu->scaledHeight;}   // panel::captureSize
                 frame.rgba.clear();s.rebake=false;
             }else{
                 frame.texture=0;frame.rgba.resize(size_t(frame.width)*frame.height*4);
@@ -317,6 +318,7 @@ bool DesktopCapture::update(CapturedFrame& frame) {
         frame.width=std::max(1u,unsigned(std::ceil(nativeWidth*ratio)));
         frame.height=std::max(1u,unsigned(std::ceil(nativeHeight*ratio)));
         frame.texture=s.gpu->present(frame.width,frame.height,s.gpu->invertY,true);
+        if(frame.texture){frame.width=s.gpu->scaledWidth;frame.height=s.gpu->scaledHeight;}
         frame.rgba.clear();s.rebake=false;updated=true;
     }
     // A region lane asks again right after ready: GPU slots rotate, so the shown slot's pending
