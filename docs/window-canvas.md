@@ -217,6 +217,7 @@ keys actually bound, so it always matches your settings. These are the defaults:
 | **Esc** | Clears the text; a second Esc closes the search and puts the camera and focus back where they were. An open help closes first. |
 | **XR+Up** | Zoom in a level: from the Overview to the window you look at in a monitor-sized frame, then to that window filling the view. Zooming in focuses it: it is staged, raised, gets the keyboard, and the pointer goes to the point you look at. |
 | **XR+Down** | Zoom out a level: window → monitor frame → Overview (a filled window is restored first). |
+| **XR+F** (hold) | Move the window you look at with your head: it stays in front of you while the cylinder stays put, the other windows make room as it passes, and on release it snaps into a free place. XR+Z undoes the whole move. |
 | **Three-finger tap** | Focus the window you look at without changing the zoom. |
 | **XR+Return** | Fill: the window you work in grows to about 90 % of your view with sharp native text. Press again to restore: untouched, it gets its old size and place back; moved, it keeps the new place with the old size; resized in between, it fills again (and a later restore still returns to the size from before Fill). A flick in fills too, a flick out restores. With no window on the stage, XR+Return focuses the window you look at first and then fills it. |
 | **XR+Left** / **XR+Right** | Land on the previous / next window in ring order, wrapping from the last to the first; every landing brings its window to eye level. Windows above or below are reached by scrolling or the search. |
@@ -258,7 +259,8 @@ search is open.
 
 ## Gaze, dwell and focus
 
-Looking at a window **selects** it: after a short dwell (500 ms of steady gaze) it gets the halo, and
+Looking at a window, or just beside it, marks it as the **candidate** at once: a thin accent rim, so you
+always see what you are looking at. Keep looking and it is **selected**: after a short dwell (500 ms of steady gaze) it gets the halo, and
 the search, Fill and nudges act on it. Looking never moves the keyboard or the pointer by itself, so a
 glance at another window does not steal your typing. To work in the window you look at, **confirm**:
 zoom in with **XR+Up** (or a flick in), or, with a multitouch touchpad, tap it once with three fingers. The window is

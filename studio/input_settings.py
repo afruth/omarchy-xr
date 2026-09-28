@@ -36,6 +36,7 @@ ACTIONS=(
     ('wider','Canvas arrangement','Wider','period','canvas'),
     ('shorter','Canvas arrangement','Shorter','SHIFT + comma','canvas'),
     ('taller','Canvas arrangement','Taller','SHIFT + period','canvas'),
+    ('move_window','Canvas arrangement','Move the window you look at with your head (hold)','F','canvas'),
     ('pin','Canvas arrangement','Pin to view','P','canvas'),
     ('arrange','Canvas arrangement','Arrange','A','canvas'),
     ('undo','Canvas arrangement','Undo','Z','canvas'),

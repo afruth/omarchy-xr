@@ -234,6 +234,75 @@ void zoomLevels(View& v) {
     v.navigate({View::Verb::FlickOut}); assert(v.canvas->zoomedOut());
     ease(v, 60); assert(v.monitorMathCalls==0);
 }
+bool sameRect(const canvas::Rect& a, const canvas::Rect& b) { return a.x==b.x && a.y==b.y && a.w==b.w && a.h==b.h; }
+// A window's centre as seen from the eye, relative to the view: heading or pitch in degrees.
+float seenAt(View& v, const std::string& name, bool pitch) {
+    const auto* l=v.findLayout(name); assert(l);
+    const auto c=v.sceneCylinder().pose(*l).center;
+    const targeting::Vec d{c.x+v.panX, c.y+v.panY, c.z+v.panZ};
+    const auto view=v.currentView();
+    return pitch ? std::atan2(d.y, std::hypot(d.x, d.z))*180/pi-View::pitchDeg(view) : std::remainder(std::atan2(d.x, -d.z)*180/pi-View::headingDeg(view), 360.f);
+}
+bool anyOverlap(const View& v) {
+    std::vector<canvas::Rect> rects;
+    for (const auto& w:v.canvas->windows) if (!w.gone && !w.pinned) rects.push_back(w.rect);
+    for (size_t i=0;i<rects.size();++i) for (size_t j=i+1;j<rects.size();++j) {
+        const auto& a=rects[i]; const auto& b=rects[j];
+        const float dx=std::abs(v.canvas->ring.wrap(a.cx()-b.cx())), dy=std::abs(a.cy()-b.cy());
+        if (dx<(a.w+b.w)/2-.5f && dy<(a.h+b.h)/2-.5f) return true;
+    }
+    return false;
+}
+// (b3) XR+F held: the looked-at window follows the head while the cylinder stays; the others make room all
+// the way, the drop snaps without overlap and undoes in one step.
+void moveWithHead(View& v) {
+    work(v);
+    const auto name=v.canvas->landed; v.candidateOutput=name;
+    const auto undos=v.canvas->history.undo.size(); const auto before=v.canvas->snapshot();
+    const float focus=v.canvas->camera.targetFocusX, heading=seenAt(v, name, false), pitch=seenAt(v, name, true);
+    const auto rotation=v.targetRotation;
+    v.sceneKey(32, "begin"); assert(v.movingWindow==name && v.canvas->dragName==name);
+    for (int i=1;i<=40;++i) {
+        v.yaw+=1.5f; if (i<=10) v.pitch+=.5f;
+        v.steerMove(monotonicSeconds());
+        assert(!anyOverlap(v));
+    }
+    assert(std::abs(seenAt(v, name, false)-heading)<1.5f && std::abs(seenAt(v, name, true)-pitch)<1.5f);   // it stayed in view
+    assert(v.canvas->camera.targetFocusX==focus && std::abs(v.targetRotation.w-rotation.w)<1e-9);        // the cylinder stayed
+    assert(v.interactionUntil>monotonicSeconds());                                                        // no dwell while carried
+    v.sceneKey(32, "end");
+    assert(v.movingWindow.empty() && v.canvas->dragName.empty() && v.canvas->history.undo.size()==undos+1 && !anyOverlap(v));
+    v.navigate({View::Verb::Undo});
+    for (const auto& [n, r]:before.rects) if (const auto* w=v.canvas->find(n)) assert(sameRect(w->rect, r));
+    // Another action ends a move; nothing looked at and nothing landed moves nothing.
+    v.sceneKey(32, "begin"); assert(!v.movingWindow.empty());
+    v.controls->fit=17; v.moveWindow(false); assert(v.movingWindow.empty());
+    v.yaw-=60; v.pitch-=5; ease(v, 60);
+}
+// (b4) The gaze candidate: the looked-at window gets a thin rim at once and is not selected; only the dwell
+// selects. A look just past its edge keeps it the candidate.
+void gazeCandidate(View& v) {
+    work(v);
+    const auto name=v.canvas->landed;
+    v.candidateOutput=name; v.selection.output.clear(); v.canvas->selected.clear();
+    v.easeHalos(.1f);
+    const auto* w=v.canvas->find(name);
+    assert(w->candidateRim>.99f && w->halo<.5f);
+    bool drawn=false;
+    v.forEachSurface([&](const SurfaceView& s) { if (s.layout->output==name) drawn=s.candidate>.99f; else assert(s.candidate==0); });
+    assert(drawn);
+    v.candidateOutput.clear(); v.easeHalos(.1f); assert(v.canvas->find(name)->candidateRim==0);
+    // Turn until the view ray leaves the window: 1.5° beyond its edge it is still the candidate.
+    const auto c=v.sceneCylinder(); const float yaw=v.yaw;
+    std::optional<targeting::Hit> direct;
+    for (int i=0;i<400;++i) {
+        v.yaw+=.25f;
+        direct=targeting::query(targeting::viewRay(v.currentView(), {v.panX, v.panY, v.panZ}), v.sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, &v.canvas->candidates);
+        if (!direct || direct->output!=name) break;
+    }
+    if (!direct) { const auto near=v.nearbyHit(v.currentView()); assert(near && near->output==name); }
+    v.yaw=yaw; ease(v, 30);
+}
 // (d) Focus follow moves the camera only for a mostly hidden window, and an explicit verb wins.
 void focusFollow(View& v) {
     work(v); toOverview(v); v.interactionUntil=0;
@@ -274,7 +343,6 @@ windows::Record record(std::uint64_t address, const std::string& title, unsigned
     return r;
 }
 windows::List listOf(std::vector<windows::Record> records) { windows::List list; list.records=std::move(records); return list; }
-bool sameRect(const canvas::Rect& a, const canvas::Rect& b) { return a.x==b.x && a.y==b.y && a.w==b.w && a.h==b.h; }
 std::string readFile(const std::string& path) { std::ifstream file(path); return std::string((std::istreambuf_iterator<char>(file)), {}); }
 // M3 control plane. The mailboxes live beside the pose socket and belong to this process.
 long bootNow() { timespec boot{}; clock_gettime(CLOCK_BOOTTIME, &boot); return boot.tv_sec; }
@@ -1755,7 +1823,7 @@ int main() {
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v.maxTexture);
         v.primeCamera(); v.startCanvas();
         placedAndLanded(v); verbs(v); fadeAndPlace(v); reloadFile(v);
-        navigationInvariants(v); workAndOverview(v); zoomAnchor(v); zoomLevels(v); focusFollow(v); dwellInWork(v);
+        navigationInvariants(v); workAndOverview(v); zoomAnchor(v); zoomLevels(v); moveWithHead(v); gazeCandidate(v); focusFollow(v); dwellInWork(v);
         staleTexture(v); reloadSettings(v);
         mailboxList(v); hoverV4(v); virtualCursor(v); focusPath(v); stageSourceFallback(v); stageRegion(v);
         searchLandingBeatsGaze(v); escReverts(v); promptEscLines(v); lostKeys(v); fillThreeCase(v); switcherHold(v); arrangeUndo(v); arrangeFromWork(v); neighbourNudgeSummonPin(v);
@@ -1770,5 +1838,5 @@ int main() {
     sceneMemory(temp); sizeAndParent(); fluidCanvas(); noFreePlace(); smokeRule(); versionGate(temp); arrangeFits(); paletteClear(); pitchedLook(); radarHeights();
     AsyncFile::instance().flush(); std::filesystem::remove_all(temp);
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the focus path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point and the radar heights passed\n";
+    std::cout << "Canvas focus: placement without overlap on the cylinder, landing on the staged window, Fit toggle, routed verbs without monitor math, eye inside the ring, fade-out, the window file reload, navigation invariants, Work/Overview, the zoom anchor, focus follow, dwell in Work, stale textures, canvas.tsv reload, the .windows mailbox, hover v4, the virtual cursor, the focus path, the region source fallback and rectangle, XR staging without a camera move, the first mailbox landing, memory, buffer size, the fluid canvas, dialogs, the full-ring fallback, the smoke rule, the controls version gate, search landing over gaze, Esc revert, the prompt's Esc lines, the prompt key log, the Fill three-case restore, the Alt-Tab switcher, arrange with undo/redo, from Work and on a canvas that fits, the palette clearing the selection, neighbour/nudge/summon/pin, bring to canvas, pose verbs, the takeover flag, the .tiers mailbox with its 500 ms limit and 2 s place hold, the budget stats, request->ready calibration, GPU feedback, closed windows leaving the ladder, new-window cues, notifications inside the ring, the confirm from staged none, focusing flick-in landings, Fill landing first, the next staged window landing, the SUPER+left-drag, the confirm hint, the vertical scroll verbs, landings at eye level, culling above the view, the pitched look point, the radar heights, the head-carried window move and the gaze candidate passed\n";
 }

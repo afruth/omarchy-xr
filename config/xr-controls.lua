@@ -16,7 +16,7 @@ local EXCLUDED_CLASSES = {["omarchy-xr-spectator"]=true, ["omarchy-xr-search"]=t
 -- Renderer action codes (.controls "fit" field). 8+ carry a token; the renderer gives each its meaning in the
 -- current scene (docs/xr-controls-plan.md §5.1), so the XR key layer publishes the same code in both modes.
 local CANVAS_MODES = {overview=8, search=9, fill=10, mru_next=11, mru_prev=12, arrange=13, neighbour=14, nudge=15, pin=16, help=17, confirm=18, scroll=19,
-    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28, stats=29, level_in=30, level_out=31}
+    dismiss=20, notify_next=21, cycle=22, grab=26, undo=27, redo=28, stats=29, level_in=30, level_out=31, move=32}
 local setHoverTimer, updateCanvas, releasePointer, installLayer, parseLayerSettings
 local layerModifier,layerKeys
 local fingers=3
@@ -1082,6 +1082,7 @@ local LAYER_ACTIONS={
     {"wider",key="period",resize={dw=100},canvas=true,repeating=true},
     {"shorter",key="SHIFT + comma",resize={dh=-100},canvas=true,repeating=true},
     {"taller",key="SHIFT + period",resize={dh=100},canvas=true,repeating=true},
+    {"move_window",key="F",code=CANVAS_MODES.move,hold=true,canvas=true},
     {"pin",key="P",code=CANVAS_MODES.pin,canvas=true},
     {"arrange",key="A",code=CANVAS_MODES.arrange,canvas=true},
     {"undo",key="Z",code=CANVAS_MODES.undo,canvas=true},

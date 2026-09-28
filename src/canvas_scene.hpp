@@ -50,7 +50,7 @@ struct CanvasWindow {
     double retryAt=0, goneAt=0, lastFrame=0;
     double pulseUntil=0, cueUntil=0;   // a new window's halo pulse and, placed out of view, its edge cue
     int retryMs=500;
-    float halo=0;
+    float halo=0, candidateRim=0;   // the selection halo and the gaze candidate rim (SurfaceView::candidate)
     bool visible=false, candidate=false, staged=false, gone=false, closed=false, sized=false;
     adaptive::Quality quality;
     float density=0;   // the last projection's screen px per layout px
@@ -451,7 +451,7 @@ public:
     }
     SurfaceView surfaceView(size_t i) const {
         const auto& w=windows[i];
-        return {&projected[i], w.frame.texture ? w.frame.texture : w.texture, w.gone ? 0u : w.width, w.height, w.sourceWidth, w.sourceHeight, &w.captureStatus, w.halo, w.visible, 1, {}, w.density};
+        return {&projected[i], w.frame.texture ? w.frame.texture : w.texture, w.gone ? 0u : w.width, w.height, w.sourceWidth, w.sourceHeight, &w.captureStatus, w.halo, w.visible, 1, {}, w.density, w.candidateRim};
     }
     template<class F> void forEachSurface(F&& f) const { for(size_t i=0;i<windows.size();++i) f(surfaceView(i)); }
     template<class F> void forEachCandidate(F&& f) const { for(auto i:candidates) f(surfaceView(i)); }

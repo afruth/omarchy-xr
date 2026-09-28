@@ -344,7 +344,7 @@ public:
         if (first == "v2" || first == "v3") { if (!(file >> owner)) return; }
         else owner = first;
         if (!(file >> nextSerial >> total >> nextFit >> mode) || owner != session ||
-            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 31 || nextSerial <= serial) return;
+            !std::isfinite(total) || std::abs(total) > 1e9 || mode < 0 || mode > 32 || nextSerial <= serial) return;
         std::string target;long stamp=0;
         if(first=="v3") {
             std::string token;
@@ -352,7 +352,7 @@ public:
             target=decodeTarget(token);
         }
         if(file>>extra)return;
-        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19 || mode==22 || mode==26;
+        const bool needsTarget=mode==6 || mode==7 || mode==14 || mode==15 || mode==19 || mode==22 || mode==26 || mode==32;
         if(mode>=6 && (first!="v3" || (needsTarget && target.empty()) || !stampFresh(stamp)))return;
         if (nextFit != fitSerial) { fit = mode; fitSerial = nextFit;notificationTarget=target; }
         else zoom = std::clamp(total - previousZoom, -4., 4.);

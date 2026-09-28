@@ -67,6 +67,7 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 | `nudge_left/right/up/down` | XR + `SHIFT + Left/Right/Up/Down` | — | Nudge 100 px | canvas mode 15 |
 | `narrower` / `wider` | XR + `comma` / `period` | — | Resize 100 px | canvas resize keys |
 | `shorter` / `taller` | XR + `SHIFT + comma` / `SHIFT + period` | — | Resize 100 px | canvas resize keys |
+| `move_window` | XR + `F`, **held** | — | the window you look at follows your head, the others make room, drops without overlap | new |
 | `pin` | XR + `P` | — | Pin / unpin | canvas mode 16 |
 | `arrange` | XR + `A` | — | Arrange | mode 13, Studio or search field only |
 | `undo` / `redo` | XR + `Z` / XR + `SHIFT + Z` | — | Undo / redo | search field or Studio only |
@@ -76,6 +77,13 @@ while XR runs the layer wins. A different modifier (D1) avoids this.
 | `pointer_home` | XR + `Home` | Pointer to the laptop screen's centre | same | double-tap gesture only |
 | `help` | XR + `H` | Help overlay listing the current keys | same | canvas F1 in the search field only |
 | `stats` | XR + `` ` `` | Performance card: frames, display, timing, captures, CPU/GPU, battery, saver, tracking | same | — |
+
+**Gaze candidate.** Every tick the look target (the view ray's hit, else the first hit of eight rays 1.5°
+around it) is the candidate: a thin accent rim (3 px, eased in 50 ms) in both scenes. The dwell selects the
+candidate as before (the halo), and in the monitor scene selecting still changes the workspace; looking only
+marks. `move_window` (XR+F, held, canvas) carries the candidate, else the landed window: head turns become
+canvas px at the eye's distance from the ring (`steerMove`), the others make room live and the drop snaps
+with one undo step; any other action, a scene switch or 60 s ends it.
 
 **Zoom levels.** Both scenes have three: everything fitted into the glasses (1920 px per eye), one monitor
 (virtual monitors: the gazed monitor fills the view; window canvas: the selected window centred in a
@@ -168,6 +176,7 @@ both scenes**, and the renderer's `sceneKey(mode, token)` gives it the scene's m
 | 27 / 28 | `undo` / `redo` | — | — | undo / redo |
 | 29 | `stats` | — | performance card (renderer only) | performance card |
 | 30 / 31 | `zoom_level_in` / `zoom_level_out` | — | the zoom levels (flickIn/flickOut) | the zoom levels (flickIn/flickOut) |
+| 32 | `move_window` (held) | `begin` / `end` | — | the looked-at window follows the head (dragBegin/dragBy/dragEnd), the cylinder stays |
 
 `pointer_home` stays in Lua (`releasePointer()`, now for any XR monitor). In virtual monitors mode Lua
 runs `fill`, `previous`/`next` and `search` itself first (maximize, focus and pane, window list) and then
