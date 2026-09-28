@@ -57,7 +57,7 @@ struct Panel {
     std::string captureStatus;
     double retryAt = 0;
     int retryMs = 500;
-    float halo=0;
+    float halo=0, candidateRim=0;
     unsigned sourceWidth=0,sourceHeight=0,cpuWidth=0,cpuHeight=0;
     bool visible=true;
     adaptive::Quality quality;
@@ -147,6 +147,12 @@ void drawHalo(HaloShader& halo,const theme::Rgb& accent,const SurfaceView& s,con
         const float rim=10.f/900*s.halo;
         halo.use(accent[0],accent[1],accent[2],.03f+.85f*s.halo,w/2,h/2,extent,0,0,rim);
         drawHaloBands(halo,pose,-w/2,-h/2,w,h,extent+rim,-.025f);
+        // The gaze candidate: a thin accent rim, 3 px solid and a 3 px fade, under the selection halo.
+        if(s.candidate>0){
+            const float thin=3.f/900;
+            halo.use(accent[0],accent[1],accent[2],.7f*s.candidate,w/2,h/2,thin,0,0,thin);
+            drawHaloBands(halo,pose,-w/2,-h/2,w,h,2*thin,-.02f);
+        }
         halo.stop();
     } else drawHaloRings(pose,w,h,extent,shadow,s.halo);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
@@ -184,7 +190,7 @@ struct View {
     tracking::Quaternion navigationRotation, targetRotation, selectionAnchor, focusAnchor;
     targeting::Selection selection;
     targeting::Tracker gaze;
-    std::string focusOutput, panOutput;
+    std::string focusOutput, panOutput, candidateOutput;
     float focusDepth=5, focusX=0, focusY=0, smoothFocusX=0, smoothFocusY=0;
     std::optional<targeting::Hit> zoomGaze;
     bool focusFromGaze=false, panGestureActive=false, panCamera=false;
@@ -275,7 +281,7 @@ struct View {
     // Every drawable surface in the current scene mode, in draw order.
     template<class F> void forEachSurface(F&& f) const {
         if (canvas) { canvas->forEachSurface(f); return; }
-        for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}, p.density});
+        for (const auto& p:panels) f(SurfaceView{&p.layout, p.frame.texture?p.frame.texture:p.texture, p.failed?0u:p.width, p.height, p.sourceWidth, p.sourceHeight, &p.captureStatus, p.halo, p.visible, 1, {}, p.density, p.candidateRim});
     }
     void bindTexture(GLuint texture) const { gltex::bind(texture); }
     // The windowed canvas keys (§5.8) for the title bar; --help lists them all.
@@ -327,8 +333,21 @@ struct View {
         const auto c=sceneCylinder();
         gaze.update(fresh ? targeting::query(targeting::viewRay(view, {panX, panY, panZ}), sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, canvas ? &canvas->candidates : nullptr) : std::nullopt, fresh);
         selection.validate(sceneGeometry());
-        // A glance never selects: the look point has to rest on one area with the head settled.
-        dwellOn(gaze.current, monotonicSeconds());
+        // The candidate: what you look at, or look just beside, at once (a thin rim). A glance never
+        // selects: the look point has to rest on the candidate with the head settled (the dwell).
+        const auto look=fresh && !gaze.current ? nearbyHit(view) : gaze.current;
+        candidateOutput=look ? look->output : std::string();
+        dwellOn(look, monotonicSeconds());
+    }
+    // "Around" a surface: the first hit of eight rays 1.5° off the view ray, for a look into a gap.
+    std::optional<targeting::Hit> nearbyHit(const tracking::Quaternion& view) const {
+        const auto c=sceneCylinder(); const float t=std::tan(1.5f*pi/180);
+        for (int i=0; i<8; ++i) {
+            const float a=float(i)*pi/4;
+            const targeting::Ray ray{targeting::mul({panX, panY, panZ}, -1), targeting::rotate(tracking::conjugate(view), targeting::normalize({t*std::cos(a), t*std::sin(a), -1}))};
+            if (auto hit=targeting::query(ray, sceneGeometry(), c.cx, c.cy, c.span, c.distance, c.workspace, canvas ? &canvas->candidates : nullptr)) return hit;
+        }
+        return std::nullopt;
     }
     // Scrolling, zooming, fitting and the camera's own easing all pause selection: the look
     // point sweeps the scene then, and nothing rests.
@@ -1104,8 +1123,10 @@ struct View {
         if (controls->fit==1) navigate({Verb::FlickOut});
         if (controls->fit==2) navigate({Verb::FlickIn});
         if (controls->fit && controls->fit!=26 && tracking.camera.grabbing) grab(false); // any other action ends a grab
+        if (controls->fit && controls->fit!=32 && !movingWindow.empty()) moveWindow(false); // and a window move
         if (controls->fit>=8) sceneKey(controls->fit, controls->notificationTarget);
         steerGrab(monotonicSeconds());
+        steerMove(monotonicSeconds());
         if (!canvas) steerPaneWait(monotonicSeconds());
         if (notificationHud && (controls->fit==6 || controls->fit==7)) {
             placeNotification(monotonicSeconds());
@@ -1133,6 +1154,7 @@ struct View {
             return;
         }
         if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
+        if (mode==32) { moveWindow(token=="begin" && movingWindow.empty()); return; }
         if (mode==29) { toggleStats(monotonicSeconds()); return; }
         if (mode==30 || mode==31) { navigate({mode==30 ? Verb::FlickIn : Verb::FlickOut}); return; }   // zoom levels
         if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
@@ -1278,6 +1300,41 @@ struct View {
         paneWaitUntil=0;
         if (paneFallback==PaneFallback::Pane && controls->paneValid) framePane();
         else if (paneFallback==PaneFallback::Monitor) fitTarget();
+    }
+    // Window move (XR+F held, canvas): the window you look at follows your head while the cylinder stays;
+    // the others make room as it passes and it drops snapped on release (one undo step), never on another.
+    std::string movingWindow;
+    double moveStarted=-1; float moveHeading=0, movePitch=0;
+    void moveWindow(bool begin) {
+        if (!canvas) return;
+        if (!begin) {
+            if (movingWindow.empty()) return;
+            const auto name=std::exchange(movingWindow, {});
+            if (canvas->dragName==name && canvas->dragEnd()) std::cout << "Move: dropped " << name << std::endl;
+            return;
+        }
+        const std::string target=canvas->find(candidateOutput) ? candidateOutput : canvas->current();
+        canvas->dragBegin(target);
+        if (canvas->dragName.empty()) { std::cout << "Move: nothing to move" << std::endl; return; }
+        const auto view=currentView();
+        movingWindow=target; moveStarted=monotonicSeconds(); moveHeading=headingDeg(view); movePitch=pitchDeg(view);
+        std::cout << "Move: " << target << " follows the head" << std::endl;
+    }
+    // Head turns become canvas px at the eye's distance from the ring surface: a turn of a radians moves the
+    // window a*depth world units along the surface, 900 px each, at the camera zoom. Looking up is positive
+    // pitch, and canvas y grows downwards.
+    void steerMove(double now) {
+        if (movingWindow.empty()) return;
+        if (!canvas || canvas->dragName!=movingWindow || now-moveStarted>60) { moveWindow(false); return; }
+        interactionUntil=std::max(interactionUntil, now+.4); recenterUntil=0;   // no dwell or follow while carried
+        const auto view=currentView();
+        const float heading=headingDeg(view), pitch=pitchDeg(view);
+        const float turned=std::remainder(heading-moveHeading, 360.f), lifted=pitch-movePitch;
+        moveHeading=heading; movePitch=pitch;
+        if (turned==0 && lifted==0) return;
+        const float eye=canvas->working() ? canvas->depth : canvas->ring.radius;
+        const float k=eye*900*pi/180/std::max(canvas->camera.zoom, .05f);
+        canvas->dragBy(turned*k, -lifted*k);
     }
     // Grab (§5.7): the camera carries the heading; in the canvas head pitch also scrolls the cylinder by the
     // same share of the view. A second press, any other action, stale tracking or 30 s end it.
@@ -1748,9 +1805,14 @@ struct View {
         }
     }
     // The selection rim comes in within about 120 ms; the camera easing would take half a second.
+    // The candidate rim comes in within about 50 ms, the selection halo within 120 ms.
     void easeHalos(float cameraDt) {
-        for (auto& p:panels) { const float target=selection.output==p.layout.output ? 1.f:0.f; p.halo+=(target-p.halo)*std::min(1.f, cameraDt/.12f); }
-        if (canvas) for (auto& w:canvas->windows) { const float target=canvas->haloTarget(w.name); w.halo+=(target-w.halo)*std::min(1.f, cameraDt/.12f); }
+        const auto ease=[&](float& value, bool on, float tau) { value+=(float(on)-value)*std::min(1.f, cameraDt/tau); if (value<1e-3f) value=0; };
+        for (auto& p:panels) { ease(p.halo, selection.output==p.layout.output, .12f); ease(p.candidateRim, candidateOutput==p.layout.output, .05f); }
+        if (canvas) for (auto& w:canvas->windows) {
+            const float target=canvas->haloTarget(w.name); w.halo+=(target-w.halo)*std::min(1.f, cameraDt/.12f);
+            ease(w.candidateRim, candidateOutput==w.name, .05f);
+        }
     }
     bool draw(int w, int h) {
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -1985,7 +2047,7 @@ struct View {
         forEachSurface([&](const SurfaceView& s) {
             const auto& l=*s.layout;
             state.add(l.x, .01f).add(l.y, .01f).add(l.width, .01f).add(l.height, .01f).add(l.curvature).add(l.brightness, .1f)
-                 .add(s.texture).add(s.width).add(s.height).add(s.status && s.status->empty()).add(s.halo).add(s.visible).add(s.alpha);
+                 .add(s.texture).add(s.width).add(s.height).add(s.status && s.status->empty()).add(s.halo).add(s.visible).add(s.alpha).add(s.candidate);
         });
         const auto c=sceneCylinder();
         state.add(c.cx, .01f).add(c.cy, .01f).add(c.span).add(c.distance);

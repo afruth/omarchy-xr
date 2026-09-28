@@ -204,7 +204,7 @@ end
 local function testSettings()
 -- Apply settings live: unregister old gesture and replace only XR bindings.
 now=111;files["/proc/uptime"]="111";files[path..".active"]="42 111";omarchy_xr_controls.refresh()
-assert(bindings["CTRL + ALT + space"] and bindings["CTRL + ALT + SHIFT + Z"]==nil) -- canvas-only keys wait for the canvas
+assert(bindings["CTRL + ALT + space"] and bindings["CTRL + ALT + SHIFT + Z"]==nil and bindings["CTRL + ALT + F"]==nil) -- canvas-only keys wait for the canvas
 assert(files[path..".keys"]:match("\nredo\tCTRL %+ ALT %+ SHIFT %+ Z\t0\n") and files[path..".keys"]:match("\nhelp\tCTRL %+ ALT %+ H\t1\n"))
 -- The performance card key works in both scenes and publishes renderer code 29.
 assert(files[path..".keys"]:match("\nstats\tCTRL %+ ALT %+ grave\t1\n"))
@@ -472,6 +472,9 @@ local function testCanvasKeys()
     mode,token=press("CTRL + ALT + G",2);assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
     -- The modifier let go first: the bare key release ends the grab.
     press("CTRL + ALT + G",1);mode,token=press("G");assert(mode=="26" and token==hex("end") and bindings["G"]==nil)
+    -- Window move (canvas): held like grab, code 32 begin/end.
+    mode,token=press("CTRL + ALT + F",1);assert(mode=="32" and token==hex("begin"))
+    mode,token=press("CTRL + ALT + F",2);assert(mode=="32" and token==hex("end"))
     local tap=bindings["mouse:274"]
     mode,token=press("CTRL + ALT + mouse:274",1);assert(mode=="26" and token==hex("begin"))
     assert(bindings["mouse:274"]==tap)                               -- no bare release on the touchpad tap's button

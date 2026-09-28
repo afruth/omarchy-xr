@@ -9,14 +9,16 @@
 namespace helpkeys {
 struct Title { const char* id; const char* group; const char* title; };
 inline constexpr Title titles[]={
-    {"recenter", "View", "recenter"}, {"grab", "View", "grab: hold to carry the view"}, {"zoom_in", "View", "zoom in"},
+    {"recenter", "View", "recenter"}, {"grab", "View", "grab: hold to carry the view"},
+    {"zoom_in", "View", "zoom in"},
     {"zoom_out", "View", "zoom out"}, {"zoom_level_in", "View", "zoom in a level"}, {"zoom_level_out", "View", "zoom out a level"},
     {"overview", "View", "overview / fit all"}, {"focus", "View", "focus the gazed window"},
     {"fill", "View", "fill with the window"}, {"previous", "Windows", "previous window"}, {"next", "Windows", "next window"},
     {"scroll_up", "Windows", "scroll up"}, {"scroll_down", "Windows", "scroll down"}, {"search", "Windows", "search windows"},
     {"nudge_left", "Arrange", "nudge left"}, {"nudge_right", "Arrange", "nudge right"}, {"nudge_up", "Arrange", "nudge up"},
     {"nudge_down", "Arrange", "nudge down"}, {"narrower", "Arrange", "narrower"}, {"wider", "Arrange", "wider"},
-    {"shorter", "Arrange", "shorter"}, {"taller", "Arrange", "taller"}, {"pin", "Arrange", "pin to view"},
+    {"shorter", "Arrange", "shorter"}, {"taller", "Arrange", "taller"},
+    {"move_window", "Arrange", "move window: hold, turn your head"}, {"pin", "Arrange", "pin to view"},
     {"arrange", "Arrange", "arrange"}, {"undo", "Arrange", "undo"}, {"redo", "Arrange", "redo"},
     {"notification_dismiss", "Notifications & system", "dismiss notification"},
     {"notification_next", "Notifications & system", "next notification"},

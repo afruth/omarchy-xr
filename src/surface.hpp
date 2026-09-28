@@ -14,4 +14,5 @@ struct SurfaceView {
     const PanelLayout* layout=nullptr; unsigned texture=0, width=0, height=0, sourceWidth=0, sourceHeight=0;
     const std::string* status=nullptr; float halo=0; bool visible=true; float alpha=1; std::string_view label;
     float density=0;   // screen px per layout px (adaptive::Plan), 0 when unknown: the LOD bias in drawPanel
+    float candidate=0; // the gaze candidate's thin rim (0-1): looked at, not yet selected by a dwell
 };

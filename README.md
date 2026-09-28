@@ -616,6 +616,7 @@ Studio (see below); the design is in [`docs/xr-controls-plan.md`](docs/xr-contro
 |---|---|---|
 | XR+Space | recenter | recenter |
 | XR+G (hold) | grab: the scene follows your head while held and stays where you leave it, a quick way to bring any window to the front | same; head pitch also scrolls the cylinder |
+| XR+F (hold) | — | move the window you look at with your head while the cylinder stays; other windows make room, and it drops without overlapping (one undo step) |
 | XR+= / XR+- (repeat) | zoom in / out | zoom in / out |
 | XR+Up | zoom in a level: all monitors → the monitor you look at → the window you look at, focused | zoom in a level: Overview → the window in a monitor-sized frame → the window filling the view, focused |
 | XR+Down | zoom out a level: window → its monitor → all monitors | zoom out a level (Fill restores first) |
