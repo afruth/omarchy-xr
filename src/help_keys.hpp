@@ -20,6 +20,7 @@ inline constexpr Title titles[]={
     {"notification_dismiss", "Notifications & system", "dismiss notification"},
     {"notification_next", "Notifications & system", "next notification"},
     {"pointer_home", "Notifications & system", "pointer to laptop"}, {"help", "Notifications & system", "this help"},
+    {"stats", "Notifications & system", "performance stats"},
 };
 struct Entry { std::string action, chord; bool live=true; };
 struct Keys { std::string modifier; std::vector<Entry> entries; };

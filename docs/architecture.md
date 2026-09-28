@@ -197,6 +197,15 @@ always do. Monitor capture waits for damage, so a still desktop sends no frames;
 that are pulled, and the staged window's region capture, deliver frames at their rate whether or not
 anything changed, and each such frame is drawn.
 
+**Performance card** (the XR layer's `stats` key, code 29, both scenes; `src/perf_hud.hpp`). While it is
+open the tick samples once a second: presented and skipped frames per second, missed vblanks (per second
+and for the session), frame p95 and GPU p99, the latch margin, capture sources and frames per second,
+the viewer's and Hyprland's CPU (`/proc/<pid>/stat`), amdgpu's `gpu_busy_percent`, the system battery
+(percentage, draw from `power_now` or current × voltage, time left from `energy_now` or `charge_now`),
+the battery saver and head tracking. The card is head-locked at the upper left of the view, over everything
+else, in stereo, the windowed view and the spectator. It never eases, so the idle-frame gate keeps
+skipping: a new card text counts as content (one frame, no hold), which adds one frame a second.
+
 ## Lifecycle
 
 Studio edits a draft. Save persists the draft; Apply validates non-overlapping

@@ -56,7 +56,7 @@ void exercise(View& view,const std::string& directory) {
     request(20,"-");assert(hud.count()==0);                          // nothing left: no-op
     hud.release();
 }
-// Codes 8..28 are accepted in both scenes (the renderer routes them); Alt-Tab's release bind sends mode 11 with the
+// Codes 8..29 are accepted in both scenes (the renderer routes them); Alt-Tab's release bind sends mode 11 with the
 // token "release"; prev/next (22) and grab (26) need their token; 20/21 may omit theirs.
 void releaseToken(const std::string& directory) {
     const auto accepted=[&](bool canvasMode,int mode,const std::string& token) {
@@ -73,7 +73,8 @@ void releaseToken(const std::string& directory) {
     assert(accepted(false,22,hextoken::encodeHex("next"))=="next" && accepted(false,22,"-")=="rejected");
     assert(accepted(true,26,hextoken::encodeHex("begin"))=="begin" && accepted(false,26,"-")=="rejected");
     assert(accepted(false,20,"-").empty() && accepted(true,21,"-").empty() && accepted(false,28,"-").empty());
-    assert(accepted(false,29,"-")=="rejected");
+    assert(accepted(false,29,"-").empty() && accepted(true,29,"-").empty()); // the performance card
+    assert(accepted(false,30,"-")=="rejected");
     assert(accepted(true,6,hextoken::encodeHex("card"))=="card" && accepted(false,7,hextoken::encodeHex("card"))=="card");
 }
 // The same flicks on a canvas View (offline scene, three windows): 6/7 dismiss and cycle and never pan.

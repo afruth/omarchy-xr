@@ -206,6 +206,9 @@ local function testSettings()
 now=111;files["/proc/uptime"]="111";files[path..".active"]="42 111";omarchy_xr_controls.refresh()
 assert(bindings["CTRL + ALT + space"] and bindings["CTRL + ALT + SHIFT + Z"]==nil) -- canvas-only keys wait for the canvas
 assert(files[path..".keys"]:match("\nredo\tCTRL %+ ALT %+ SHIFT %+ Z\t0\n") and files[path..".keys"]:match("\nhelp\tCTRL %+ ALT %+ H\t1\n"))
+-- The performance card key works in both scenes and publishes renderer code 29.
+assert(files[path..".keys"]:match("\nstats\tCTRL %+ ALT %+ grave\t1\n"))
+bindings["CTRL + ALT + grave"].callback();assert(files[path]:match("^v3 %S+ %d+ %S+ %d+ 29 %- %d+\n$"))
 -- A v1 file (before the XR layer) keeps the defaults.
 files["/state/omarchy-xr/controls-settings.tsv"]="5\nALT + Up\nALT + Down\nCTRL + R\nCTRL + I\nCTRL + O\n"
 omarchy_xr_controls.refresh();assert(bindings["CTRL + ALT + Up"] and not bindings["ALT + Up"] and omarchy_xr_controls.fingers==3)

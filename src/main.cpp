@@ -25,6 +25,7 @@
 #include "canvas_scene.hpp"
 #include "power.hpp"
 #include "idle_frames.hpp"
+#include "perf_card.hpp"
 #include <ctime>
 #include <csignal>
 #include <filesystem>
@@ -691,6 +692,7 @@ struct View {
                 }
                 if (canvas) canvas->releaseGpu();
                 monitorHelpRaster.release();
+                statsRaster.release();
                 if (cursorTexture) { glDeleteTextures(1, &cursorTexture); cursorTexture=0; }
                 spectator.reset();
                 environment->release();
@@ -1123,6 +1125,7 @@ struct View {
             return;
         }
         if (mode==26) { grab(token=="begin" && !tracking.camera.grabbing); return; }
+        if (mode==29) { toggleStats(monotonicSeconds()); return; }
         if (canvas) canvasKey(mode, token); else monitorKey(mode, token);
     }
     // Monitor scene (docs/xr-controls-plan.md §5.2-5.4): overview fits every monitor; focus, fill and
@@ -1520,6 +1523,7 @@ struct View {
             drawMonitorHelp(view);
         }
         if(notificationHud) notificationHud->draw(lastCameraTime, !canvas);
+        if (statsOpen) drawStats(view);
     }
     // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
     // candidates(visit) yields the surfaces to draw: every panel here, the culled windows in canvas mode.
@@ -1561,6 +1565,69 @@ struct View {
     helpkeys::Keys layerKeys;
     bool monitorHelpOpen=false; float monitorHelpAlpha=0; double monitorHelpTime=-1;
     canvas::overlay::Berth monitorHelpBerth; canvas::overlay::Raster monitorHelpRaster; canvas::overlay::Style monitorHelpStyle;
+    // The performance card (perf_hud.hpp, the XR layer's `stats` key): sampled once a second in the tick,
+    // drawn head-locked at the upper left of the view, over everything else.
+    bool statsOpen=false;
+    double statsSampledAt=-1;
+    perf::Totals statsBefore;
+    std::vector<perf::Row> statsRows;
+    std::string statsKey;
+    std::uint64_t statsRevision=0;   // one per new card text (the idle-frame gate's content)
+    canvas::overlay::Raster statsRaster;
+    canvas::overlay::Berth statsPlace{-14, 7};
+    int compositorPid=-1;
+    void toggleStats(double now) {
+        statsOpen=!statsOpen;
+        std::cout << "Stats: " << (statsOpen ? "shown" : "hidden") << std::endl;
+        if (!statsOpen) { statsRaster.release(); statsKey.clear(); return; }
+        statsBefore=statsTotals(); statsSampledAt=now;
+        statsRows={{"Frames", "measuring…"}};
+        statsKey=perf::key(statsRows, monitorHelpStyle);
+    }
+    // Every uploaded capture frame, monitor panels or canvas windows (region frames included).
+    std::uint64_t capturedFrames() const {
+        std::uint64_t n=0;
+        if (canvas) for (const auto& w:canvas->windows) n+=w.frames; else for (const auto& p:panels) n+=p.frames;
+        return n;
+    }
+    perf::Totals statsTotals() {
+        if (compositorPid<0) compositorPid=perf::compositorPid();
+        return {std::uint64_t(drawn), idleGate.skippedTotal, output ? output->missedVblanks() : 0u, capturedFrames(),
+                perf::processSeconds("/proc/self/stat"), compositorPid>0 ? perf::processSeconds("/proc/"+std::to_string(compositorPid)+"/stat") : -1};
+    }
+    void sampleStats(double now) {
+        if (!statsOpen || now<statsSampledAt+1) return;
+        const auto totals=statsTotals();
+        perf::Snapshot s;
+        s.rates=perf::rates(statsBefore, totals, now-statsSampledAt);
+        statsBefore=totals; statsSampledAt=now;
+        const char* supplies=std::getenv("OMARCHY_XR_POWER_SUPPLY");
+        s.battery=supplies ? perf::readBattery(supplies) : perf::readBattery();
+        s.refreshHz=output ? output->refreshHz() : windowRefreshHz();
+        s.sources=canvas ? unsigned(canvas->live()) : unsigned(std::count_if(panels.begin(), panels.end(), [](const Panel& p) { return bool(p.capture); }));
+        s.missedSession=output ? output->missedVblanks() : 0;
+        s.gpuBusy=perf::gpuBusy();
+        if (!frameTimes.empty()) { auto ranked=frameTimes; std::sort(ranked.begin(), ranked.end()); s.frameP95=ranked[ranked.size()*95/100]; }
+        s.gpuP99=latchGpu.empty() ? -1 : gpuP99;
+        s.latchMs=lastMarginMs; s.predictionMs=lastPredictionMs;
+        s.direct=bool(output); s.stereo=stereo; s.canvas=bool(canvas); s.idleFrames=idleGate.enabled;
+        s.tracking=!posePath.empty() && tracking.camera.fresh(now);
+        s.saverEnabled=power.enabled; s.saverActive=power.active();
+        statsRows=perf::rows(s);
+        auto next=perf::key(statsRows, monitorHelpStyle);
+        if (next!=statsKey) { statsKey=std::move(next); ++statsRevision; }
+    }
+    // Head-locked: the same place in the view every frame, so it never eases and never holds the gate open.
+    void drawStats(const tracking::Quaternion& view) {
+        const auto scene=overlayScene(view);
+        monitorHelpStyle.accent={accent.rgb[0], accent.rgb[1], accent.rgb[2], 1};
+        statsRaster.update(statsKey, perf::width, perf::maxHeight, lastCameraTime, 0, [&](cairo_t* cr) { return perf::paint(cr, statsRows, monitorHelpStyle); });
+        if (!statsRaster.texture) return;
+        constexpr float distance=1, widthDeg=18;
+        const float width=2*distance*std::tan(widthDeg/2*canvas::overlay::degrees);
+        const auto centre=notifications::space::add(scene.eye, statsPlace.wanted(scene, distance));
+        canvas::overlay::drawQuad(statsRaster.texture, scene, centre, width, width*float(statsRaster.height)/float(statsRaster.width), 1);
+    }
     void drawMonitorHelp(const tracking::Quaternion& view) {
         const double now=lastCameraTime;
         const float dt=monitorHelpTime<0 ? 0.f : float(std::clamp(now-monitorHelpTime, 0., .1)); monitorHelpTime=now;
@@ -1899,8 +1966,8 @@ struct View {
         f.view[0]=float(v.w); f.view[1]=float(v.x); f.view[2]=float(v.y); f.view[3]=float(v.z);
         f.pan[0]=panX; f.pan[1]=panY; f.pan[2]=panZ;
         idle::Hash state;
-        if (canvas) for (const auto& w:canvas->windows) { f.content+=w.frames; state.add(std::uint64_t(std::hash<std::string>{}(w.record.title))); }
-        else for (const auto& p:panels) f.content+=p.frames;
+        f.content=capturedFrames();
+        if (canvas) for (const auto& w:canvas->windows) state.add(std::uint64_t(std::hash<std::string>{}(w.record.title)));
         forEachSurface([&](const SurfaceView& s) {
             const auto& l=*s.layout;
             state.add(l.x, .01f).add(l.y, .01f).add(l.width, .01f).add(l.height, .01f).add(l.curvature).add(l.brightness, .1f)
@@ -1911,6 +1978,9 @@ struct View {
         int w=0, h=0; drawable(w, h); state.add(w).add(h);
         for (float channel:accent.rgb) state.add(channel);
         state.add(xrCursor.valid).add(std::uint64_t(std::hash<std::string>{}(xrCursor.window))).add(xrCursor.px, .25f).add(xrCursor.py, .25f);
+        // A new card text draws once like a capture frame; it settles nothing, so it must not start a hold.
+        state.add(statsOpen);
+        f.content+=statsRevision;
         state.add(std::uint64_t(environment->revision())).add(notificationHud ? notificationHud->count() : 0);
         f.state=state.value;
         f.animating=cameraMoving() || panCamera || panGestureActive || now<recenterUntil || now<interactionUntil || promptShown || tracking.spectator>=0 || monitorHelpOpen || monitorHelpAlpha>0
@@ -1987,6 +2057,7 @@ struct View {
         environment->update(workStarted);
         // Halos ease every tick, so a selection change reaches the frame description.
         easeHalos(cameraDt);
+        sampleStats(workStarted);
         if (!idleGate.due(describeFrame(workStarted), workStarted)) { skipFrame(); return true; }
         if (!draw(w, h)) return false;
         double workMs=(monotonicSeconds()-workStarted)*1000;

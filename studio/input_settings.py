@@ -42,6 +42,7 @@ ACTIONS=(
     ('notification_next','Notifications & system','Next notification','SHIFT + N','both'),
     ('pointer_home','Notifications & system','Pointer to laptop screen','Home','both'),
     ('help','Notifications & system','Show keys in the headset','H','both'),
+    ('stats','Notifications & system','Show performance stats in the headset','grave','both'),
 )
 ACTION_IDS=tuple(a[0] for a in ACTIONS)
 DEFAULT_MODIFIER='CTRL + ALT'
