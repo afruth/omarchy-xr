@@ -69,6 +69,18 @@ def remove(config):
     print('XR integration removed. Layouts, images and personal control files were retained.')
 
 
+def version(manifest):
+    try:
+        return tuple(map(int, json.loads(manifest.read_text())['version'].split('.')))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ()
+
+
+def newer_than_package(target):
+    """A plugin newer than this package (e.g. a marketplace update) must not be downgraded."""
+    return version(target / 'manifest.json') > version(SHARE / 'plugin/manifest.json')
+
+
 def setup(config, controls=False, notifications=False):
     installer = module('install-studio')
     target = config / 'omarchy/plugins' / PLUGIN_ID
@@ -79,7 +91,10 @@ def setup(config, controls=False, notifications=False):
         manifest = json.loads((target / 'manifest.json').read_text())
         if manifest.get('id') != PLUGIN_ID:
             raise RuntimeError('Refusing to replace an unrelated plugin')
-    if not (target / '.git').exists():
+    keep = (target / '.git').exists() or newer_than_package(target)
+    # A kept plugin brings the controls its Studio expects; older ones only ship them in the package.
+    scripts = target / 'scripts' if keep and (target / 'scripts/install-controls.py').is_file() else SHARE / 'scripts'
+    if not keep:
         if target.exists():
             backup = target.with_name('.' + PLUGIN_ID + '.before-package-' + str(time.time_ns()))
             shutil.copytree(target, backup, symlinks=True)
@@ -93,12 +108,12 @@ def setup(config, controls=False, notifications=False):
     subprocess.run(['omarchy', 'plugin', 'enable', PLUGIN_ID], check=True)
     subprocess.run(['omarchy', 'bar', 'put', PLUGIN_ID], check=True)
     if controls:
-        env = {**os.environ, 'PYTHONPATH': str(SHARE / 'plugin/studio')}
-        subprocess.run([sys.executable, str(SHARE / 'scripts/install-controls.py')], env=env, check=True)
+        env = {**os.environ, 'PYTHONPATH': str(scripts.parent / 'studio' if scripts.parent == target else SHARE / 'plugin/studio')}
+        subprocess.run([sys.executable, str(scripts / 'install-controls.py')], env=env, check=True)
         subprocess.run(['hyprctl', 'reload'], check=True)
         subprocess.run(['hyprctl', 'configerrors'], check=True)
     if notifications:
-        subprocess.run([sys.executable, str(SHARE / 'scripts/install-notifications.py')], check=True)
+        subprocess.run([sys.executable, str(scripts / 'install-notifications.py')], check=True)
     subprocess.run(['omarchy-shell', 'shell', 'summon', PLUGIN_ID, '{}'], check=True)
 
 

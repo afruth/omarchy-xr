@@ -127,6 +127,31 @@ class UserSetupTests(unittest.TestCase):
             installer.return_value.install_plugin_files.assert_not_called()
             self.assertEqual(custom.read_text(), 'personal customization')
 
+    def test_setup_keeps_a_newer_plugin_and_its_controls(self):
+        # An older package's setup must not downgrade a marketplace update or its controls.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            share = base / 'share'
+            (share / 'plugin').mkdir(parents=True)
+            (share / 'plugin/manifest.json').write_text(json.dumps({'id': setup.PLUGIN_ID, 'version': '0.3.1'}))
+            target = base / 'omarchy/plugins' / setup.PLUGIN_ID
+            (target / 'scripts').mkdir(parents=True)
+            (target / 'scripts/install-controls.py').write_text('')
+            (target / 'manifest.json').write_text(json.dumps({'id': setup.PLUGIN_ID, 'version': '0.4.0'}))
+            with patch.object(setup, 'SHARE', share), patch.object(setup, 'module') as installer, \
+                    patch('subprocess.run') as run, \
+                    patch('subprocess.check_output', return_value=json.dumps([{'id': setup.PLUGIN_ID}])):
+                setup.setup(base, controls=True, notifications=True)
+            installer.return_value.install_plugin_files.assert_not_called()
+            scripts = [call.args[0][1] for call in run.call_args_list if call.args[0][0] == sys.executable]
+            self.assertEqual(scripts, [str(target / 'scripts/install-controls.py'), str(target / 'scripts/install-notifications.py')])
+            # The same package over an older plugin still replaces it.
+            (target / 'manifest.json').write_text(json.dumps({'id': setup.PLUGIN_ID, 'version': '0.3.0'}))
+            with patch.object(setup, 'SHARE', share), patch.object(setup, 'module') as installer, patch('subprocess.run'), \
+                    patch('subprocess.check_output', return_value=json.dumps([{'id': setup.PLUGIN_ID}])):
+                setup.setup(base)
+            installer.return_value.install_plugin_files.assert_called_once()
+
     def test_setup_refuses_unrelated_plugin_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
