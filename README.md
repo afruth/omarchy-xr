@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.4.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.4.0).
+[Download the 0.5.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.0).
 The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.5.0-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -121,7 +121,7 @@ the cylinder; new windows open next to where you look. XR+H lists every key in t
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
-needs the v7 controls adapter, so after updating choose **Install XR controls** under the mode selector
+needs the v8 controls adapter, so after updating choose **Install XR controls** under the mode selector
 (or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
 the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
@@ -393,6 +393,10 @@ the reduced target resolution (`OMARCHY_XR_SHM_CAPTURE=1` forces it for diagnost
 cost. CPU work excludes presentation waits and is not a GPU execution measurement.
 Capture supports up to 120 fps, but actual throughput depends on source refresh,
 GPU load and the physical display mode; Pro 2 stereo is verified at 60 Hz.
+The viewer skips drawing and flipping frames that would not change the image
+(`OMARCHY_XR_IDLE_FRAMES=0` draws every frame). The opt-in **Battery saver**
+(Studio → Battery) caps captures at 30 Hz, and halves the canvas capture budget,
+while the computer runs on battery; external power lifts the caps at once.
 
 Gaze highlights a monitor and selects its current workspace once per target change.
 The compositor adapter polls gaze selections at 2 ms. The actual desktop cursor
@@ -629,6 +633,7 @@ Studio (see below); the design is in [`docs/xr-controls-plan.md`](docs/xr-contro
 | XR+N / XR+Shift+N | dismiss / cycle the gazed notification, else the front one | same |
 | XR+Home | pointer back to the laptop screen | same |
 | XR+H | show every key in the headset | same |
+| XR+` | performance card in the headset: frames, display, timing, captures, CPU/GPU, battery, tracking | same |
 
 With XR held, the wheel zooms and holding the middle button grabs; in the canvas Shift+wheel scrolls,
 left-drag moves the window you work in and right-drag resizes it. "—" keys are left to applications

@@ -125,7 +125,7 @@ static void tiers() {
     many.push_back(maxRecords+1); assert(!parseTiers(tiersLine(1, 1, many, 5)));
 }
 // `.keys` (help_keys.hpp): this owner only, the modifier row, unknown actions and malformed rows skipped,
-// chords shown compactly, canvas-only actions only in the canvas help, and a note without v7 controls.
+// chords shown compactly, canvas-only actions only in the canvas help, and a note without v8 controls.
 static void layerKeys() {
     const std::string text="v1 42 3 100\nmodifier\tCTRL + ALT\nrecenter\tCTRL + ALT + space\t1\nredo\tCTRL + ALT + SHIFT + Z\t0\n"
                            "bogus\tCTRL + ALT + B\t1\nhelp CTRL + ALT + H\nfocus\tCTRL + ALT + Down\t1\n";
@@ -140,7 +140,7 @@ static void layerKeys() {
     assert(monitors[2].section=="Mouse" && monitors[2].keys=="Ctrl+Alt+wheel");
     assert(canvas.size()==5+2+4 && canvas[0].section=="Search field");       // redo is canvas-only but not live here
     const auto none=helpkeys::rows({}, false);
-    assert(none.size()==1 && none[0].action=="install XR controls v7");
+    assert(none.size()==1 && none[0].action=="install XR controls v8");
 }
 int main() {
     sample(); hex(); rejections(); cursor(); search(); tiers(); layerKeys();

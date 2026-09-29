@@ -84,7 +84,7 @@ inline std::vector<Row> rows(const Keys& keys, bool canvas) {
         out.push_back({"Search field", k, a});
     for(const auto& t:titles) for(const auto& e:keys.entries)
         if(e.action==t.id && e.live) out.push_back({t.group, pretty(e.chord), t.title});
-    if(keys.modifier.empty()) { out.push_back({"XR keys", "Utilities → Setup & integrations", "install XR controls v7"}); return out; }
+    if(keys.modifier.empty()) { out.push_back({"XR keys", "Utilities → Setup & integrations", "install XR controls v8"}); return out; }
     const auto modifier=pretty(keys.modifier);
     out.push_back({"Mouse", modifier+"+wheel", "zoom"});
     out.push_back({"Mouse", modifier+"+middle (hold)", "grab"});

@@ -980,7 +980,7 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 7 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v7 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v7.") + " A terminal opens to install them." : ""
+                                    hint: root.loaded && root.controlsVersion < 8 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v8 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v8.") + " A terminal opens to install them." : ""
                                     actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground

@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 7
+local CONTROLS_VERSION = 8
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 -- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops

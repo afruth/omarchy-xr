@@ -31,6 +31,8 @@ from atomic_file import atomic_write
 from clock import boot_time
 from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
 
+# Controls v8 add the performance card, zoom levels and move-with-head keys (codes 29–32).
+REQUIRED_CONTROLS = 8
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out")
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
@@ -964,7 +966,7 @@ class Manager:
     def set_render_mode(self, mode, layout=None):
         if mode not in ("monitors", "canvas"):
             raise ValueError("Choose Virtual monitors or Window canvas")
-        if mode == "canvas" and self.controls_version() < 7:
+        if mode == "canvas" and self.controls_version() < REQUIRED_CONTROLS:
             raise RuntimeError(CONTROLS_HINT)
         if mode == self.render_mode:
             return
@@ -1130,7 +1132,7 @@ class Manager:
     def controls_hint(self):
         if not self.viewer or self.viewer.poll() is not None:
             return ""
-        return CONTROLS_HINT if self.controls_version() < 7 else ""
+        return CONTROLS_HINT if self.controls_version() < REQUIRED_CONTROLS else ""
 
     def reconcile_status(self, monitors):
         if (self.applied or self.canvas.active) and monitors is not None:

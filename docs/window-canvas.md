@@ -11,15 +11,16 @@ and the F1 key help arrived with M4; the capture ladder with M5; the live mode s
 inside the ring, new-window cues and the Overview mouse drag arrived with M6; focusing and moving
 windows in the glasses with M7; the full cylinder (windows at any height, vertical scroll) with M8.
 XR controls v7 replaced the canvas's own keys, and its takeovers of Omarchy chords, with one XR key
-layer shared by both modes (see **Keys**).
+layer shared by both modes (see **Keys**). Controls v8 add the performance card, the zoom levels and
+XR+F (codes 29–32).
 
 ## Requirements
 
-- **XR controls v7.** Window canvas relies on the controls adapter (`xr-controls.lua`) to list
+- **XR controls v8.** Window canvas relies on the controls adapter (`xr-controls.lua`) to list
   windows, stage them, bind the XR keys and keep windows out of fullscreen. After updating, reinstall
   the controls once: **Utilities → Setup & integrations**, then **Set up everything** or the shortcuts
   & gestures button, or `make install-controls` in a source checkout. Until then Studio says "Window
-  canvas needs XR controls v7", the **Window canvas** option is disabled, and the renderer refuses
+  canvas needs XR controls v8", the **Window canvas** option is disabled, and the renderer refuses
   `--canvas`.
 - Hyprland with `hyprland_toplevel_export_manager_v1` v2 (the Lua generation of Omarchy has it).
 
@@ -315,7 +316,7 @@ stops after your first confirm.
   failed to leave side-by-side. Studio now starts without the recording window and says so in the
   Recording card and in `display-events.jsonl` (`spectator-skipped`). Turn the laptop display on
   (Controls) to get the recording window back; turning it on by hand still refuses without a display.
-- **XR keys do nothing**: the layer is bound only while XR runs, and it needs XR controls v7
+- **XR keys do nothing**: the layer is bound only while XR runs, and it needs XR controls v8
   (see Requirements). Check **Controls → XR keys** in Studio for conflicts: a chord that collides with
   an Omarchy binding or another XR key is shown there, and the XR+H help lists only the keys actually
   bound. An application that uses the same chord (for example CTRL+ALT+arrows) loses it while XR runs;
@@ -347,7 +348,7 @@ stops after your first confirm.
   down. The budget line in Studio's Canvas tab shows the use. Raise the capture budget (the
   development machine handled up to about 350 Mpix/s) or close or exclude windows you do not need;
   zooming in on a window also brings its neighbours back to life.
-- **"Window canvas needs XR controls v7"**: reinstall the controls (see Requirements). A controls
+- **"Window canvas needs XR controls v8"**: reinstall the controls (see Requirements). A controls
   file edited by hand, or an older one restored by a sync tool, shows the same hint.
 - **A window stays fullscreen during a canvas session** (after SUPER+F or F11): the controls are not
   active for this session. Check that the session was started from Studio and that
@@ -538,7 +539,7 @@ Run in direct stereo and once in the windowed preview.
 ### Studio
 
 - [ ] The mode selector works while stopped and while viewing; it is disabled with "Window canvas
-  needs XR controls v7" for older controls.
+  needs XR controls v8" for older controls.
 - [ ] The Canvas tab saves its settings (decimal fields, exclusions); it has no takeover switch.
 - [ ] **Controls → XR keys**: changing the modifier re-renders every chord and re-binds live after
   Save (`hyprctl binds -j`, the XR+H help); capture, clear and reset a row; a chord that collides

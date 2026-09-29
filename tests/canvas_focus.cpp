@@ -474,15 +474,16 @@ void focusPath(View& v) {
     restagedByXr(v, name);
     restagedByXr(v, "0x5005");
 }
-// (j) The renderer's controls version gate: v7 (the XR key layer) or newer beside the pose socket.
+// (j) The renderer's controls version gate: v8 (the XR key layer with codes 29–32) or newer beside the pose socket.
 void versionGate(const std::string& temp) {
     const std::string dir=temp+"/gate", pose=dir+"/pose.sock"; std::filesystem::create_directories(dir);
     std::string why;
     assert(!controlsVersionOk(pose, why) && why.find("missing")!=std::string::npos);
     std::ofstream(dir+"/controls.version") << "5\n"; assert(!controlsVersionOk(pose, why) && why=="found version 5");
     std::ofstream(dir+"/controls.version") << "6\n"; assert(!controlsVersionOk(pose, why) && why=="found version 6"); // before the XR layer
-    std::ofstream(dir+"/controls.version") << "7\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "7\n"; assert(!controlsVersionOk(pose, why) && why=="found version 7"); // before codes 29–32
     std::ofstream(dir+"/controls.version") << "8\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "9\n"; assert(controlsVersionOk(pose, why));
     std::ofstream(dir+"/controls.version") << "six\n"; assert(!controlsVersionOk(pose, why));
     assert(!controlsVersionOk("", why));
 }

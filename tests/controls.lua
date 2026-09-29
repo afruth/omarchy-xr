@@ -58,7 +58,7 @@ assert(not bindings["CTRL + ALT + Up"] and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + ALT + Up"] and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==7 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==8 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -500,7 +500,7 @@ local function testCanvasActivation()
     clock(140,"canvas","43");omarchy_xr_controls.refresh()
     assert(#unbound==0);assert(not events["window.open"]) -- foreign owner
     clock(140);omarchy_xr_controls.refresh()
-    assert(omarchy_xr_controls.version==7);assert(files["/run/omarchy-xr/controls.version"]=="7\n")
+    assert(omarchy_xr_controls.version==8);assert(files["/run/omarchy-xr/controls.version"]=="8\n")
     assert(#unbound==0);assert(bindings["SUPER + F"].options.description=="Full screen")
     assert(events["window.open"]);assert(events["window.fullscreen"]);assert(events["window.move_to_workspace"])
     assert(bindings["CTRL + ALT + P"])
