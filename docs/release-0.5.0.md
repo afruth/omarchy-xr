@@ -44,9 +44,11 @@ Setup is safer on updates: package setup never replaces a newer plugin or its
 controls with an older copy, and Studio offers **Update XR runtime** when the
 installed package is older than the one the plugin installs.
 
-The XR keys need **XR controls version 7**: choose **Install XR controls** under
+The XR keys need **XR controls version 8**: choose **Install XR controls** under
 the mode selector or **Utilities → Setup & integrations → Set up everything**.
 Earlier custom hotkeys (CTRL+Up/Down and the like) are replaced by the defaults.
+Controls installed from a development build as version 7 lack the performance
+card, zoom-level and XR+F keys; Studio asks to update them.
 See the [XR keys section of the README](../README.md#xr-keys) and the
 [design](xr-controls-plan.md).
 

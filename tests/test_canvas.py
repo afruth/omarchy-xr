@@ -82,7 +82,7 @@ class CanvasTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = Path(self.temp.name) / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "controls.version").write_text("7\n")
+        (self.runtime / "controls.version").write_text("8\n")
         self.state = Path(self.temp.name) / "state"
         env = patch.dict(os.environ, {"OMARCHY_XR_RUNTIME": str(self.runtime), "HYPRLAND_INSTANCE_SIGNATURE": "test-session"})
         env.start()
@@ -273,17 +273,17 @@ class CanvasTests(unittest.TestCase):
             self.assertTrue(manager.canvas.active)
         finally: self.close(manager)
 
-    def test_canvas_mode_requires_controls_v7(self):
+    def test_canvas_mode_requires_controls_v8(self):
         manager = self.manager(CanvasHypr())
         try:
-            (self.runtime / "controls.version").write_text("6\n")
+            (self.runtime / "controls.version").write_text("7\n")
             with self.assertRaisesRegex(RuntimeError, "XR controls need setup"): manager.set_render_mode("canvas")
             self.assertEqual(manager.render_mode, "monitors")
             process = Mock(); process.poll.return_value = None; manager.viewer = process
             self.assertIn("XR controls need setup", manager.controls_hint())
             (self.runtime / "controls.version").unlink()
             self.assertEqual(manager.controls_version(), 0)
-            (self.runtime / "controls.version").write_text("7\n")
+            (self.runtime / "controls.version").write_text("8\n")
             self.assertEqual(manager.controls_hint(), "")
             manager.viewer = None
             manager.set_render_mode("canvas")
@@ -579,7 +579,7 @@ class CanvasTests(unittest.TestCase):
         try:
             status = manager.status()
             self.assertEqual((status["renderMode"], status["canvasActive"], status["controlsVersion"], status["canvasWindows"]),
-                             ("monitors", False, 7, 0))
+                             ("monitors", False, 8, 0))
             manager.set_render_mode("canvas")
             manager.canvas.ensure(manager.monitors())
             process = Mock(); process.poll.return_value = None; process.pid = 123; manager.viewer = process

@@ -121,7 +121,7 @@ the cylinder; new windows open next to where you look. XR+H lists every key in t
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
-needs the v7 controls adapter, so after updating choose **Install XR controls** under the mode selector
+needs the v8 controls adapter, so after updating choose **Install XR controls** under the mode selector
 (or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
 the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.

@@ -1,6 +1,6 @@
 # Omarchy XR — Universal XR controls: design and implementation plan
 
-Status: **implemented** (2026-09-27, controls v7), work packages K1–K8 below. It supersedes the
+Status: **implemented** (2026-09-27, controls v7; v8 on 2026-09-29 adds codes 29–32), work packages K1–K8 below. It supersedes the
 per-mode key sets and takeovers of controls v6. Where the implementation settled a detail differently
 from the first draft, this document describes what was built.
 
@@ -180,7 +180,7 @@ both scenes**, and the renderer's `sceneKey(mode, token)` gives it the scene's m
 
 `pointer_home` stays in Lua (`releasePointer()`, now for any XR monitor). In virtual monitors mode Lua
 runs `fill`, `previous`/`next` and `search` itself first (maximize, focus and pane, window list) and then
-publishes the code. The renderer and Studio require controls v7 for the canvas.
+publishes the code. The renderer and Studio require controls v8 (v7 plus codes 29–32) for the canvas.
 
 ### 5.2 Window awareness in virtual monitors mode (new)
 
@@ -342,7 +342,7 @@ close the work.
 
 Compatibility: the canvas takeover setting (`takeoverKeys` in `canvas.tsv` field 9 and the `.mode`
 flag) is removed from Studio. Field 9 is still written as `0` so older Lua reads the header, and Lua
-v7 ignores it. Studio requires controls v7 for both modes and offers **Update XR controls** below
+v7 and later ignore it. Studio requires controls v8 for both modes and offers **Update XR controls** below
 that, through the existing setup action.
 
 ## 10. Manual acceptance checklist
