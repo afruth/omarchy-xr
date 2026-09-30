@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.5.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.0).
+[Download the 0.5.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.1).
 The package includes the VITURE glasses runtime (Gen1/Gen2 and Luma Ultra); no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.5.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.5.1-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
