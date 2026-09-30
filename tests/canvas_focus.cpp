@@ -1539,20 +1539,25 @@ void confirmHint(View& v, const std::string& temp) {
     assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
     write(settings, "v2\nmodifier\tSUPER + ALT\nkey\trecenter\tspace\nkey\tfocus\tF5\n");
     s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="SUPER + ALT + F5 or a three-finger tap to focus");
-    write(settings, head+"key\tfocus\t\n");
+    write(settings, head+"key\tfocus\t\nkey\tzoom_level_in\t\n");
     s.setConfirmKey(canvas::readConfirmKey(settings)); assert(s.hintText()=="Three-finger tap to focus");
-    write(settings, head+"key\tfocus\tCTRL;Down\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down");
-    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Down"); // v1
+    write(settings, head+"key\tfocus\tCTRL;Down\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Up");
+    write(settings, "3\nCTRL + Up\nCTRL + Down\n\n\n\n"); assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Up"); // v1
     std::filesystem::remove(settings); s.setConfirmKey(canvas::readConfirmKey(settings));
-    assert(s.hintText().find("CTRL + ALT + Down")==0 && !s.labels.atlas.count("hint"));
+    assert(s.hintText().find("CTRL + ALT + Up")==0 && !s.labels.atlas.count("hint"));
+    write(settings, head+"key\tfocus\t\nkey\tzoom_level_in\tUp\nkey\tzoom_level_out\tDown\n");
+    assert(canvas::readConfirmKey(settings)=="CTRL + ALT + Up");
+    write(settings, "v2\nmodifier\tSUPER + ALT\nkey\tfocus\t\nkey\tzoom_level_in\tI\n");
+    assert(canvas::readConfirmKey(settings)=="SUPER + ALT + I");
+    std::filesystem::remove(settings);
     // A focus key change in Studio mid-session: the renderer's poll picks up the rewritten file.
-    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
+    v.controlsVersion.reset(); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Up")==0);
     write(settings, head+"key\tfocus\tF7\n"); v.pollConfirmKey();
     assert(s.hintText()=="CTRL + ALT + F7 or a three-finger tap to focus");
-    write(settings, head+"key\tfocus\t\n");   // a later mtime even on a coarse clock
+    write(settings, head+"key\tfocus\t\nkey\tzoom_level_in\t\n");   // a later mtime even on a coarse clock
     std::filesystem::last_write_time(settings, std::filesystem::last_write_time(settings)+std::chrono::seconds(2));
     v.pollConfirmKey(); assert(s.hintText()=="Three-finger tap to focus");
-    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Down")==0);
+    std::filesystem::remove(settings); v.pollConfirmKey(); assert(s.hintText().find("CTRL + ALT + Up")==0);
     ease(v, 120); v.interactionUntil=0; inRing(v);
 }
 // M8 full cylinder. The landed window's projected centre under the target camera (0 = eye level).
