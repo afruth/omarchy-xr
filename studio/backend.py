@@ -31,8 +31,8 @@ from atomic_file import atomic_write
 from clock import boot_time
 from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
 
-# Controls v8 add the performance card, zoom levels and move-with-head keys (codes 29–32).
-REQUIRED_CONTROLS = 8
+# Controls v9 keep laptop and Canvas windows separate and require explicit transfers.
+REQUIRED_CONTROLS = 9
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
                   "save_comfort", "restore_comfort")

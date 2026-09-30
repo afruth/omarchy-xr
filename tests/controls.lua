@@ -58,7 +58,7 @@ assert(not bindings["CTRL + ALT + Up"] and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + ALT + Up"] and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==8 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==9 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -500,7 +500,7 @@ local function testCanvasActivation()
     clock(140,"canvas","43");omarchy_xr_controls.refresh()
     assert(#unbound==0);assert(not events["window.open"]) -- foreign owner
     clock(140);omarchy_xr_controls.refresh()
-    assert(omarchy_xr_controls.version==8);assert(files["/run/omarchy-xr/controls.version"]=="8\n")
+    assert(omarchy_xr_controls.version==9);assert(files["/run/omarchy-xr/controls.version"]=="9\n")
     assert(#unbound==0);assert(bindings["SUPER + F"].options.description=="Full screen")
     assert(events["window.open"]);assert(events["window.fullscreen"]);assert(events["window.move_to_workspace"])
     assert(bindings["CTRL + ALT + P"])
@@ -683,9 +683,9 @@ local function testGuards()
     hl.dispatch(hl.dsp.window.move({window="address:0xc",workspace="name:omxr-canvas"}))
     assert(find("0xc").workspace.name=="omxr-park");assert(omarchy_xr_canvas.origin["0xc"].floating==false) -- adopted
     -- New windows are adopted: a small window of a canvas process is staged, others are parked.
-    local dialog=window("0x20","1",{size={x=300,y=200},pid=100});fire("window.open",dialog)
+    local dialog=window("0x20","omxr-canvas",{size={x=300,y=200},pid=100});fire("window.open",dialog)
     assert(omarchy_xr_canvas.staged=="0x20");assert(dialog.workspace.name=="omxr-canvas");assert(dialog.at.x==20000)
-    local other=window("0x21","1",{pid=555});fire("window.open",other);assert(other.workspace.name=="omxr-park")
+    local other=window("0x21","1",{pid=555});fire("window.open",other);assert(other.workspace.name=="1")
     print("Guards: workspace and special intruders, fullscreen to Fill, remove/adopt on move, dialog staging passed")
 end
 local function testAdoptPolicyEmpty()
@@ -710,11 +710,12 @@ local function testExclusions()
     hl.dispatch(hl.dsp.window.move({window="address:0x24",workspace="name:omxr-park"}))
     assert(not omarchy_xr_canvas.origin["0x24"]);assert(browser.workspace.name=="1")
     tick(162.7);assert(count("window.set_prop","0x24")==0);assert(count("window.set_prop","0x25")==0)
-    local kept=window("0x26","1",{pid=902});fire("window.open",kept);assert(kept.workspace.name=="omxr-park")
+    local kept=window("0x26","omxr-canvas",{pid=902});fire("window.open",kept);assert(kept.workspace.name=="omxr-park")
     files["/state/omarchy-xr/canvas.tsv"]=nil
     print("Exclusions: excluded classes and pids stay on the laptop, undecorated passed")
 end
 local function testFocusAddress()
+    hl.dispatch(hl.dsp.window.move({window="address:0x21",workspace="name:omxr-park"}))
     clock(163)
     local focus=files[path..".focus"]
     fire("window.active",find("0x21"));tick(163.1)
@@ -1079,3 +1080,30 @@ end
 testMonitorWindows()
 assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")
 print("Keybind handles: no remove/set_enabled on an expired handle passed")
+
+-- Laptop browser windows never enter Canvas through new-window handling or stale focus packets.
+do
+    installCanvasHl()
+    clock(260,"monitors");omarchy_xr_controls.refresh()
+    clock(260,"canvas");omarchy_xr_controls.refresh()
+    local laptopBrowser=window("0xab10","1",{class="firefox",pid=3000})
+    local canvasBrowser=window("0xab11","omxr-canvas",{class="firefox",pid=3000})
+    fire("window.open",laptopBrowser);fire("window.open",canvasBrowser)
+    assert(laptopBrowser.workspace.name=="1" and not omarchy_xr_canvas.origin[laptopBrowser.address])
+    assert(canvasBrowser.workspace.name=="omxr-park")
+    dispatched={};hoverV4(laptopBrowser.address,1001,10,10)
+    assert(count("window.move",laptopBrowser.address)==0 and count("focus",laptopBrowser.address)==0 and laptopBrowser.workspace.name=="1")
+    files[path..".bring"]="v1 42 1 0xab10 260\n";tick(260.2)
+    assert(laptopBrowser.workspace.name=="omxr-canvas" and omarchy_xr_canvas.staged==laptopBrowser.address)
+    hl.dispatch(hl.dsp.window.move({window="address:0xab10",workspace="1"}))
+    assert(not omarchy_xr_canvas.origin[laptopBrowser.address])
+    dispatched={};hoverV4(laptopBrowser.address,1002,10,10)
+    assert(count("window.move",laptopBrowser.address)==0 and count("focus",laptopBrowser.address)==0 and laptopBrowser.workspace.name=="1")
+    tick(260.3);assert(laptopBrowser.workspace.name=="1") -- the old bring cannot replay
+    files[path..".bring"]="v1 43 2 0xab10 260\n";tick(260.4)
+    assert(laptopBrowser.workspace.name=="1")
+    files[path..".bring"]="v1 42 2 0xab10 200\n";tick(260.5)
+    assert(laptopBrowser.workspace.name=="1")
+    files[path..".bring"]=nil
+    print("Canvas isolation: same-process browser windows stay separate; only fresh explicit brings transfer; returned windows reject stale focus and replay passed")
+end

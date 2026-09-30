@@ -598,13 +598,18 @@ struct View {
     void afterCanvasVerb() {
         level=canvas->zoomedOut() ? Level::Overview : Level::Monitor;
         levelOutput=canvas->zoomedOut() ? std::string() : canvas->landed;
-        if (!canvas->focusRequest.empty()) focusWindow(std::exchange(canvas->focusRequest, {}));
+        if (!canvas->focusRequest.empty()) {
+            const auto name=std::exchange(canvas->focusRequest, {});
+            if (controls && name==canvas->bringRequested && !canvas->find(name))
+                if (const auto address=windows::parseAddress(name)) controls->publishBring(*address);
+            focusWindow(name);
+        }
         if (canvas->fillRequest && controls) controls->publishFill(canvas->fillRequest->address, canvas->fillRequest->w, canvas->fillRequest->h);
         canvas->fillRequest.reset();
         syncPrompt();
     }
     // At the gaze point when the window is looked at, else at its buffer centre; a window off the canvas
-    // by its list size (Lua adopts it on staging).
+    // by its list size (an explicit .bring asks Lua to adopt it).
     void focusWindow(const std::string& name) {
         if (gaze.current && gaze.current->output==name && canvas->find(name) && findLayout(name)) { focusHit(*gaze.current); return; }
         if (const auto* w=canvas->find(name)) { explicitFocus(name, w->pixelW/2.f, w->pixelH/2.f); return; }
@@ -2333,7 +2338,7 @@ struct View {
         else if (!windowsPath.empty()) why="--canvas-windows-file run";
         else if (next==SceneMode::Canvas && canvasPath.empty()) why="no canvas.tsv path (start with --layout or --canvas)";
         else if (next==SceneMode::Canvas && !offlineCanvas && !controlsVersionOk(posePath, why))
-            why="Window canvas needs XR controls version 8 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
+            why="Window canvas needs XR controls version 9 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")";
         if (!why.empty()) { std::cerr << "Scene: switch to " << name << " refused: " << why << std::endl; return false; }
         if (monitorSearch.open) monitorSearchClose();   // the canvas has its own search
         if (next==SceneMode::Canvas ? !enterCanvasScene() : !enterMonitorScene()) return false;
@@ -2415,14 +2420,14 @@ bool controlsVersionOk(const std::string& posePath, std::string& why) {
     std::ifstream in(file); int version=0;
     if (!in) { why=file.string()+" missing"; return false; }
     if (!(in>>version)) { why=file.string()+" unreadable"; return false; }
-    if (version<8) { why="found version "+std::to_string(version); return false; }
+    if (version<9) { why="found version "+std::to_string(version); return false; }
     return true;
 }
 // Window canvas mode: no monitor panels; the capture connection must work before any window opens.
 int canvasPreview(bool smoke, const std::string& display, const std::string& posePath, bool direct, bool stereo, float ipd, float fov, const std::string& canvasPath, const std::string& windowsPath, int fps, bool spectatorEnabled) {
     std::string why;
     if (windowsPath.empty() && !controlsVersionOk(posePath, why))
-        throw std::runtime_error("Window canvas needs XR controls version 8 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
+        throw std::runtime_error("Window canvas needs XR controls version 9 or newer: open Utilities -> Setup & integrations and reinstall the controls ("+why+")");
     const auto memory=(std::filesystem::path(canvasPath).parent_path()/"canvas-memory.tsv").string();
     auto scene=std::make_unique<canvas::Scene>(canvas::Ring{}, canvas::Settings{}, memory);
     std::string error;
@@ -2451,7 +2456,7 @@ int main(int argc,char** argv) {
             auto value=[&]() -> std::string { if (++i>=argc || std::string_view(argv[i]).starts_with("--") || !*argv[i]) throw std::runtime_error(arg+" requires a value"); return argv[i]; };
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit (monitors); R: recenter; Esc: exit\n"
-                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 8 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nKeys: the XR key layer (docs/xr-controls-plan.md) drives every presentation through Hyprland; the windowed preview\nonly closes (Esc).\n"; return 0; }
+                "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 9 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nKeys: the XR key layer (docs/xr-controls-plan.md) drives every presentation through Hyprland; the windowed preview\nonly closes (Esc).\n"; return 0; }
             else if (arg=="--version") { std::cout << "omarchy-xr 0.5.2\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;

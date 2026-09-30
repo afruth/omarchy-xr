@@ -1012,7 +1012,7 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 8 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v8 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v8.") + " A terminal opens to install them." : ""
+                                    hint: root.loaded && root.controlsVersion < 9 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v9 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v9.") + " A terminal opens to install them." : ""
                                     actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground
@@ -1056,7 +1056,7 @@ Item {
                                         visible: !root.viewing
                                         text: root.pendingAction === "start" ? "Opening…" : "Preview on desktop"
                                         enabled: root.loaded && !root.busy && !!root.glasses.runtimeInstalled
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 8)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
                                         helpText: "Apply this setup and open XR on your desktop"
                                         onClicked: root.send("start")
                                     }
@@ -2456,7 +2456,7 @@ Item {
                                         text: "Preview on desktop"
                                         helpText: "Apply this setup and preview it on your desktop"
                                         enabled: root.loaded && !!root.glasses.runtimeInstalled && !root.viewing && !root.busy
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 8)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
                                         onClicked: root.send("start")
                                     }
                                     Action {

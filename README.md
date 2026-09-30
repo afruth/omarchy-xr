@@ -118,11 +118,12 @@ window that asks for fullscreen is filled instead. Stop returns every window to 
 and tiling. The [XR keys](#xr-keys) work the same as with virtual monitors: XR+/ (or typing in Overview)
 searches your windows by title, class or kind, XR+Return makes the current window fill your view,
 XR+Left/Right step through the windows around the ring, and XR+Page_Up/Down or XR+Shift+wheel scroll
-the cylinder; new windows open next to where you look. XR+H lists every key in the headset. New windows pulse briefly, and one placed outside your view gets an edge
+the cylinder; windows opened on the canvas appear next to where you look. New laptop windows stay
+on the laptop; use XR search or move a window explicitly to transfer it to the canvas. XR+H lists every key in the headset. New windows pulse briefly, and one placed outside your view gets an edge
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
-needs the v8 controls adapter, so after updating choose **Install XR controls** under the mode selector
+needs the v9 controls adapter, so after updating choose **Install XR controls** under the mode selector
 (or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
 the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
