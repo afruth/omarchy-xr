@@ -19,7 +19,8 @@ EXCLUDED_CLASSES = ("omarchy-xr-spectator", "omarchy-xr-search")
 DECOR_PROPS = ("border_size", "rounding", "no_anim", "no_shadow", "no_blur", "no_dim")
 DEFAULTS: dict[str, Any] = {"fps": 60, "radius": 2.4, "gapPx": 60, "dimUnmatched": 0.35, "labelDeg": 0.8,
                             "outputScale": 1.0, "refresh": 60, "captureBudgetMpix": 300, "adoptPolicy": "all",
-                            "takeoverKeys": True, "exclude": []}
+                            "takeoverKeys": True, "exclude": [], "confirmHints": True,
+                            "confirmPointerTransfer": False, "followNewWindows": True}
 WIDTH, HEIGHT = 2560, 1440
 ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 # (key, low, high, whole, message): the parseSettings ranges of src/canvas_model.hpp.
@@ -39,6 +40,12 @@ def _number(value, whole=False):
     return type(value) in ((int,) if whole else (int, float)) and math.isfinite(value)
 
 
+def _validate_preferences(result):
+    for key in ("confirmHints", "confirmPointerTransfer", "followNewWindows"):
+        if type(result[key]) is not bool:
+            raise ValueError("Canvas interaction preferences must be on or off")
+
+
 def validate(settings):
     if not isinstance(settings, dict) or set(settings) - set(DEFAULTS):
         raise ValueError("Unknown canvas setting")
@@ -54,6 +61,7 @@ def validate(settings):
         raise ValueError("Choose whether the canvas adopts all windows or starts empty")
     if type(result["takeoverKeys"]) is not bool:
         raise ValueError("Canvas key takeover must be on or off")
+    _validate_preferences(result)
     exclude = result["exclude"]
     if (not isinstance(exclude, list) or len(exclude) > 64
             or not all(isinstance(t, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", t) for t in exclude)):
@@ -135,7 +143,9 @@ class CanvasSession:
         # Field 9 was the optional window-key takeover; controls v7 bind the XR key layer instead and take
         # nothing over, so it is always 0 (kept so older readers still find field 10). takeoverKeys stays in
         # the profile only so older profiles load.
-        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} 0 {s['refresh']}\n" + "".join(f"exclude {t}\n" for t in rows))
+        preferences = " ".join(str(int(s[key])) for key in ("confirmHints", "confirmPointerTransfer", "followNewWindows"))
+        atomic_write(self.tsv, f"# canvas v1 {header} {s['adoptPolicy']} 0 {s['refresh']} {preferences}\n"
+                     + "".join(f"exclude {t}\n" for t in rows))
 
     def monitor_rule(self, settings, x):
         return (f'hl.monitor({{output="{self.name}", mode="{WIDTH}x{HEIGHT}@{settings["refresh"]}", '
@@ -280,6 +290,23 @@ class CanvasSession:
             if not m["name"].startswith("OMXR-") and m["name"] not in glasses and not m.get("disabled", False):
                 return str(m["activeWorkspace"]["id"])
         raise RuntimeError("There is no computer display available for your XR windows. Turn on a display, then choose Stop again.")
+
+    def release_window(self, address):
+        if not isinstance(address, str) or not ADDRESS.fullmatch(address):
+            raise ValueError("Choose a valid canvas window")
+        clients = json.loads(self.runner("-j", "clients"))
+        client = next((c for c in clients if c.get("address") == address), None)
+        if client is None or (client.get("workspace") or {}).get("name") not in (CANVAS_WORKSPACE, PARK_WORKSPACE):
+            raise ValueError("That window is no longer on the canvas")
+        journal = self.read_journal()
+        origin = (journal or {}).get("windows", {}).get(address)
+        if origin is None:
+            origin = {"workspace": int(self.fallback_workspace()), "floating": bool(client.get("floating")),
+                      "size": client["size"], "at": client["at"]}
+        self.return_window(client, origin)
+        if journal and address in journal["windows"]:
+            del journal["windows"][address]
+            atomic_write(self.journal, json.dumps(journal, indent=2) + "\n")
 
     def restore(self):
         """Return every window to its origin, one by one, before the canvas output goes away."""

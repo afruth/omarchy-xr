@@ -182,7 +182,7 @@ run-units: $(UNIT_BINS)
 	./$(BUILD)/test-idle-frames
 	./$(BUILD)/test-perf-hud
 
-check: all run-units
+check: all run-units check-ux
 	lua tests/controls.lua
 	python3 -m unittest discover -s tests -p 'test_*.py'
 	./$(BUILD)/omarchy-xr --help
@@ -281,7 +281,7 @@ check-lint:
 	$(MYPY)
 	$(LUACHECK) config/xr-controls.lua tests/controls.lua
 	$(QMLLINT) -I tools/qmlstubs studio/MonitorStudio.qml studio/BarWidget.qml studio/AngleField.qml studio/RequestState.qml studio/ModeSelector.qml studio/KeyMap.qml \
-		studio/SearchPrompt.qml studio/SearchPromptWindow.qml
+		studio/SearchPrompt.qml studio/SearchPromptWindow.qml studio/CanvasMap.qml
 	python3 scripts/function_length.py
 .PHONY: check-lint
 
@@ -312,6 +312,14 @@ check-workspace-focus: $(BUILD)/test-workspace-focus $(BUILD)/test-canvas-focus 
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-canvas-focus
 	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-mode-switch
 .PHONY: check-workspace-focus
+
+$(BUILD)/test-ux-rendering: tests/ux_rendering.cpp $(APP_OBJS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)
+
+check-ux: $(BUILD)/test-ux-rendering
+	SDL_VIDEODRIVER=offscreen ./$(BUILD)/test-ux-rendering
+	python3 -m unittest discover -s tests -p 'test_ux_workflows.py'
+.PHONY: check-ux
 
 $(BUILD)/test-scene-seam: tests/scene_seam.cpp $(APP_OBJS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Isrc $< $(filter-out $(BUILD)/main.o,$(APP_OBJS)) -o $@ $(LDFLAGS) $(LDLIBS)

@@ -21,11 +21,13 @@ public:
     tracking::Camera camera;
     bool recenterRequested=false,fitRequested=false,fitTargetRequested=false;
     int zoom=0,spectator=-1;
+    int comfortSample=-1;
+    bool saveComfortRequested=false, restoreComfortRequested=false;
     // Canvas verbs (Studio, scripts; docs/infinite-canvas-plan.md §5.5): the View reads them in canvas
     // mode only and clears them otherwise. focus:0x<hex> lands on and focuses that window.
     bool overviewRequested=false,searchRequested=false,fillRequested=false,arrangeRequested=false,undoRequested=false,
         redoRequested=false,pinRequested=false,helpRequested=false;
-    std::string focusRequested;
+    std::string focusRequested, summonRequested, pinWindowRequested;
     // mode:canvas|monitors (backend live switch, M6): the scene to switch to; the View consumes it.
     std::string modeRequested;
     bool canvasVerb(const std::string& packet) {
@@ -33,13 +35,20 @@ public:
             {"search",&PoseSocket::searchRequested},{"fill",&PoseSocket::fillRequested},{"arrange",&PoseSocket::arrangeRequested},
             {"undo",&PoseSocket::undoRequested},{"redo",&PoseSocket::redoRequested},{"pin",&PoseSocket::pinRequested},{"help",&PoseSocket::helpRequested}};
         for(const auto& [name,flag]:verbs) if(packet==name) { this->*flag=true; return true; }
-        if(!packet.starts_with("focus:0x") || packet.size()>6+18) return false;
-        focusRequested=packet.substr(6);
-        return true;
+        const std::pair<const char*,std::string PoseSocket::*> addressed[]={{"focus:",&PoseSocket::focusRequested},
+            {"summon:",&PoseSocket::summonRequested},{"pin:",&PoseSocket::pinWindowRequested}};
+        for(const auto& [prefix, field]:addressed) {
+            if(!packet.starts_with(prefix)) continue;
+            const auto name=packet.substr(std::strlen(prefix));
+            if(!name.starts_with("0x") || name.size()<3 || name.size()>18 || name.find_first_not_of("0123456789abcdefABCDEF",2)!=std::string::npos) return false;
+            this->*field=name; return true;
+        }
+        return false;
     }
     void clearCanvasVerbs() {
         overviewRequested=searchRequested=fillRequested=arrangeRequested=undoRequested=redoRequested=pinRequested=helpRequested=false;
         focusRequested.clear();
+        summonRequested.clear(); pinWindowRequested.clear();
     }
     explicit PoseSocket(const std::string& name):path(name) {
         if(path.empty()) return;
@@ -69,6 +78,10 @@ public:
             if(n<=ssize_t(sizeof(data))) {
                 const std::string packet(data,n);
                 if(packet=="spectator_on")spectator=1;
+                else if(packet=="comfort_sample_on")comfortSample=1;
+                else if(packet=="comfort_sample_off")comfortSample=0;
+                else if(packet=="save_comfort")saveComfortRequested=true;
+                else if(packet=="restore_comfort")restoreComfortRequested=true;
                 else if(packet=="spectator_off")spectator=0;
                 else if(packet=="recenter")recenterRequested=true;
                 else if(packet=="fit")fitRequested=true;
