@@ -165,7 +165,7 @@ int main() {
     char temp[]="/tmp/xr-mode-switch-XXXXXX"; assert(mkdtemp(temp));
     const State s(temp);
     std::ofstream(s.viewer) << "# settings 60 40 24 -1 0\nOMXRTEST-missing\t0\t0\t1920\t1080\t40\t100\n";
-    std::ofstream(std::string(temp)+"/controls.version") << "8\n";
+    std::ofstream(std::string(temp)+"/controls.version") << "9\n";
     const auto old=std::string(temp)+"/old";
     std::filesystem::create_directory(old);
     roundTrip(window, s);

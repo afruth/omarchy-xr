@@ -280,6 +280,10 @@ public:
         for (const auto& r:rows) text+=std::string(r.selected ? "1 " : "0 ")+hextoken::encodeHex(r.cls)+' '+hextoken::encodeHex(r.title)+'\n';
         writeFile(path+".results", text);
     }
+    void publishBring(std::uint64_t address) {
+        if (path.empty()) return;
+        writeFile(path+".bring", "v1 "+std::to_string(getpid())+' '+std::to_string(++landSeq)+' '+::windows::addressToken(address)+' '+std::to_string(bootSeconds())+'\n');
+    }
     void publishLand(std::uint64_t address) {
         if (path.empty()) return;
         writeFile(path+".land", "v1 "+std::to_string(getpid())+' '+std::to_string(++landSeq)+' '+::windows::addressToken(address)+' '+std::to_string(bootSeconds())+'\n');

@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 8
+local CONTROLS_VERSION = 9
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 -- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops
@@ -371,7 +371,7 @@ omarchy_xr_controls.workspace_events={
 -- canvas window is hidden on PARK_WS. Events only mark the list dirty; the timers write it.
 local MAX_ROWS=512
 local PROPS={{"border_size","0"},{"rounding","0"},{"no_anim","1"},{"no_shadow","1"},{"no_blur","1"},{"no_dim","1"}}
-local windowsDirty,lastWindowsWrite,canvasPolicy,canvasExcludes=false,-math.huge,"all",{}
+local windowsDirty,lastWindowsWrite,canvasExcludes=false,-math.huge,{}
 local snapshot,focusPending,focusAddress={},nil,nil
 local overflowX,overflowY,cursorLine,cursorWritten=0,0,nil,-math.huge
 local function pair(value)
@@ -452,6 +452,7 @@ local function enforce(w)
 end
 -- Every other window on the canvas workspace is a sliver (§3.3).
 local function place(w)
+    if not isMember(w) then return "off" end
     if w.address==canvas.staged then return "stage" end
     local name=w.workspace and w.workspace.name
     if name==CANVAS_WS then return "sliver" end
@@ -520,11 +521,12 @@ local function dropSliver(address)
     canvas.slivers[address]=nil
 end
 -- Quiet staging (XR's own choice, M7) leaves the keyboard focus where it is.
-local function stageWindow(address,mon,quiet)
+local function stageWindow(address,mon,quiet,bringing)
     local fine,w=pcall(hl.get_window,"address:"..address)
-    if not fine or not w then return false end
+    if not fine or not w or not isRegular(w) or isExcluded(w) or (not bringing and not isMember(w)) then return false end
     local previous=canvas.staged
-    if previous and previous~=address then
+    local previousFine,previousWindow=pcall(hl.get_window,"address:"..(previous or ""))
+    if previousFine and previousWindow and isMember(previousWindow) and previous~=address then
         if canvas.tiersWanted[previous] then makeSliver(mon,previous,address,true)
         else windowDispatch("move",previous,{workspace="name:"..PARK_WS,follow=false}) end
     end
@@ -547,6 +549,8 @@ end
 local function selectCanvasWindow(address,px,py)
     local mon=canvasMonitor()
     if not mon then return end
+    local fine,w=pcall(hl.get_window,"address:"..address)
+    if not fine or not w or not isMember(w) or isExcluded(w) then return end
     if canvas.staged~=address then
         if not stageWindow(address,mon) then return end
     else
@@ -667,7 +671,8 @@ local function readFill(mon)
     local fillSeq=tonumber(seqText)
     if fillSeq<=canvas.fillSeq then return end
     canvas.fillSeq=fillSeq;address=address:lower()
-    if fresh(tonumber(stamp)) and address==canvas.staged then applyFill(mon,address,tonumber(width),tonumber(height)) end
+    local fine,w=pcall(hl.get_window,"address:"..address)
+    if fresh(tonumber(stamp)) and address==canvas.staged and fine and w and isMember(w) then applyFill(mon,address,tonumber(width),tonumber(height)) end
 end
 -- `.tiers`: v1 <owner> <seq> <stamp> [<address> sliver|park]..., the renderer's complete sliver set.
 -- nil keeps the last set (foreign owner, malformed or already seen); a missing or stale file means no slivers
@@ -737,7 +742,7 @@ do
         lastEnsure=now
         if canvas.staged and stagedLive() then return end
         local best=mruMember()
-        if best then stageWindow(best.address,mon,true) end
+        if best then stageWindow(best.address,mon,true) else canvas.staged=nil end
     end
 end
 -- A SUPER+right-drag resizes the real window, maybe from a corner: 0.5 s after its geometry settles
@@ -755,7 +760,7 @@ do
     reclampStage=function(mon,now)
         local address=canvas.staged
         local fine,w=pcall(hl.get_window,"address:"..(address or ""))
-        if not (address and fine and w) or drag.active then stageSeen=nil;return end
+        if not (address and fine and w and isMember(w)) or drag.active then stageSeen=nil;return end
         local x,y=pair(w.at)
         local width,height=pair(w.size)
         if not sameGeometry(stageSeen,address,x,y,width,height) then stageSeen={address=address,x=x,y=y,w=width,h=height,at=now};return end
@@ -769,10 +774,24 @@ do
         snapshot[address]={x=bandX,y=bandY,w=width,h=height};windowsDirty=true
     end
 end
+-- Only this explicit transfer mailbox may bring a desktop window into the Canvas.
+local function readBring(mon)
+    local file=io.open(path..".bring","r")
+    if not file then return end
+    local line=file:read("*l") or "";file:close()
+    local owner,seqText,address,stamp=line:match("^v1 (%d+) (%d+) (0x%x+) (%d+)%s*$")
+    if owner~=session then return end
+    if canvas.bringOwner~=owner then canvas.bringOwner,canvas.bringSeq=owner,0 end
+    local seq=tonumber(seqText)
+    if seq<=canvas.bringSeq then return end
+    canvas.bringSeq=seq
+    if fresh(tonumber(stamp)) then stageWindow(address:lower(),mon,false,true) end
+end
 local function canvasTick()
     local mon=canvasMonitor()
     if not mon then return end
     local now=bootSeconds()
+    readBring(mon)
     readFill(mon)
     pcall(syncTiers,mon,now)
     ensureStaged(mon,now)
@@ -859,6 +878,8 @@ local function release(w)
         windowDispatch("move",address,{x=math.floor(origin.x),y=math.floor(origin.y)})
     end
     canvas.origin[address]=nil
+    canvas.slivers[address]=nil;canvas.tiersWanted[address]=nil;snapshot[address]=nil
+    if focusPending==address then focusPending=nil end
     if canvas.staged==address then canvas.staged=nil;overflowX,overflowY=0,0 end
 end
 -- A small window of a canvas window's process is its dialog: it is staged, not parked.
@@ -888,7 +909,7 @@ end
 local function onOpen(w)
     windowsDirty=true
     if not canvasMode or not w or not isRegular(w) then return end
-    if canvasPolicy=="all" or isMember(w) then adopt(w) end
+    if isMember(w) then adopt(w) end
 end
 local function onClose(w)
     windowsDirty=true
@@ -1207,14 +1228,12 @@ parseLayerSettings=function(text)
     return modifier,count,keys
 end
 end
--- adoptPolicy is field 8 of the `# canvas v1 ...` header Studio writes (field 9 is takeoverKeys); `exclude` rows follow.
+-- Startup adoption belongs to Studio; the running adapter reads exclusions only.
 local function readCanvasSettings()
-    canvasPolicy,canvasExcludes="all",{}
+    canvasExcludes={}
     local file=io.open(state.."/omarchy-xr/canvas.tsv","r")
     if not file then return end
     local text=file:read("*a") or "";file:close()
-    local policy=text:match("^# canvas v1"..("%s+%S+"):rep(7).."%s+([%a-]+)")
-    canvasPolicy=policy=="empty" and "empty" or "all"
     for token in text:gmatch("\nexclude%s+(%S+)") do canvasExcludes[token]=true end
 end
 local function enterCanvas()

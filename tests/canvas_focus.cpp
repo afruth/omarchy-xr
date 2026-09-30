@@ -486,7 +486,7 @@ void versionGate(const std::string& temp) {
     std::ofstream(dir+"/controls.version") << "5\n"; assert(!controlsVersionOk(pose, why) && why=="found version 5");
     std::ofstream(dir+"/controls.version") << "6\n"; assert(!controlsVersionOk(pose, why) && why=="found version 6"); // before the XR layer
     std::ofstream(dir+"/controls.version") << "7\n"; assert(!controlsVersionOk(pose, why) && why=="found version 7"); // before codes 29–32
-    std::ofstream(dir+"/controls.version") << "8\n"; assert(controlsVersionOk(pose, why));
+    std::ofstream(dir+"/controls.version") << "8\n"; assert(!controlsVersionOk(pose, why));
     std::ofstream(dir+"/controls.version") << "9\n"; assert(controlsVersionOk(pose, why));
     std::ofstream(dir+"/controls.version") << "six\n"; assert(!controlsVersionOk(pose, why));
     assert(!controlsVersionOk("", why));
@@ -1173,6 +1173,10 @@ void bringToCanvas(View& v) {
     typeSearch(v, 2, "chrome", "enter");
     assert(v.canvas->bringRequested=="0x9100" && v.hoverOutput=="0x9100" && v.pointerSerial==serial+1 && !v.canvas->search.open);
     assert(v.pointerX==640 && v.pointerY==400);
+    AsyncFile::instance().flush();
+    std::ifstream bringFile(mailbox(v)+".bring");
+    std::string bringLine;std::getline(bringFile,bringLine);
+    assert(bringLine.find("0x9100")!=std::string::npos);
     assert(v.tick());
     const auto f=hoverFields(v);
     assert(f[3]=="1" && f[4]=="0x9100" && f[7]==std::to_string(serial+1));
