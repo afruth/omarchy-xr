@@ -4,12 +4,13 @@ from pathlib import Path
 import sys
 import tempfile
 import errno
+import math
 import socket
 import time
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "studio"))
-from sdk_worker import Session, PosePublisher, record_keep_alive
+from sdk_worker import Session, PosePublisher, record_keep_alive, gl_euler
 from clock import boot_time
 from sdk import SDK
 
@@ -219,6 +220,88 @@ class SessionTests(unittest.TestCase):
             session.restore_display()
         library.xr_device_provider_set_display_mode.assert_called_once_with(session.handle, 0x31)
         session.close()
+
+
+def camera(roll, pitch, yaw):
+    """Python copy of tracking::orientation: the renderer camera for NWU angles."""
+    def mul(a, b):
+        return (a[0]*b[0]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3], a[0]*b[1]+a[1]*b[0]+a[2]*b[3]-a[3]*b[2],
+                a[0]*b[2]-a[1]*b[3]+a[2]*b[0]+a[3]*b[1], a[0]*b[3]+a[1]*b[2]-a[2]*b[1]+a[3]*b[0])
+    y, p, r = math.radians(yaw)/2, -math.radians(pitch)/2, -math.radians(roll)/2
+    return mul(mul((math.cos(y), 0, math.sin(y), 0), (math.cos(p), math.sin(p), 0, 0)), (math.cos(r), 0, 0, math.sin(r)))
+
+
+class CarinaTests(unittest.TestCase):
+    def make_session(self, pose=(0, 0, 0, 1, 0, 0, 0), status=0):
+        session, library, calls = SessionTests.make_session(self)
+        library.xr_device_provider_get_device_type.side_effect = lambda *args: calls.append("get_device_type") or 2
+        def poll(handle, out, predict, state):
+            for i, value in enumerate(pose):
+                out[i] = value
+            C.cast(state, C.POINTER(C.c_int)).contents.value = status
+            return 0
+        library.xr_device_provider_get_gl_pose_carina = Mock(side_effect=poll)
+        library.xr_device_provider_set_dof_type_carina = Mock(side_effect=lambda *args: calls.append("set_dof_type_carina") or 0)
+        return session, library, calls
+
+    def wait_tracking(self, session):
+        deadline = time.monotonic() + 2
+        while not session.state()["tracking"] and time.monotonic() < deadline:
+            time.sleep(.01)
+
+    def test_gl_pose_matches_renderer_convention(self):
+        for angles in ((0, 0, 0), (0, 0, 30), (0, 0, -150), (0, 25, 0), (-15, 0, 0), (10, -20, 70), (-5, 40, -120)):
+            with self.subTest(angles=angles):
+                for actual, expected in zip(gl_euler(*camera(*angles)), angles):
+                    self.assertAlmostEqual(actual, expected, places=9)
+        # Head turned right, then looking up, in OpenGL: NWU yaw is left-positive, pitch down-positive.
+        self.assertAlmostEqual(gl_euler(math.cos(math.radians(-15)), 0, math.sin(math.radians(-15)), 0)[2], -30)
+        self.assertAlmostEqual(gl_euler(math.cos(math.radians(10)), math.sin(math.radians(10)), 0, 0)[1], -20)
+
+    def test_connect_polls_3dof_pose_and_cleans_up(self):
+        half = math.radians(20) / 2
+        session, library, calls = self.make_session(pose=(1, 2, 3, math.cos(half), 0, math.sin(half), 0))
+        session.connect(0x1101)
+        self.assertLess(calls.index("set_dof_type_carina"), calls.index("initialize"))
+        library.xr_device_provider_set_dof_type_carina.assert_called_once_with(session.handle, 0)
+        self.assertNotIn("register_imu_pose_callback", calls)
+        self.assertNotIn("open_imu", calls)
+        self.assertTrue(session.state()["communication"])
+        self.wait_tracking(session)
+        self.assertTrue(session.state()["tracking"])
+        packet = session.pose_packet().decode().split()
+        self.assertEqual(packet[0], "euler-nwu-v2")
+        self.assertAlmostEqual(float(packet[4]), 20, places=4)
+        self.assertEqual(packet[5], "0")
+        poller = session.poller
+        session.close()
+        self.assertFalse(poller.is_alive())
+        self.assertEqual(calls[-3:], ["stop", "shutdown", "destroy"])
+        self.assertNotIn("close_imu", calls)
+        self.assertIsNone(session.pose_packet())
+
+    def test_unstable_pose_is_not_published(self):
+        session, library, _ = self.make_session(status=1)
+        session.connect(0x1101)
+        time.sleep(.1)
+        self.assertGreater(library.xr_device_provider_get_gl_pose_carina.call_count, 0)
+        self.assertEqual(session.samples, 0)
+        session.close()
+
+    def test_runtime_without_carina_api_reports_update(self):
+        session, library, calls = self.make_session()
+        del library.xr_device_provider_set_dof_type_carina
+        with self.assertRaisesRegex(RuntimeError, "Luma Ultra"):
+            session.connect(0x1101)
+        self.assertEqual(calls[-1], "destroy")
+        self.assertIsNone(session.handle)
+
+    def test_unknown_device_type_is_rejected(self):
+        session, library, calls = SessionTests.make_session(self)
+        library.xr_device_provider_get_device_type.side_effect = lambda *args: 7
+        with self.assertRaisesRegex(RuntimeError, "not supported"):
+            session.connect(0x1101)
+        self.assertEqual(calls[-1], "destroy")
 
 
 class SupervisorTests(unittest.TestCase):

@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.5.0 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.0).
-The package includes the Gen1/Gen2 glasses runtime; no vendor SDK download is needed.
+[Download the 0.5.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.1).
+The package includes the VITURE glasses runtime (Gen1/Gen2 and Luma Ultra); no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.5.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.5.1-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -467,7 +467,7 @@ shutdown if video stays absent. This recovers the OS connection, not a VITURE
 SDK session. Use the SDK connection controls below for that.
 
 
-### SDK connection (Pro 2 / Gen1 / Gen2)
+### SDK connection (Pro 2 / Gen1 / Gen2 / Luma Ultra)
 
 For local source development only (packaged releases include the runtime):
 obtain the current **VITURE XR Glasses SDK**, **Linux (x86_64)**, from
@@ -519,6 +519,10 @@ and resets mouse look/pan; pitch and roll remain gravity-referenced; **F** addit
 than 250 ms are discarded and the last view is held; mouse controls remain usable.
 An SDK reconnect resumes streaming without needing to reopen the viewer. This is
 rotational tracking only; physical translation is not tracked.
+Luma Ultra (Carina) glasses run in the SDK's 3DoF mode: the worker polls the
+OpenGL pose 120 times per second and converts it to the same Euler convention,
+so the viewer is unchanged. Cameras, VIO and 6DoF are not used. Luma Ultra
+support has not yet been validated on hardware.
 Validated with the Linux x86_64 SDK and attached Pro 2: SDK communication and
 pose samples work as a normal user with the udev rules installed. On this device,
 the firmware rejects the display-mode query (-7), so display-mode recovery is
