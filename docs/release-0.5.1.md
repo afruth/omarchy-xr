@@ -36,5 +36,5 @@ copy so its QML is recreated.
 ## Validation
 
 The renderer, Python, Lua, QML, package lifecycle, and plugin manifest suites
-pass. The marketplace installer pins this release's package by URL, size and
-SHA-256 in a follow-up commit once the package is published.
+pass. The marketplace installer (**Install XR runtime** in Monitor Studio) pins
+this release's package by URL, size (6,099,711 bytes) and SHA-256.
