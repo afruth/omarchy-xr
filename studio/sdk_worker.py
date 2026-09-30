@@ -1,4 +1,4 @@
-"""Isolated VITURE C API session; releases include the licensed Gen1/Gen2 runtime."""
+"""Isolated VITURE C API session; releases include the licensed Gen1/Gen2/Carina runtime."""
 import ctypes as C
 import json
 import math
@@ -14,6 +14,18 @@ from atomic_file import atomic_write
 from clock import boot_time
 
 POSE = C.CFUNCTYPE(None, C.POINTER(C.c_float), C.c_uint64)
+GEN1, GEN2, CARINA = 0, 1, 2
+CARINA_POLL = 1 / 120
+
+
+def gl_euler(w, x, y, z):
+    """Carina OpenGL pose (x right, y up, z back) as the Gen1/Gen2 NWU callback's
+    roll, pitch, yaw in degrees: the inverse of tracking::orientation, whose camera
+    is Ry(yaw)·Rx(-pitch)·Rz(-roll). Yaw left-positive, pitch down-positive."""
+    m02, m12, m22 = 2*(x*z + w*y), 2*(y*z - w*x), 1 - 2*(x*x + y*y)
+    m10, m11 = 2*(x*y + w*z), 1 - 2*(x*x + z*z)
+    return (-math.degrees(math.atan2(m10, m11)), math.degrees(math.asin(max(-1.0, min(1.0, m12)))),
+            math.degrees(math.atan2(m02, m22)))
 
 
 class Session:
@@ -23,6 +35,9 @@ class Session:
         self.lib = C.CDLL(str(library))
         self.handle = None
         self.initialized = self.started = self.imu = False
+        self.device_type = None
+        self.poller = None
+        self.poll_stop = threading.Event()
         self.pose_lock = threading.Lock()
         self.pose = None
         self.last_pose = 0.0
@@ -54,6 +69,19 @@ class Session:
             fn = getattr(self.lib, "xr_device_provider_" + name)
             fn.argtypes, fn.restype = args, result
 
+    def bind_carina(self):
+        # Bound on demand so a Gen1/Gen2-only runtime without these symbols still loads.
+        signatures = {
+            "set_dof_type_carina": ([C.c_void_p, C.c_int], C.c_int),
+            "get_gl_pose_carina": ([C.c_void_p, C.POINTER(C.c_float), C.c_double, C.POINTER(C.c_int)], C.c_int),
+        }
+        try:
+            for name, (args, result) in signatures.items():
+                fn = getattr(self.lib, "xr_device_provider_" + name)
+                fn.argtypes, fn.restype = args, result
+        except AttributeError:
+            raise RuntimeError("The installed XR software does not support VITURE Luma Ultra glasses. Update the XR runtime.") from None
+
     def call(self, name, *args):
         return getattr(self.lib, "xr_device_provider_" + name)(*args)
 
@@ -64,6 +92,7 @@ class Session:
                       -3: "The USB connection failed", -4: "The glasses do not support this feature",
                       -5: "The glasses did not respond", -7: "The glasses rejected the request"}
             actions = {"start": "starting the connection", "open_imu": "starting head tracking",
+                       "set_dof_type_carina": "starting head tracking",
                        "get_display_mode": "checking the video mode", "set_display_mode": "changing the video mode"}
             reason = errors.get(code, "The glasses reported an error")
             action = actions.get(name, "communicating with the glasses")
@@ -73,12 +102,14 @@ class Session:
     def on_pose(self, data, timestamp):
         if not data:
             return
-        euler = tuple(float(data[i]) for i in range(3))
+        self.record(tuple(float(data[i]) for i in range(3)), int(timestamp))
+
+    def record(self, euler, device):
         if not all(math.isfinite(v) for v in euler):
             return
         now = time.monotonic()
         with self.pose_lock:
-            self.pose = (now, *euler, int(timestamp))
+            self.pose = (now, *euler, device)
             self.samples += 1
             self.last_pose = now
         notify = getattr(self, "pose_notify", None)
@@ -103,9 +134,15 @@ class Session:
         if not self.handle:
             raise RuntimeError("Head tracking could not connect to the glasses. Reconnect the USB cable, then try again.")
         try:
-            if self.call("get_device_type", self.handle) not in (0, 1):
-                raise RuntimeError("These glasses are not supported. Connect compatible VITURE Gen1 or Gen2 glasses.")
-            self.check("register_imu_pose_callback", self.handle, self.callback)
+            self.device_type = self.call("get_device_type", self.handle)
+            if self.device_type not in (GEN1, GEN2, CARINA):
+                raise RuntimeError("These glasses are not supported. Connect compatible VITURE glasses.")
+            if self.device_type == CARINA:
+                self.bind_carina()
+                # Rotational tracking needs no cameras or VIO libraries; must precede initialize.
+                self.check("set_dof_type_carina", self.handle, 0)
+            else:
+                self.check("register_imu_pose_callback", self.handle, self.callback)
             self.check("initialize", self.handle, None, None)
             self.initialized = True
             self.check("start", self.handle)
@@ -118,6 +155,9 @@ class Session:
                 self.mode = self.check("get_display_mode", self.handle)
             except RuntimeError as exc:
                 self.display_error = str(exc)
+            if self.device_type == CARINA:
+                self.start_carina_poll()
+                return
             try:
                 self.check("open_imu", self.handle, 1, 2)  # pose, 120 Hz
                 self.imu = True
@@ -126,6 +166,21 @@ class Session:
         except Exception:
             self.close()
             raise
+
+    def start_carina_poll(self):
+        # Carina has no pose callback at IMU rate; the SDK demo polls at 120 Hz.
+        self.poll_stop.clear()
+        self.poller = threading.Thread(target=self.poll_carina, args=(self.handle,), daemon=True)
+        self.poller.start()
+
+    def poll_carina(self, handle):
+        pose = (C.c_float * 7)()
+        status = C.c_int(1)
+        while not self.poll_stop.wait(CARINA_POLL):
+            status.value = 1
+            # Status 1 (unstable) occurs briefly after start; hold the last view instead.
+            if self.call("get_gl_pose_carina", handle, pose, 0.0, C.byref(status)) == 0 and status.value == 0:
+                self.record(gl_euler(*pose[3:7]), 0)  # no device clock: the viewer uses host time
 
     def load_mode_journal(self):
         if not self.mode_journal or not self.mode_journal.exists():
@@ -206,6 +261,9 @@ class Session:
                 # The manager restores mode while it can observe host hotplug.
                 # Closing/reconnecting USB must never replay timed mode changes.
                 # Keep the recovery journal if host restoration is still pending.
+                if self.poller:
+                    self.poll_stop.set()
+                    self.poller.join(timeout=1)
                 if self.imu:
                     self.call("close_imu", self.handle, 1)
                 if self.started:
@@ -215,6 +273,7 @@ class Session:
             finally:
                 self.call("destroy", self.handle)
         self.handle = None
+        self.poller = self.device_type = None
         self.initialized = self.started = self.imu = self.communication = False
         with self.pose_lock:
             self.pose = None

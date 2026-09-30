@@ -11,8 +11,8 @@ Distributed only as part of this application under the
 (effective September 2025). The package preserves the unmodified runtime bytes.
 The developer ZIP, headers, API documentation, samples, Carina/VIO libraries,
 OpenCV libraries and SDK-bundled libusb shared library are not distributed.
-This adapter supports Gen1/Gen2 devices, including Pro 2; it does not support
-Carina 6DoF or cameras.
+This adapter supports Gen1/Gen2 devices, including Pro 2, and Carina (Luma
+Ultra) rotational 3DoF tracking; it does not support Carina 6DoF or cameras.
 
 VITURE publishes an [SDK open-source notice](https://www.viture.com/viture-sdk-license-agreement-sider).
 Its XR Glasses SDK inventory includes the following components. The inventory
