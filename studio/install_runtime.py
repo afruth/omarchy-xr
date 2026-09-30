@@ -9,12 +9,12 @@ import subprocess
 import tempfile
 import urllib.request
 
-VERSION = '0.5.1'
+VERSION = '0.5.2'
 PACKAGE = f'omarchy-xr-bin-{VERSION}-1-x86_64.pkg.tar.zst'
 URL = f'https://github.com/afruth/omarchy-xr/releases/download/v{VERSION}/' + PACKAGE
-SHA256 = 'b2fb6a8a885925f0046eebcbe9060efebf6d83720193188a598e613f7fec6778'
+SHA256 = '5278fec0278f9302927f13c66dcfb0b66a781c798adbe84cada4ff0d9134d824'
 # Pin size alongside the URL and digest; never trust the server's Content-Length.
-PACKAGE_SIZE = 6_099_711
+PACKAGE_SIZE = 6_148_601
 # The package's copy of the plugin manifest records which release is installed.
 PACKAGED_MANIFEST = Path('/usr/share/omarchy-xr/plugin/manifest.json')
 
