@@ -118,15 +118,12 @@ inline const char* placeName(windows::Place place) {
     default: return "off";
     }
 }
-// The fit_target chord (line 3) of controls-settings.tsv, validated like the Lua adapter's settingKeys:
-// 6 lines, a finger count 3-5, chords of at most 100 characters from [A-Za-z0-9_ +]. "" = no key;
-// a missing or invalid file keeps the adapter's default.
-// The XR layer's focus chord from controls-settings.tsv v2 (studio/input_settings.py tsv()): the modifier
-// plus the `focus` key, "" when focus is disabled, the default for a missing, older or malformed file.
+// Focus hints use the explicit focus key when configured, otherwise zoom-level-in, which also focuses.
+// Missing, older or malformed settings use the adapter's current default; disabled keys show tap only.
 inline std::string readConfirmKey(const std::string& path) {
-    const std::string fallback="CTRL + ALT + Down";
+    const std::string fallback="CTRL + ALT + Up";
     std::ifstream file(path);
-    std::string line, modifier="CTRL + ALT", key="Down";
+    std::string line, modifier="CTRL + ALT", focusKey, zoomKey="Up";
     if (!std::getline(file, line) || line!="v2") return fallback;
     const auto clean=[](const std::string& value) {
         if (value.size()>100) return false;
@@ -138,8 +135,10 @@ inline std::string readConfirmKey(const std::string& path) {
         if (tab==std::string::npos) return fallback;
         const auto kind=line.substr(0, tab), rest=line.substr(tab+1);
         if (kind=="modifier") { if (rest.empty() || !clean(rest)) return fallback; modifier=rest; }
-        else if (kind=="key" && rest.starts_with("focus\t")) { key=rest.substr(6); if (!clean(key)) return fallback; }
+        else if (kind=="key" && rest.starts_with("focus\t")) { focusKey=rest.substr(6); if (!clean(focusKey)) return fallback; }
+        else if (kind=="key" && rest.starts_with("zoom_level_in\t")) { zoomKey=rest.substr(14); if (!clean(zoomKey)) return fallback; }
     }
+    const auto& key=focusKey.empty() ? zoomKey : focusKey;
     return key.empty() ? std::string() : modifier+" + "+key;
 }
 class Scene {
@@ -164,7 +163,7 @@ public:
     std::string landed, focusedName, selected, lastDwell;
     // Contextual confirmation hints follow selection until the compositor acknowledges input focus.
     // confirmKey is the XR layer's focus chord from controls-settings.tsv ("" = none configured).
-    std::string confirmKey="CTRL + ALT + Down", hintFor;
+    std::string confirmKey="CTRL + ALT + Up", hintFor;
     double hintUntil=0;
     Fov fov;
     Labels labels;
