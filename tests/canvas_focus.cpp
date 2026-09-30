@@ -426,6 +426,10 @@ void virtualCursor(View& v) {
     const auto name=neighbour->name; const auto& s=v.canvas->staged()->rect;
     const double ox=v.canvas->ring.wrap(neighbour->rect.cx()-s.x)-(staged->record.w-1), oy=neighbour->rect.cy()-s.y-10;
     const auto serial=v.pointerSerial;
+    v.canvas->settings.confirmPointerTransfer=true;
+    cursor(20000+staged->record.w-1, 10, ox, oy);
+    assert(v.pointerSerial==serial);
+    v.canvas->settings.confirmPointerTransfer=false;
     cursor(20000+staged->record.w-1, 10, ox, oy);
     assert(!v.xrCursor.valid || v.xrCursor.window=="0x5005");
     assert(v.pointerSerial==serial+1 && v.hoverOutput==name && v.restageRequested==name && v.selection.output==name);
@@ -1492,8 +1496,8 @@ void stageDrag(View& v) {
     assert(sameRect(w->rect, start) && !v.dragHeld && s.dragName.empty());
     work(v); inRing(v);
 }
-// (z6) The confirm hint: under the first three dwells (one per settled rest, 2.5 s each), never after a
-// confirm; its text names the fit_target chord from controls-settings.tsv beside canvas.tsv.
+// (z6) Contextual hints remain available after repeated uses, name the configured chord, and
+// disappear once the compositor reports the target receiving keyboard input.
 bool hintDrawn(View& v, double now, const std::string& name="0x5004") {
     const auto quads=v.canvas->labelQuads(48, now);
     return std::any_of(quads.begin(), quads.end(), [&](const auto& q) { return q.accent && q.layout.output==name && q.texture; });
@@ -1501,27 +1505,33 @@ bool hintDrawn(View& v, double now, const std::string& name="0x5004") {
 void confirmHint(View& v, const std::string& temp) {
     work(v); ease(v, 60); v.interactionUntil=0;
     auto& s=*v.canvas;
-    s.confirmed=false; s.hintsShown=0; s.hintFor.clear(); s.labels.release();
+    s.hintFor.clear(); s.labels.release();
     assert(!s.stagedName.empty() && s.stagedName!="0x5004");
     const auto hit=hitOn(v, "0x5004", .4f, .4f);
     double t=monotonicSeconds()+1;
     const auto staged=s.stagedName;   // the staged window already has the keys: no hint
     for (double end=t+1;t<end;t+=.05) v.dwellOn(hitOn(v, staged, .4f, .4f), t);
-    assert(s.lastDwell==staged && s.hintsShown==0 && s.hintFor.empty() && !hintDrawn(v, t, staged));
+    assert(s.lastDwell==staged && s.hintFor.empty() && !hintDrawn(v, t, staged));
     v.dwellOn(std::nullopt, t); t+=3;
     for (unsigned round=1;round<=4;++round, t+=3) {
         for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
-        assert(s.lastDwell=="0x5004" && s.hintsShown==std::min(round, 3u));
-        assert(hintDrawn(v, t)==(round<=3) && !hintDrawn(v, t+3));
+        assert(s.lastDwell=="0x5004");
+        assert(hintDrawn(v, t) && hintDrawn(v, t+3));
         v.dwellOn(std::nullopt, t);   // looking away ends the rest, so the next one settles again
     }
     assert(s.labels.atlas.count("hint"));
-    s.hintsShown=0; for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
-    assert(s.hintFor=="0x5004" && hintDrawn(v, t));
+    for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
+    assert(s.hintFor=="0x5004");
     v.selection.output="0x5004"; v.navigate({View::Verb::FitTarget});
-    assert(s.confirmed && s.hintFor.empty() && !hintDrawn(v, t) && v.hoverOutput=="0x5004");
-    v.dwellOn(std::nullopt, t); t+=3; for (double end=t+1;t<end;t+=.05) v.dwellOn(hit, t);
-    assert(s.hintFor.empty());
+    assert(s.hintFor.empty() && !hintDrawn(v, t) && v.hoverOutput=="0x5004");
+    ease(v,120); v.interactionUntil=0;
+    s.noteDwell("0x5004",t+3);
+    assert(s.hintFor.empty()==(s.focusedName=="0x5004"));
+    s.settings.confirmHints=false; assert(!hintDrawn(v,t));
+    s.settings.confirmHints=true;
+    const auto previousFocus=s.focusedName;
+    s.focusedName="0x5004"; assert(!hintDrawn(v,t));
+    s.focusedName=previousFocus;
     // The chord: the configured one, none, or the default for a missing or malformed file.
     const auto settings=temp+"/controls-settings.tsv";
     const std::string head="v2\nmodifier\tCTRL + ALT\nfingers\t3\n";

@@ -34,7 +34,8 @@ from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE,
 # Controls v8 add the performance card, zoom levels and move-with-head keys (codes 29–32).
 REQUIRED_CONTROLS = 8
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
-CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out")
+CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
+                  "save_comfort", "restore_comfort")
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
@@ -1208,6 +1209,7 @@ class Manager:
                 "canvasWindows": performance.get("canvasWindows", 0) if self.canvas_mode else 0,
                 "canvasState": performance.get("canvasState", "") if self.canvas_mode else "",
                 "canvasBudget": performance.get("budget", {}) if self.canvas_mode else {},
+                "comfortSaved": (self.directory / f"comfort-view.{self.render_mode}.tsv").exists(),
                 "restorationError": "; ".join(filter(None, (self.restoration_error, self.output_error, self.viewer_exit))), "glasses": glasses}
 
     def append_backend_log(self, text):
@@ -1304,6 +1306,8 @@ def action_save_setup(manager, request):
 
 
 def action_use_setup(manager, request):
+    if request.get("saveBeforeSwitch"):
+        manager.save_setup(request.get("saveSetupName"), request["layout"], request.get("saveSetupId") or None)
     return {**manager.use_setup(request.get("setupId")), "setups": manager.setups()}
 
 
@@ -1314,7 +1318,9 @@ def action_save_controls(manager, request):
 
 def action_save(manager, request):
     manager.save(request["layout"])
-    return {"layout": manager.load(), "message": "Monitor layout saved."}
+    saved = manager.load()
+    return {"layout": saved, "layoutDirty": saved != manager.applied,
+            "message": "Monitor layout saved. Apply to update XR."}
 
 
 def action_apply(manager, request):
@@ -1327,6 +1333,8 @@ def action_apply(manager, request):
 def action_present_direct(manager, request):
     already_direct = manager.direct and manager.viewer is not None and manager.viewer.poll() is None
     if manager.canvas_mode:
+        if request.get("canvas"):
+            manager.canvas.save(request["canvas"])
         response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Stereo active."}
     else:
         manager.apply(request["layout"])
@@ -1356,12 +1364,42 @@ def action_canvas_settings(manager, request):
     return {"canvas": settings, "message": "Window canvas settings saved."}
 
 
+def action_canvas_window(manager, request):
+    address, verb = request.get("windowAddress"), request.get("windowAction")
+    if not manager.canvas_mode or not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
+        raise ValueError("Choose a valid canvas window")
+    if verb == "return":
+        if manager.laptop.status()["off"]:
+            manager.laptop.stop()
+        manager.canvas.release_window(address)
+        return {"message": "Window returned to your desktop."}
+    if verb not in ("focus", "summon", "pin"):
+        raise ValueError("Unknown window action")
+    if not manager.viewer or manager.viewer.poll() is not None:
+        raise RuntimeError("Start XR before managing canvas windows")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+        connection.sendto(f"{verb}:{address}".encode(), str(manager.pose_socket))
+    return {"message": {"focus": "Focusing window…", "summon": "Bringing window here…", "pin": "Changing window pin…"}[verb]}
+
+
 def action_camera(manager, request):
     messages = {"recenter": "View recentered.", "fit": "Workspace fitted to view.", "fit_target": "Selected monitor fitted to view.", "zoom_in": "Zoomed in.", "zoom_out": "Zoomed out.",
                 "overview": "Overview toggled.", "search": "Search opened.", "fill": "Fill toggled.", "arrange": "Windows arranged.",
                 "undo": "Undone.", "redo": "Redone.", "pin": "Pin toggled.", "help": "Help toggled."}
     manager.camera_control(request["action"])
-    return {"message": messages[request["action"]]}
+    return {"message": messages.get(request["action"], "View updated.")}
+
+
+def action_save_comfort(manager, _request):
+    path = manager.directory / f"comfort-view.{manager.render_mode}.tsv"
+    before = path.stat().st_mtime_ns if path.exists() else 0
+    manager.camera_control("save_comfort")
+    for _ in range(40):
+        if path.exists() and path.stat().st_mtime_ns != before:
+            manager.camera_control("comfort_sample_off")
+            return {"message": "Comfortable view saved. It will return when you start this mode again."}
+        time.sleep(.05)
+    raise RuntimeError("XR has not confirmed saving the view. Try again when the view is ready.")
 
 
 def action_present(manager, request):
@@ -1397,9 +1435,16 @@ def action_stop_viewer(manager, _request):
     return {"message": "XR view closed. Windows returned to your computer display."}
 
 
-def action_start(manager, _request):
+def action_start(manager, request):
+    if manager.canvas_mode:
+        if request.get("canvas"):
+            manager.canvas.save(request["canvas"])
+        prepared = {"canvas": manager.canvas.ensure(manager.monitors())}
+    else:
+        manager.apply(request["layout"])
+        prepared = {"layout": manager.applied}
     manager.start()
-    return {"message": "Preview opened."}
+    return {**prepared, "message": "Preview opened."}
 
 
 def action_stop(manager, _request):
@@ -1447,7 +1492,7 @@ def action_status(_manager, _request):
 
 def perform(manager, request):
     action = request["action"]
-    if action in CAMERA_ACTIONS or action in CANVAS_ACTIONS:
+    if (action in CAMERA_ACTIONS or action in CANVAS_ACTIONS) and action != "save_comfort":
         return action_camera(manager, request)
     handler = {
         "load": action_load,
@@ -1467,6 +1512,8 @@ def perform(manager, request):
         "set_spectator": action_spectator,
         "set_render_mode": action_render_mode,
         "set_canvas_settings": action_canvas_settings,
+        "canvas_window": action_canvas_window,
+        "save_comfort": action_save_comfort,
         "stop_viewer": action_stop_viewer,
         "start": action_start,
         "stop": action_stop,

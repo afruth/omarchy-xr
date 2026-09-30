@@ -12,12 +12,12 @@ is still pending.
 
 ## Install on Omarchy
 
-[Download the 0.5.1 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.1).
+[Download the 0.5.2 Arch x86_64 package and checksums](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.2).
 The package includes the VITURE glasses runtime (Gen1/Gen2 and Luma Ultra); no vendor SDK download is needed.
 After checking the downloaded package against `SHA256SUMS`:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.5.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.5.2-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -77,7 +77,8 @@ Studio has four tabs (also available with **Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4**)
   **Monitor settings…**, **Workspace settings…**, and **Save setup…** contain
   additional options. The persistent action bar applies changes; switching tabs
   preserves unapplied edits.
-- **Environment**: choose the theme-colored Tron grid, a panorama, or black background and adjust brightness.
+- **Appearance**: choose the theme-colored Tron grid, a panorama, or black background and adjust brightness.
+  **Desktop appearance** contains the global desktop text size; it changes immediately.
   Expand **Environment options** for glow animation, rotation, and local image import.
 - **Utilities**: check the glasses connection, then expand connection tools,
   recording, performance, previews/cleanup, or session activity as needed.
@@ -97,7 +98,7 @@ the selected Omarchy theme.
    layouts are moved apart on Apply to preserve the selected gutter. All virtual outputs use scale 1 and refresh at max(60, capture fps) Hz; capture fps is
    independently configurable from 1–120. Dedicated stereo applies changes live.
 4. Place application windows on the XR workspaces using your usual Omarchy controls.
-5. **Start stereo** on **Controls** applies the draft, connects the SDK, switches the
+5. **Start in glasses** on **Controls** applies the draft, connects the SDK, switches the
    glasses to SBS, and takes a temporary DRM lease through the installed helper. The renderer has no desktop window and
    the headset disappears from the normal desktop layout until you stop it.
    **Utilities → Preview & cleanup → Open fullscreen mono** retains the regular-window fallback.
@@ -125,6 +126,26 @@ needs the v8 controls adapter, so after updating choose **Install XR controls** 
 (or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
 the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
+
+**Start in glasses** and **Preview on desktop** both prepare the current setup automatically.
+In Window canvas, **Bring existing windows into XR** chooses whether startup moves your
+regular windows into the canvas or begins empty. Starting applies the canvas settings draft.
+
+Monitor edits show a **Pending Apply** summary. **Save layout** stores the draft without
+changing the live session; **Revert changes** returns to the last loaded or applied layout.
+When switching setups with pending edits, **Save and switch** keeps those edits as a named
+setup first. Canvas settings have their own Apply and Revert; appearance adjustments are live.
+
+**Controls → Find a comfortable view** guides you through recentering, a reading sample
+drawn in XR, distance/size adjustment and saving the camera view. Check a real application
+before saving. Each mode has its own persistent view; it restores at startup or when switching
+back into that mode. **Restore comfortable view** restores it during a session. The monitor
+setup picker includes **Single focused window**, **Main window with references**, and
+**Wide workspace** starting points with 125% display scale.
+
+In Canvas, **Your windows** maps the complete cylinder using live window positions. Select
+a rectangle or a title to **Focus**, **Bring here**, **Pin/Unpin**, or **Return to desktop**.
+Returning a window restores its recorded workspace and tiling and leaves the rest of XR running.
 
 Hide, Escape, or closing the Studio window parks the editor as an icon on the
 Omarchy top bar and leaves virtual monitors and any running viewer up. Hide is
@@ -510,7 +531,7 @@ fullscreen presentation development.
 
 ### Head-tracked presentation
 
-**Start stereo** is the XR path. It switches the Pro 2 to standard SBS
+**Start in glasses** is the XR path. It switches the Pro 2 to standard SBS
 3840×1080 at 60 Hz, preserving its prior mode for restoration. The SDK acknowledges
 the request before the computer drives the new timing, so verification happens
 after scanout starts. Left and right views use parallel cameras separated by IPD;
@@ -735,7 +756,7 @@ These are dimension guards, not a guarantee of successful buffer allocation or s
 
 ## Environment backgrounds
 
-The Environment tab selects the built-in **Tron grid**, a local 360° panorama, or a black background.
+The Appearance tab selects the built-in **Tron grid**, a local 360° panorama, or a black background.
 Brightness and rotation apply live to stereo, desktop preview, and the mono OBS
 window, independently of monitor layout. Backgrounds follow camera rotation and stay
 anchored when monitor zoom or pan changes. Panoramas have no positional parallax;

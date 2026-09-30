@@ -183,6 +183,7 @@ struct Settings {
     std::string adoptPolicy="all";
     bool takeoverKeys=true;   // the optional chords (SUPER+TAB, ALT+TAB, SUPER(+SHIFT)+arrows), via the .mode flag
     int refreshHz=60;         // canvas output refresh: the governor's request→ready calibration threshold
+    bool confirmHints=true, confirmPointerTransfer=false, followNewWindows=true;
     std::vector<std::string> excludes;
 };
 template<class T> bool readField(std::istream& in, T& value, T lo, T hi) {
@@ -204,6 +205,10 @@ inline Settings parseSettings(std::istream& in) {
         throw std::runtime_error("Invalid canvas adopt policy");
     int takeover=1;
     if(readField(v,takeover,0,1)) { s.takeoverKeys=takeover==1; readField(v,s.refreshHz,30,240); }
+    int hints=1, confirm=0, follow=1;
+    if(readField(v,hints,0,1)) s.confirmHints=hints==1;
+    if(readField(v,confirm,0,1)) s.confirmPointerTransfer=confirm==1;
+    if(readField(v,follow,0,1)) s.followNewWindows=follow==1;
     while(std::getline(in,line)) {
         if(line.empty() || line[0]=='#') continue;
         std::istringstream row(line); std::string key, token, extra;

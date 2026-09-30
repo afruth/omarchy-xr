@@ -162,11 +162,9 @@ public:
     int outputX=0, outputY=0;
     // Navigation: the landed window, Hyprland's focused one, the View's selection and last settled dwell.
     std::string landed, focusedName, selected, lastDwell;
-    // The confirm hint (M7): shown under the first three dwells of a session, never after a confirm.
+    // Contextual confirmation hints follow selection until the compositor acknowledges input focus.
     // confirmKey is the XR layer's focus chord from controls-settings.tsv ("" = none configured).
     std::string confirmKey="CTRL + ALT + Down", hintFor;
-    unsigned hintsShown=0;
-    bool confirmed=false;
     double hintUntil=0;
     Fov fov;
     Labels labels;
@@ -681,17 +679,17 @@ public:
         return aim(camera.targetFocusX, 0, ring.radius, anchor);
     }
     void noteDwell(const std::string& name, double now) {
-        lastDwell=name; lastDwellAt=now;
-        // One hint per distinct dwell target; the staged window already has the keys.
-        if (confirmed || hintsShown>=3 || name==stagedName || (name==hintFor && now<=hintUntil)) return;
-        hintFor=name; hintUntil=now+2.5; ++hintsShown;
+        lastDwell=name; lastDwellAt=now; selected=name;
+        // Staging is a capture detail: only actual keyboard focus suppresses the hint.
+        if (!settings.confirmHints || name==focusedName) { hintFor.clear(); return; }
+        hintFor=name; hintUntil=now+2.5;
     }
     void setConfirmKey(const std::string& key) {
         if (key==confirmKey) return;
         confirmKey=key;
         if (auto it=labels.atlas.find("hint"); it!=labels.atlas.end()) { if (it->second.texture) glDeleteTextures(1, &it->second.texture); labels.atlas.erase(it); }
     }
-    void noteConfirm() { confirmed=true; hintFor.clear(); }
+    void noteConfirm() { hintFor.clear(); }
     std::string hintText() const { return confirmKey.empty() ? "Three-finger tap to focus" : confirmKey+" or a three-finger tap to focus"; }
     // The window a dwell settled on within 2 s, else the staged one, else the most recently focused.
     std::string landingTarget(double now) const {
@@ -1238,8 +1236,10 @@ public:
         const float height=settings.labelDeg*ring.pxPerDeg()/.6f;
         for(auto i:candidates) {
             const auto& w=windows[i]; const auto& p=projected[i];
-            if(!w.visible || w.gone || (!zoomedOut() && ring.heading(p.height)<6)) continue;
-            const auto& item=labels.item(w.name+"\t"+w.record.title, w.record.cls, w.record.title, px);
+            const bool input=w.name==focusedName && !search.open;
+            if(!w.visible || w.gone || (!input && !zoomedOut() && ring.heading(p.height)<6)) continue;
+            const std::string title=(input ? "[Keyboard input] " : "")+w.record.title;
+            const auto& item=labels.item(w.name+"\t"+title, input ? "" : w.record.cls, title, px);
             const float width=height*float(item.width)/float(std::max(item.height, 1)), shown=std::min(p.width, width);
             out.push_back({{w.name, p.x, p.y-height-8, shown, height}, item.texture, shown/width, p.brightness/100});
         }
@@ -1247,17 +1247,15 @@ public:
         labels.trim();
         return out;
     }
-    // The confirm hint just under the dwelled window's label (inside its top edge), at the label size,
-    // accent-tinted like the halo; it fades over its last 0.3 s.
-    void hintQuad(std::vector<LabelQuad>& out, float height, int px, double now) {
-        if (hintFor.empty() || now>=hintUntil) return;
+    // The confirm hint stays inside the selected window's top edge until input focus changes.
+    void hintQuad(std::vector<LabelQuad>& out, float height, int px, double) {
+        if (!settings.confirmHints || search.open || hintFor.empty() || hintFor==focusedName || hintFor!=selected) return;
         for (auto i:candidates) {
             const auto& w=windows[i]; const auto& p=projected[i];
             if (w.name!=hintFor || !w.visible || w.gone) continue;
             const auto& item=labels.item("hint", "", hintText(), px);
             const float width=height*float(item.width)/float(std::max(item.height, 1)), shown=std::min(p.width, width);
-            const float fade=float(std::min(1., (hintUntil-now)/.3));
-            out.push_back({{w.name, p.x, p.y+8, shown, height}, item.texture, shown/width, fade*p.brightness/100, true});
+            out.push_back({{w.name, p.x, p.y+8, shown, height}, item.texture, shown/width, p.brightness/100, true});
             return;
         }
     }
@@ -1329,6 +1327,13 @@ public:
             if(!w.width || !w.height || !texture) continue;
             const float width=2*overlay::space::length(pin.berth.position)*std::tan(pin.widthDeg/2*overlay::degrees);
             out.push_back({OverlayQuad::Kind::Pinned, texture, pin.berth.centre(scene), width, width*float(w.height)/float(w.width), pin.alpha, true, w.name});
+            if(w.name==focusedName && !search.open) {
+                const auto& badge=labels.item("pinned-input", "", "Keyboard input", 36);
+                const float h=2*overlay::space::length(pin.berth.position)*std::tan(settings.labelDeg*overlay::degrees/2);
+                const auto centre=pin.berth.centre(scene), up=overlay::space::facing(centre,scene.eye).up;
+                const auto labelCentre=overlay::space::add(centre,overlay::space::mul(up,width*float(w.height)/float(w.width)/2+h));
+                out.push_back({OverlayQuad::Kind::Help,badge.texture,labelCentre,std::min(width,h*badge.width/std::max(badge.height,1)),h,pin.alpha,false,{}});
+            }
         }
     }
     void pinAt(Overlays::Pinned& pin, const CanvasWindow& w, const overlay::space::Scene& scene) const {

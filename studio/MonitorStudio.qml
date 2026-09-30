@@ -10,6 +10,7 @@ import "MonitorSnap.js" as MonitorSnap
 import "MonitorPresets.js" as MonitorPresets
 import "CurvatureAngles.js" as CurvatureAngles
 import "json_equal.js" as JsonEqual
+import "LayoutChanges.js" as LayoutChanges
 
 Item {
     id: root
@@ -21,6 +22,23 @@ Item {
     RequestState { id: requests }
     property bool loaded: false
     property bool dirty: false
+    property var layoutBaseline: null
+    property string switchSaveName: ""
+    property bool saveBeforeSwitch: false
+    function draftLayout() {
+        return {version:1, fps:fps, curvature:curvature, workspaceDegrees:workspaceDegrees,
+            workspaceFollow:workspaceFollow, spacing:spacing, monitors:monitors};
+    }
+    function restoreLayout(layout) {
+        var saved=LayoutChanges.copy(layout);
+        monitors=saved.monitors; fps=saved.fps; curvature=saved.curvature || 0;
+        workspaceDegrees=saved.workspaceDegrees === undefined ? -1 : saved.workspaceDegrees;
+        workspaceFollow=!!saved.workspaceFollow; spacing=saved.spacing || 24;
+        selected=Math.min(selected,monitors.length-1); dirty=false; fit();
+    }
+    function revertCanvas() {
+        canvasDirty=false; adoptCanvas(canvasSettings);
+    }
     property int selected: 0
     property int dragIndex: -1
     property var dragSnap: null
@@ -48,6 +66,13 @@ Item {
     property string requestedMode: ""
     property bool canvasActive: false
     property int canvasWindows: 0
+    property string canvasSelection: ""
+    property string windowAction: ""
+    property bool comfortSaved: false
+    property int comfortStep: 0
+    function canvasWindowAction(action) {
+        windowAction=action; send("canvas_window");
+    }
     // The renderer's live capture budget (pose.sock.stats "budget"); empty while no canvas viewer runs.
     property var canvasBudget: ({})
     property int controlsVersion: 0
@@ -87,7 +112,7 @@ Item {
     property string setupName: ""
     property string pendingSetupId: ""
     function chooseSetup(identity) {
-        if (dirty) {pendingSetupId=identity;return;}
+        if (dirty) {switchSaveName=setupName;pendingSetupId=identity;return;}
         send("use_setup", undefined, identity);
     }
     property int fps: 60
@@ -260,6 +285,11 @@ Item {
             setupName: setupName,
             setupId: selectedSetup === undefined ? setupId : selectedSetup,
             updateSetup: !!updateSetup,
+            windowAddress: canvasSelection,
+            windowAction: windowAction,
+            saveBeforeSwitch: saveBeforeSwitch,
+            saveSetupName: switchSaveName,
+            saveSetupId: setupId.startsWith("builtin:") ? "" : setupId,
             layout: {
                 version: 1,
                 fps: fps,
@@ -430,12 +460,15 @@ Item {
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
                     if (response.controlsMeta) root.controlsMeta=response.controlsMeta;
                     if (replyAction === "set_render_mode") root.requestedMode = "";
-                    if (replyAction === "set_canvas_settings" && response.ok) root.canvasDirty = false;
+                    if (response.canvas && ["set_canvas_settings","present_direct","start"].indexOf(replyAction)>=0 && response.ok) root.canvasDirty = false;
+                    if (replyAction === "use_setup") root.saveBeforeSwitch=false;
                     if (response.canvas) root.adoptCanvas(response.canvas);
                     if (response.renderMode) root.renderMode = response.renderMode;
                     root.canvasActive = !!response.canvasActive;
                     root.canvasWindows = response.canvasWindows || (response.performance || {}).canvasWindows || 0;
                     root.canvasBudget = response.canvasBudget || {};
+                    root.comfortSaved=!!response.comfortSaved;
+                    if(replyAction === "save_comfort" && response.ok) root.comfortStep=3;
                     if (response.controlsVersion !== undefined) root.controlsVersion = response.controlsVersion;
                     if (response.performance) {
                         var nextCaptures = response.performance.captures || [];
@@ -480,6 +513,7 @@ Item {
                     root.directOutput = !!response.direct;
                     root.stereoOutput = !!response.stereo;
                     if (response.layout) {
+                        if(replyAction !== "save") root.layoutBaseline=LayoutChanges.copy(response.layout);
                         root.monitors = response.layout.monitors;
                         root.fps = response.layout.fps;
                         root.curvature = response.layout.curvature || 0;
@@ -493,8 +527,6 @@ Item {
                     }
                     if (response.message) {
                         root.status = response.message;
-                        if (response.ok && response.message.indexOf("ready") >= 0)
-                            root.dirty = false;
                     }
                 } catch (e) {
                     requests.reset();
@@ -865,7 +897,7 @@ Item {
                     Layout.fillWidth: true
                     spacing: 8
                     Repeater {
-                        model: ["Controls", root.renderMode === "canvas" ? "Canvas" : "Monitors", "Environment", "Utilities"]
+                        model: ["Controls", root.renderMode === "canvas" ? "Canvas" : "Monitors", "Appearance", "Utilities"]
                         Action {
                             required property int index
                             required property string modelData
@@ -987,17 +1019,46 @@ Item {
                                     onPicked: function(m) { root.requestedMode = m; root.send("set_render_mode"); }
                                     onActionRequested: root.runSetupAction("controls")
                                 }
+                                Hint {
+                                    text: root.renderMode === "canvas"
+                                        ? "Arrange individual application windows around you. Stop returns them to your desktop."
+                                        : "Keep your normal workspaces on larger virtual screens."
+                                }
+                                RowLayout {
+                                    visible: root.renderMode === "canvas" && !root.viewing
+                                    Layout.fillWidth: true
+                                    Label { Layout.fillWidth:true; text:"Bring existing windows into XR" }
+                                    Ui.ToggleSwitch {
+                                        checked: root.canvasDraft.adoptPolicy !== "empty"
+                                        enabled: root.loaded && !root.busy
+                                        activeFocusOnTab:true
+                                        Accessible.role:Accessible.CheckBox
+                                        Accessible.name: "Bring existing windows into XR"
+                                        Accessible.checked:checked
+                                        Keys.onSpacePressed:if(enabled)toggled()
+                                        Accessible.onToggleAction:if(enabled)toggled()
+                                        onToggled: root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                    }
+                                }
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 10
                                     Action {
                                         readonly property bool monitorChanges: root.dirty && root.renderMode !== "canvas"
                                         visible: !root.directOutput || monitorChanges || root.pendingAction === "present_direct"
-                                        text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? "Apply monitor changes" : "Start stereo"
+                                        text: root.busy && root.pendingAction === "present_direct" ? "Starting…" : root.directOutput ? "Apply monitor changes" : "Start in glasses"
                                         selected: true
                                         helpText: root.renderMode === "canvas" ? "Show your windows on the canvas in the glasses" : "Show your virtual monitors in the glasses"
                                         enabled: root.canStart && (!root.directOutput || monitorChanges)
                                         onClicked: root.send("present_direct")
+                                    }
+                                    Action {
+                                        visible: !root.viewing
+                                        text: root.pendingAction === "start" ? "Opening…" : "Preview on desktop"
+                                        enabled: root.loaded && !root.busy && !!root.glasses.runtimeInstalled
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 8)
+                                        helpText: "Apply this setup and open XR on your desktop"
+                                        onClicked: root.send("start")
                                     }
                                     Action {
                                         visible: root.viewing || root.activeCount > 0
@@ -1016,6 +1077,35 @@ Item {
                                     visible: !root.directOutput && !root.canStart && !root.busy
                                     text: !root.loaded ? "Loading workspace…" : !root.glasses.runtimeInstalled || !root.sdk.available ? "XR runtime required — use Install XR runtime above." : !root.glasses.helperAvailable ? "Stereo helper required — use Install stereo helper above." : !root.glasses.usb ? "Connect your glasses to start." : "Glasses video unavailable — open Utilities."
                                 }
+                            }
+                            Disclosure {
+                                title:"Find a comfortable view"
+                                expanded:root.viewing && !root.comfortSaved
+                                Hint {
+                                    text: !root.viewing ? "Start in glasses or Preview on desktop, then set up your reading view."
+                                        : root.comfortStep===0 ? "1 of 3 · Sit comfortably and look forward. Recenter sets this as your forward direction."
+                                        : root.comfortStep===1 ? "2 of 3 · Read the sample in XR. Adjust distance until the small text is easy to read. Zoom also changes apparent text size."
+                                        : root.comfortStep===2 ? "3 of 3 · Check an application window, then save this view for your next session."
+                                        : "Your comfortable view is saved for this mode."
+                                }
+                                Flow {
+                                    Layout.fillWidth:true
+                                    spacing:8
+                                    enabled:root.viewing && !root.busy
+                                    Action {visible:root.comfortStep===0;text:"Recenter and show sample";onClicked:{root.comfortStep=1;root.send("comfort_sample_on");}}
+                                    Action {visible:root.comfortStep===1;text:"Recenter";onClicked:root.send("recenter")}
+                                    Action {visible:root.comfortStep===1;text:"Farther / smaller";onClicked:root.send("zoom_out")}
+                                    Action {visible:root.comfortStep===1;text:"Closer / larger";onClicked:root.send("zoom_in")}
+                                    Action {visible:root.comfortStep===1;text:"Check my windows";onClicked:{root.comfortStep=2;root.send("comfort_sample_off");}}
+                                    Action {visible:root.comfortStep===2;text:"Save comfortable view";enabled:root.renderMode==="canvas" ? !root.canvasDirty : !root.dirty;onClicked:root.send("save_comfort")}
+                                    Action {visible:root.comfortStep>0;text:"Start again";onClicked:{root.comfortStep=0;root.send("comfort_sample_off");}}
+                                    Action {visible:root.comfortSaved;text:"Restore comfortable view";onClicked:root.send("restore_comfort")}
+                                }
+                                Hint {
+                                    visible:root.comfortStep===2 && (root.renderMode==="canvas" ? root.canvasDirty : root.dirty)
+                                    text:"Apply your pending settings before saving the view."
+                                }
+                                Hint {text:"For larger application text, adjust Display scale in Monitors or Output scale in Canvas settings."}
                             }
                             Card {
                                 Heading {
@@ -1513,6 +1603,10 @@ Item {
                                 text: "Move blocked: insufficient spacing."
                                 color: Color.urgent
                             }
+                            Hint {
+                                visible: root.dirty
+                                text: "Pending Apply · " + LayoutChanges.summary(root.layoutBaseline, root.draftLayout())
+                            }
                             QQC.Popup {
                                 id: monitorSettings
                                 parent: frame
@@ -1592,7 +1686,7 @@ Item {
                                     spacing:14
                                     Heading {
                                         text:"Workspace settings"
-                                        helpText:"Apply the layout to use geometry and capture settings. Text size changes immediately on all desktops. 0° is flat.\nMaximum: " + root.graphicsLimits.maxWidth + " × " + root.graphicsLimits.maxHeight + " px per monitor. "
+                                        helpText:"Apply the layout to use geometry and capture settings. 0° is flat.\nMaximum: " + root.graphicsLimits.maxWidth + " × " + root.graphicsLimits.maxHeight + " px per monitor. "
                                             + (root.totalPixels/1000000).toFixed(1) + " MP · " + (root.totalPixels*4/1048576).toFixed(0) + " MiB/frame."
                                             + (!root.graphicsLimits.detected ? "\nHardware limits are unverified." : !root.graphicsLimits.complete ? "\nGPU detection is partial." : "")
                                     }
@@ -1634,14 +1728,6 @@ Item {
                                                 radius: Style.cornerRadius
                                             }
                                         }
-                                    }
-                                    BoundDropdown {
-                                        Layout.fillWidth:true
-                                        label:"Text size · all desktops"
-                                        sourceValue:String(Math.round(Style.font.baseSize))
-                                        options:["9","10","11","12","14","16","20"]
-                                        enabled:root.loaded && !root.busy
-                                        onChanged:function(picked){root.send("set_text_size",Number(picked));}
                                     }
                                     Action {Layout.alignment:Qt.AlignRight;text:"Done";onClicked:workspaceSettings.close()}
                                 }
@@ -1688,8 +1774,18 @@ Item {
                                 background:Rectangle {color:Color.popups.background;border.color:Color.popups.border;radius:Style.cornerRadius}
                                 contentItem:ColumnLayout {
                                     spacing:14
-                                    Heading {text:"Discard unapplied changes?"}
-                                    RowLayout {
+                                    Heading {text:"Keep your changes before switching?"}
+                                    Ui.TextField {
+                                        Layout.fillWidth:true
+                                        placeholderText:"Name for the current setup"
+                                        text:root.switchSaveName
+                                        Accessible.name:"Save current setup before switching"
+                                        onTextEdited:root.switchSaveName=text
+                                    }
+                                    Flow {
+                                        Layout.fillWidth:true
+                                        spacing:8
+                                        Action {text:"Save and switch";enabled:!root.busy && !!root.switchSaveName.trim();onClicked:{var id=root.pendingSetupId;root.saveBeforeSwitch=true;root.pendingSetupId="";root.send("use_setup",undefined,id);}}
                                         Action {text:"Keep editing";onClicked:root.pendingSetupId=""}
                                         Action {text:"Discard and apply setup";enabled:!root.busy;onClicked:{var id=root.pendingSetupId;root.pendingSetupId="";root.send("use_setup",undefined,id);}}
                                     }
@@ -1708,9 +1804,64 @@ Item {
                                     color: Qt.alpha(Color.foreground, .68)
                                 }
                             }
+                            Card {
+                                Heading {text:"Your windows"}
+                                Hint {visible:!root.canvasActive;text:"Start in glasses or Preview on desktop to arrange your windows."}
+                                CanvasMap {
+                                    Layout.fillWidth:true
+                                    visible:root.canvasActive
+                                    windows:root.captureRows
+                                    period:root.performance.canvasPeriod || 1
+                                    selected:root.canvasSelection
+                                    foreground:Color.foreground
+                                    accent:Color.accent
+                                    onPicked:function(address){root.canvasSelection=address;}
+                                }
+                                BoundDropdown {
+                                    Layout.fillWidth:true
+                                    label:"Window"
+                                    sourceValue:root.canvasSelection
+                                    options:root.captureRows.map(function(w){return {value:w.output,label:(w.focused ? "Keyboard input · " : "")+(w.title || w.class || w.output)};})
+                                    enabled:root.canvasActive && root.captureRows.length>0
+                                    onChanged:function(value){root.canvasSelection=value;}
+                                }
+                                Flow {
+                                    Layout.fillWidth:true
+                                    spacing:8
+                                    enabled:root.viewing && !root.busy && root.captureRows.some(function(w){return w.output===root.canvasSelection;})
+                                    Action {text:"Focus";onClicked:root.canvasWindowAction("focus")}
+                                    Action {text:"Bring here";onClicked:root.canvasWindowAction("summon")}
+                                    Action {text:root.captureRows.some(function(w){return w.output===root.canvasSelection && w.pinned;}) ? "Unpin" : "Pin";onClicked:root.canvasWindowAction("pin")}
+                                    Action {text:"Return to desktop";onClicked:root.canvasWindowAction("return")}
+                                }
+                            }
                             Disclosure {
                                 title: root.canvasDirty ? "Canvas settings · Unsaved" : "Canvas settings"
                                 helpText: "Changes apply to a running canvas without restarting XR"
+                                Repeater {
+                                    model: [
+                                        {key:"confirmHints",label:"Show hints for working in another window"},
+                                        {key:"confirmPointerTransfer",label:"Require confirmation before pointer changes windows"},
+                                        {key:"followNewWindows",label:"Bring new windows into view automatically"}
+                                    ]
+                                    RowLayout {
+                                        required property var modelData
+                                        Layout.fillWidth:true
+                                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;text:parent.modelData.label}
+                                        Ui.ToggleSwitch {
+                                            checked:!!root.canvasDraft[parent.modelData.key]
+                                            enabled:root.loaded && !root.busy
+                                            activeFocusOnTab:true
+                                            Accessible.role:Accessible.CheckBox
+                                            Accessible.name:parent.modelData.label
+                                            Accessible.checked:checked
+                                            Keys.onSpacePressed:if(enabled)toggled()
+                                            Accessible.onToggleAction:if(enabled)toggled()
+                                            onToggled:root.setCanvas(parent.modelData.key,!checked)
+                                        }
+                                    }
+                                }
+                                Hint {text:"These preferences apply with canvas settings. Dialogs still open in view."}
                                 GridLayout {
                                     Layout.fillWidth: true
                                     columns: 2
@@ -1823,12 +1974,30 @@ Item {
                                     enabled: root.loaded && !root.busy && root.canvasDirty
                                     onClicked: root.send("set_canvas_settings")
                                 }
+                                Action {
+                                    text: "Revert changes"
+                                    enabled: root.canvasDirty && !root.busy
+                                    onClicked: root.revertCanvas()
+                                }
+                                Hint {text:root.canvasDirty ? "Pending Apply · Canvas settings" : "Canvas settings are saved"}
                             }
                         }
                         ColumnLayout {
                             visible: root.activeTab === 2
                             Layout.fillWidth: true
                             spacing: 12
+                            Disclosure {
+                                title:"Desktop appearance · Live adjustment"
+                                Hint {text:"Text size changes immediately across all desktops, including Studio."}
+                                BoundDropdown {
+                                    Layout.fillWidth:true
+                                    label:"Text size · all desktops"
+                                    sourceValue:String(Math.round(Style.font.baseSize))
+                                    options:["9","10","11","12","14","16","20"]
+                                    enabled:root.loaded && !root.busy
+                                    onChanged:function(picked){root.send("set_text_size",Number(picked));}
+                                }
+                            }
                             Card {
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2019,7 +2188,7 @@ Item {
                                     color: Color.urgent
                                 }
                                 Disclosure {
-                                    title: "Environment options"
+                                    title: "Environment options · Live adjustments"
                                     helpText: "Adjust the background or import your own panorama."
                                     RowLayout {
                                         visible: root.environmentSettings.id === "builtin:tron"
@@ -2284,9 +2453,10 @@ Item {
                                     spacing: 10
                                     enabled: root.loaded
                                     Action {
-                                        text: "Open windowed preview"
-                                        helpText: root.renderMode === "canvas" ? "Preview the window canvas on the desktop; start the canvas first" : "Preview the applied monitor layout on the desktop; apply pending changes first"
-                                        enabled: (root.renderMode === "canvas" ? root.canvasActive : root.activeCount > 0 && !root.dirty) && !root.viewing && !root.busy
+                                        text: "Preview on desktop"
+                                        helpText: "Apply this setup and preview it on your desktop"
+                                        enabled: root.loaded && !!root.glasses.runtimeInstalled && !root.viewing && !root.busy
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 8)
                                         onClicked: root.send("start")
                                     }
                                     Action {
@@ -2363,6 +2533,12 @@ Item {
                         helpText: root.backendSlow ? "This is taking longer than expected. You can still use " + (root.renderMode === "canvas" ? "Stop & close canvas" : "Stop & remove monitors") + " in Utilities."
                             : root.renderMode === "canvas" ? "Windows currently on the canvas output" : "Virtual monitors currently available on your desktop"
                         color: root.busy ? Color.accent : Color.foreground
+                    }
+                    Action {
+                        visible: root.activeTab === 1 && root.renderMode !== "canvas" && root.dirty
+                        text: "Revert changes"
+                        enabled: !root.busy && !!root.layoutBaseline
+                        onClicked: root.restoreLayout(root.layoutBaseline)
                     }
                     Action {
                         visible: root.activeTab === 1 && root.renderMode !== "canvas"

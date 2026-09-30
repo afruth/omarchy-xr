@@ -267,9 +267,22 @@ glance at another window does not steal your typing. To work in the window you l
 zoom in with **XR+Up** (or a flick in), or, with a multitouch touchpad, tap it once with three fingers. The window is
 staged, raised and gets the keyboard, and the pointer goes to the point you are looking at.
 
-For the first three windows you dwell on in a session, a small hint under the window's label says
-which key confirms ("Ctrl+Alt+Down or a three-finger tap to focus", with your configured chord). It
-stops after your first confirm.
+The window receiving keyboard input has a **Keyboard input** label, including when pinned.
+The gaze rim and selection halo remain distinct from this input indicator. A contextual hint
+under the selected window names the configured confirmation key whenever it differs from
+the input window. **Canvas settings → Show hints for working in another window** turns it off.
+
+**Require confirmation before pointer changes windows** prevents movement beyond the current
+window from transferring input focus. Explicit confirmation still works. **Bring new windows
+into view automatically** can be disabled to keep the camera and input on your current work;
+new windows still announce themselves with the pulse/edge cue. Likely parent dialogs still
+come into view. The parent check uses app process and floating status, since the window protocol
+does not supply a parent identity.
+
+The Canvas tab's **Your windows** map and title picker expose Focus, Bring here, Pin/Unpin,
+and Return to desktop without needing to find a window in the glasses first. The map represents
+the full 360° cylinder; its edges join and window proportions are preserved. The title picker
+provides keyboard access when a window is too small on the map.
 
 ## The pointer and other keys
 

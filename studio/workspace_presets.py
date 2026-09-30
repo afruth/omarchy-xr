@@ -33,4 +33,12 @@ def built_in_setups():
     setups.append({'id':'builtin:thirty-fhd','name':'30 Full HD (load test)',
                    'description':'30 × 1920 × 1080 · 6 × 5 grid',
                    'layout':grid(30,fhd,6)})
+    for key, name, sizes, bend in (
+            ('focus', 'Single focused window', [fhd], 0),
+            ('references', 'Main window with references', [(1280, 1080), fhd, (1280, 1080)], 0),
+            ('wide-workspace', 'Wide workspace', [fhd] * 3, 35)):
+        layout = row(sizes, bend)
+        for monitor in layout['monitors']:
+            monitor['scale'] = 1.25
+        setups.append({'id':'builtin:'+key, 'name':name, 'description':'Comfort starting point', 'layout':layout})
     return setups

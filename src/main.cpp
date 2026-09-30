@@ -24,6 +24,7 @@
 #include "theme.hpp"
 #include "notification_hud.hpp"
 #include "canvas_scene.hpp"
+#include "json_text.hpp"
 #include "power.hpp"
 #include "idle_frames.hpp"
 #include "perf_card.hpp"
@@ -667,6 +668,7 @@ struct View {
     }
     // Hyprland focus follows only when the window is mostly out of view; an explicit verb within 0.4 s wins.
     void canvasFollow(const std::string& name, double now) {
+        if(name==unfollowedArrival && now<unfollowedUntil) return;
         if (now<interactionUntil) { std::cout << "Canvas: focus " << name << " not followed during an explicit move" << std::endl; return; }
         const auto aim=canvas->follow(name, baseView());
         if (aim) std::cout << "Canvas: follow focus to " << name << std::endl;
@@ -720,6 +722,7 @@ struct View {
                 if (canvas) canvas->releaseGpu();
                 monitorHelpRaster.release();
                 statsRaster.release();
+                comfortRaster.release();
                 if (cursorTexture) { glDeleteTextures(1, &cursorTexture); cursorTexture=0; }
                 spectator.reset();
                 environment->release();
@@ -982,6 +985,7 @@ struct View {
         if (stagedChanged || canvas->live()!=loggedLive) std::cout << "Canvas: " << canvas->live() << " windows, staged " << (canvas->stagedName.empty() ? "none" : canvas->stagedName) << std::endl;
         loggedLive=canvas->live();
         stagedLanding(stagedChanged);
+        if(comfortRestorePending && canvas->live()>0) { restoreComfort(); comfortRestorePending=false; }
         // A window brought from search lands once it is on the canvas.
         if (!canvas->bringRequested.empty() && canvas->find(canvas->bringRequested)) {
             std::cout << "Canvas: brought " << canvas->bringRequested << " to the canvas" << std::endl;
@@ -991,11 +995,16 @@ struct View {
         // is never lost beside or behind you. Not during a search; several at once: the last one.
         if (const auto name=std::exchange(canvas->arrived, {}); !name.empty() && canvas->find(name) && !canvas->search.open) {
             std::cout << "Canvas: new window " << name << std::endl;
-            navigate({.verb=Verb::Focus, .output=name});
+            if (canvas->settings.followNewWindows || canvas->parentOf(canvas->find(name)->record).has_value())
+                navigate({.verb=Verb::Focus, .output=name});
+            else {
+                unfollowedArrival=name; unfollowedUntil=monotonicSeconds()+2;
+                if(!focused.empty() && canvas->find(focused)) focusWindow(focused);
+            }
         }
         // --canvas-windows-file runs only: a new focus_history_id 0 window stands in for the .focus
         // mailbox, which the mailbox path follows (it leaves out XR's own staging, §4.2).
-        if (!windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
+        if (canvas->settings.followNewWindows && !windowsPath.empty() && !focused.empty() && !canvas->focusedName.empty() && canvas->focusedName!=focused) navigate({.verb=Verb::FitOutput, .output=canvas->focusedName});
         return true;
     }
     // M7: a newly staged window (Lua stages quietly at entry and after a close) lands the camera when
@@ -1393,6 +1402,8 @@ struct View {
             {&PoseSocket::redoRequested, Verb::Redo}, {&PoseSocket::pinRequested, Verb::Pin}, {&PoseSocket::helpRequested, Verb::Help}};
         for (const auto& [flag, verb]:verbs) if (std::exchange(t.*flag, false)) navigate({verb});
         if (!t.focusRequested.empty()) navigate({.verb=Verb::Focus, .output=std::exchange(t.focusRequested, {})});
+        if (!t.summonRequested.empty()) navigate({.verb=Verb::Summon, .output=std::exchange(t.summonRequested, {})});
+        if (!t.pinWindowRequested.empty()) navigate({.verb=Verb::Pin, .output=std::exchange(t.pinWindowRequested, {})});
     }
     // A prompt line: its text, then its unseen keys in order (keys of lines overwritten before this poll
     // included); open 0 closes the session keeping the landing. The prompt's second Esc (open 0 with key
@@ -1449,7 +1460,7 @@ struct View {
         const double scale=canvas->settings.outputScale, lx=c.x-r.atX, ly=c.y-r.atY;
         if (lx>=0 && ly>=0 && lx<r.w && ly<r.h) xrCursor={true, staged->name, float(lx*scale), float(ly*scale)};
         // The prompt holds the keyboard: no restage (and so no pointer warp) until it closes.
-        if (!controls->cursor || (!c.overflowX && !c.overflowY) || promptHoldsKeys()) return;
+        if (!controls->cursor || (!c.overflowX && !c.overflowY) || promptHoldsKeys() || canvas->settings.confirmPointerTransfer) return;
         const float x=canvas->ring.unwrap(staged->rect.x+float((lx+c.overflowX)*scale)), y=staged->rect.y+float((ly+c.overflowY)*scale);
         const auto contains=[&](const canvas::CanvasWindow& w) {
             const float dx=canvas->ring.unwrap(x-w.rect.x), dy=y-w.rect.y;
@@ -1595,6 +1606,7 @@ struct View {
         }
         if(notificationHud) notificationHud->draw(lastCameraTime, !canvas);
         if (statsOpen) drawStats(view);
+        if (comfortSampleOpen) drawComfortSample(view);
     }
     // All halos first, then all surfaces, so no halo draws over a neighbouring surface.
     // candidates(visit) yields the surfaces to draw: every panel here, the culled windows in canvas mode.
@@ -1639,6 +1651,78 @@ struct View {
     // The performance card (perf_hud.hpp, the XR layer's `stats` key): sampled once a second in the tick,
     // drawn head-locked at the upper left of the view, over everything else.
     bool statsOpen=false;
+    bool comfortSampleOpen=false;
+    bool comfortRestorePending=false;
+    std::string unfollowedArrival;
+    double unfollowedUntil=0;
+    canvas::overlay::Raster comfortRaster;
+    void drawComfortSample(const tracking::Quaternion& view) {
+        namespace ov=canvas::overlay;
+        const auto scene=overlayScene(view);
+        comfortRaster.update("reading-sample",1280,720,lastCameraTime,0,[&](cairo_t* cr) {
+            ov::card(cr,1280,720,monitorHelpStyle);
+            notifications::text(cr,"Find a comfortable reading view",monitorHelpStyle.text,64,64,1152,48,1,true);
+            notifications::text(cr,"Adjust distance with Zoom in / Zoom out.",monitorHelpStyle.text,64,160,1152,36,1);
+            notifications::text(cr,"The quick brown fox jumps over the lazy dog.",monitorHelpStyle.text,64,250,1152,28,1);
+            notifications::text(cr,"Spreadsheet sample: Revenue 12,450 · Cost 8,320 · Total 4,130",monitorHelpStyle.text,64,340,1152,24,1);
+            notifications::text(cr,"Small text: 0123456789  Aa Bb Cc  + − = / %",monitorHelpStyle.text,64,430,1152,18,1);
+            notifications::text(cr,"Keep your head relaxed. Save when reading feels easy.",monitorHelpStyle.dim,64,560,1152,28,1);
+            return 720;
+        });
+        const float depth=std::max(.3f,statsZoomDepth());
+        const auto centre=notifications::space::add(scene.eye,notifications::space::rotate(tracking::conjugate(view),{0,0,-depth}));
+        const float scale=canvas ? canvas->camera.zoom : 1.f;
+        ov::drawQuad(comfortRaster.texture,scene,centre,scale*1280.f/900,scale*720.f/900,1);
+    }
+    std::string comfortPath() const {
+        const auto source=canvas ? canvasPath : layoutPath;
+        const auto directory=std::filesystem::path(source.empty() ? posePath : source).parent_path();
+        return (directory/(canvas ? "comfort-view.canvas.tsv" : "comfort-view.monitors.tsv")).string();
+    }
+    void saveComfort() {
+        if(posePath.empty()) return;
+        std::ostringstream out;
+        out << "v1 " << targetDistance << ' ' << targetPanX << ' ' << targetPanY << ' ' << targetPanZ << ' '
+            << targetRotation.w << ' ' << targetRotation.x << ' ' << targetRotation.y << ' ' << targetRotation.z << ' '
+            << focusDepth << ' ' << focusX << ' ' << focusY;
+        if(canvas) out << ' ' << canvas->camera.targetFocusX << ' ' << canvas->camera.targetFocusY << ' ' << canvas->camera.targetZoom << ' ' << canvas->camera.targetScrollY
+            << ' ' << canvas->depth << ' ' << canvas->aimX << ' ' << canvas->aimY;
+        out << '\n';
+        AsyncFile::instance().write(comfortPath(),out.str());
+    }
+    bool restoreComfort() {
+        if(posePath.empty()) return false;
+        std::ifstream in(comfortPath()); std::string version;
+        std::array<double,18> value{};
+        if(!(in>>version) || version!="v1") return false;
+        const size_t count=canvas ? 18 : 11;
+        for(size_t i=0;i<count;++i) if(!(in>>value[i]) || !std::isfinite(value[i]) || std::abs(value[i])>1e6) return false;
+        if(value[0]<.15 || value[8]<.15 || (canvas && (value[13]<.08 || value[13]>1))) return false;
+        if(canvas && canvas->live()==0) {comfortRestorePending=true;return false;}
+        panCamera=false; panGestureActive=false; focusOutput.clear(); panOutput.clear(); zoomGaze.reset();
+        recenterUntil=0; interactionUntil=monotonicSeconds()+.4;
+        const double norm=std::hypot(std::hypot(value[4],value[5]),std::hypot(value[6],value[7]));
+        if(norm<.1) return false;
+        targetRotation={value[4]/norm,value[5]/norm,value[6]/norm,value[7]/norm};
+        targetPanX=value[1]; targetPanY=value[2]; targetPanZ=value[3];
+        focusDepth=value[8]; focusX=value[9]; focusY=value[10];
+        if(canvas) {
+            canvas->endSearch(); canvas->resetGesture(); canvas->state=canvas::Scene::State::Overview;
+            canvas->focusOn(value[11],value[12]); canvas->camera.targetZoom=value[13]; canvas->camera.targetScrollY=value[14];
+            canvas->depth=std::clamp(float(value[15]),.3f,canvas->ring.radius);
+            canvas->aimX=value[16]; canvas->aimY=value[17];
+            applyAim(canvas->reaim(baseView()));
+        } else targetDistance=safe(value[0]);
+        return true;
+    }
+    void steerComfort() {
+        if(tracking.comfortSample>=0) {
+            comfortSampleOpen=tracking.comfortSample==1;tracking.comfortSample=-1;
+            if(comfortSampleOpen) navigate({Verb::Recenter});
+        }
+        if(std::exchange(tracking.saveComfortRequested,false)) saveComfort();
+        if(std::exchange(tracking.restoreComfortRequested,false)) restoreComfort();
+    }
     double statsSampledAt=-1;
     perf::Totals statsBefore;
     std::vector<perf::Row> statsRows;
@@ -1916,6 +2000,7 @@ struct View {
         using canvas::Scene; using governor::Tier;
         const char* state=canvas->state==Scene::State::Overview ? "overview" : canvas->state==Scene::State::Search ? "search" : canvas->state==Scene::State::Fill ? "fill" : "work";
         stats << ",\"canvasWindows\":" << canvas->live() << ",\"canvasState\":" << std::quoted(state)
+            << ",\"canvasPeriod\":" << canvas->ring.period() << ",\"canvasHeading\":" << canvas->camera.focusX
             << ",\"searchOpen\":" << (canvas->search.open?"true":"false") << ",\"pinned\":" << canvas->pinnedCount()
             << ",\"tiers\":{\"focused\":" << canvas->tierCount(Tier::Focused) << ",\"near\":" << canvas->tierCount(Tier::Near) << ",\"far\":" << canvas->tierCount(Tier::Far)
             << ",\"overview\":" << canvas->tierCount(Tier::Overview) << ",\"idle\":" << canvas->tierCount(Tier::Idle) << "}";
@@ -1936,6 +2021,9 @@ struct View {
             first=false;
             const double ready=w.source ? w.source->requestToReadyMs() : -1;
             stats << "{\"output\":" << std::quoted(w.name) << ",\"tier\":" << std::quoted(canvas::tierName(w.decision.tier)) << ",\"rateHz\":" << w.decision.rateHz
+                << ",\"title\":" << jsonText(w.record.title) << ",\"class\":" << jsonText(w.record.cls)
+                << ",\"x\":" << w.rect.x << ",\"y\":" << w.rect.y << ",\"w\":" << w.rect.w << ",\"h\":" << w.rect.h
+                << ",\"pinned\":" << (w.pinned?"true":"false") << ",\"focused\":" << (w.name==canvas->focusedName?"true":"false")
                 << ",\"place\":" << std::quoted(canvas::placeName(w.decision.place)) << ",\"inFlight\":" << w.decision.inFlight
                 << ",\"fps\":" << w.reportFrames/std::max(now-reportTime, 1e-3) << ",\"visible\":" << (w.visible?"true":"false") << ",\"transport\":" << std::quoted(w.source ? w.source->transport() : "none")
                 << ",\"width\":" << w.width << ",\"height\":" << w.height << ",\"nativeWidth\":" << w.sourceWidth << ",\"nativeHeight\":" << w.sourceHeight << ",\"frames\":" << w.frames;
@@ -2056,10 +2144,11 @@ struct View {
         state.add(xrCursor.valid).add(std::uint64_t(std::hash<std::string>{}(xrCursor.window))).add(xrCursor.px, .25f).add(xrCursor.py, .25f);
         // A new card text draws once like a capture frame; it settles nothing, so it must not start a hold.
         state.add(statsOpen);
+        state.add(comfortSampleOpen);
         f.content+=statsRevision;
         state.add(std::uint64_t(environment->revision())).add(notificationHud ? notificationHud->count() : 0);
         f.state=state.value;
-        f.animating=cameraMoving() || panCamera || panGestureActive || now<recenterUntil || now<interactionUntil || promptShown || tracking.spectator>=0 || monitorHelpOpen || monitorHelpAlpha>0
+        f.animating=cameraMoving() || panCamera || panGestureActive || now<recenterUntil || now<interactionUntil || promptShown || tracking.spectator>=0 || comfortSampleOpen || monitorHelpOpen || monitorHelpAlpha>0
             || (notificationHud && notificationHud->visible()) || environment->loadingImage() || (canvas && canvas->animating(now));
         f.ambient=environment->ambientPeriod();
         return f;
@@ -2100,6 +2189,7 @@ struct View {
         reloadPower(workStarted);
         accent.update(workStarted);
         tracking.update();
+        steerComfort();
         applyModeRequest();
         if(notificationHud) {
             notificationHud->update(tracking.camera,workStarted);
@@ -2188,6 +2278,7 @@ struct View {
             p.capture.reset();
         }
         if (canvas) finishCanvas();
+        comfortRaster.release();
         if (smoke && drawn<10) result=1;
         std::cout << "Head pose samples: " << tracking.camera.samples << std::endl;
         spectator.reset();
@@ -2275,6 +2366,7 @@ struct View {
         promptShown=false;
         distance=targetDistance=canvas->ring.radius;
         startCanvas();
+        restoreComfort();
         return true;
     }
     // A layout that cannot be captured leaves an empty monitor scene until viewer.tsv changes.
@@ -2293,6 +2385,7 @@ struct View {
             panels.clear(); geometry.clear(); layoutVersion={};
         }
         navigationRotation=targetRotation; panX=targetPanX; panY=targetPanY; panZ=targetPanZ; distance=targetDistance;
+        restoreComfort();
         return true;
     }
     int run() {
@@ -2307,6 +2400,7 @@ struct View {
         if (!canvas) sceneBounds();
         primeCamera();
         if (canvas) startCanvas();
+        restoreComfort();
         while (running && !interrupted) if (!tick()) break;
         return finish();
     }
@@ -2358,7 +2452,7 @@ int main(int argc,char** argv) {
             if (arg=="--graphics-limits") { graphics_limits::report(); return 0; }
             if (arg=="--help") { std::cout << "Usage: omarchy-xr [--capture OUTPUT ... | --layout FILE | --list-outputs | --graphics-limits] [--spacing 1..8192] [--fps 1..120] [--workspace-curvature 0..100 | --workspace-degrees 0..360] [--workspace-follow] [--surface-curvature 0..100] [--display OUTPUT | --direct OUTPUT | --list-leases] [--stereo] [--spectator] [--ipd 50..80] [--fov 15..100] [--pose-socket PATH] [--smoke-test] [--canvas FILE [--canvas-windows-file FILE]]\nRight-drag: look; middle-drag: pan; wheel: zoom; F: fit (monitors); R: recenter; Esc: exit\n"
                 "Window canvas: --canvas names canvas.tsv (settings; may not exist yet). Windows come from the XR controls' .windows\nmailbox beside --pose-socket, which needs controls version 8 (<pose dir>/controls.version). Developer runs may pass\n--canvas-windows-file, a window list in the mailbox format; it replaces the mailbox and skips the version check.\nFormats: docs/infinite-canvas-plan.md sections 3.1 and 4.3.\nKeys: the XR key layer (docs/xr-controls-plan.md) drives every presentation through Hyprland; the windowed preview\nonly closes (Esc).\n"; return 0; }
-            else if (arg=="--version") { std::cout << "omarchy-xr 0.5.1\n"; return 0; }
+            else if (arg=="--version") { std::cout << "omarchy-xr 0.5.2\n"; return 0; }
             else if (arg=="--smoke-test") smoke=true;
             else if (arg=="--list-outputs") list=true;
             else if (arg=="--capture") { auto name=value(); layouts.push_back({name,float(layouts.size())*2000,0,1920,1080}); }

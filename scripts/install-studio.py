@@ -15,6 +15,8 @@ PLUGIN_FILES = (
     "LICENSE",
     "studio/BarWidget.qml",
     "studio/MonitorStudio.qml",
+    "studio/CanvasMap.qml",
+    "studio/LayoutChanges.js",
     "studio/PassiveToolTip.qml",
     "studio/RequestState.qml",
     "studio/MonitorSnap.js",
