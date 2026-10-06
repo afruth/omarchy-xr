@@ -20,7 +20,7 @@ from typing import Any
 from laptop_display import LaptopDisplay, internal
 from workspace_presets import built_in_setups
 from environment import Environment
-from glasses import Recovery, detect
+from glasses import Recovery, detect, edid_offers
 from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
@@ -501,7 +501,9 @@ class Manager:
                 name = actual["name"]
                 original["name"] = name
                 self.original_output = original
-            if actual and any(str(mode).startswith(family) for mode in actual.get("availableModes", [])):
+            # Hyprland can miss the last hotplug and keep a stale mode list; the mode it drives is live.
+            live = actual and f'{actual.get("width")}x{actual.get("height")}@' == family and not actual.get("disabled", False)
+            if actual and (live or any(str(mode).startswith(family) for mode in actual.get("availableModes", []))):
                 return name
             time.sleep(.1)
         raise RuntimeError("The glasses did not return to normal video. Unplug and reconnect them, then try again.")
@@ -513,6 +515,9 @@ class Manager:
             modes = restored.get("availableModes", [])
             if any(mode.startswith(wanted) and abs(float(mode.split("@")[1].removesuffix("Hz")) - original["refreshRate"]) < 1 for mode in modes):
                 return
+            if (f'{restored.get("width")}x{restored.get("height")}@' == wanted and not restored.get("disabled", False)
+                    and abs(restored.get("refreshRate", 0) - original["refreshRate"]) < 1):
+                return  # driven at the original timing although the mode list is stale
             time.sleep(.1)
         raise RuntimeError("The glasses did not restore their previous display settings. Unplug and reconnect them.")
 
@@ -926,6 +931,9 @@ class Manager:
                 monitors = self.monitors()
                 target: dict[str, Any] = next((m for m in monitors if m["name"] == displays[0]), {})
                 if any(mode.startswith(timing) for mode in target.get("availableModes", [])):
+                    break
+                # Mono changes only the refresh rate, a hotplug Hyprland may miss: ask the kernel's EDID too.
+                if mono and edid_offers(displays[0], 1920, 1080, 119):
                     break
                 time.sleep(.1)
             else:

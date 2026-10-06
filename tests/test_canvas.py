@@ -563,6 +563,24 @@ class CanvasTests(unittest.TestCase):
             manager.stereo_active = False
             self.close(manager)
 
+    def test_mono_start_reads_the_kernel_edid_when_hyprland_misses_the_120_hz_hotplug(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager = self.manager(fake)
+        manager.sdk = Mock(); manager.sdk.process.poll.return_value = None
+        manager.dedicated = Mock(); manager.dedicated.output = "DP-1"
+        manager.start = Mock()
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_glasses_mode("mono")
+            with patch("backend.edid_offers", return_value=True) as offers:
+                manager.start_dedicated()
+            offers.assert_called_with("DP-1", 1920, 1080, 119)
+            manager.dedicated.start.assert_called_once_with("DP-1")
+        finally:
+            manager.stereo_active = False
+            self.close(manager)
+
     def test_canvas_adopts_glasses_windows_even_when_starting_empty(self):
         fake = CanvasHypr()
         self.glasses(fake)
