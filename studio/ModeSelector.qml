@@ -12,7 +12,7 @@ Item {
     property string actionText: ""
     property color accent: palette.highlight
     property color foreground: palette.text
-    readonly property var options: [{value:"monitors",label:"Virtual monitors"},{value:"canvas",label:"Window canvas"}]
+    property var options: [{value:"monitors",label:"Virtual monitors"},{value:"canvas",label:"Window canvas"}]
     signal picked(string mode)
     signal actionRequested()
     implicitWidth: layout.implicitWidth

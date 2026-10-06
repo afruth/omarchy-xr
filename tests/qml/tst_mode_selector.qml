@@ -13,6 +13,14 @@ TestCase {
         id: selector
         width: 400
     }
+    ModeSelector {
+        id: glasses
+        y: 100
+        width: 400
+        options: [{value:"stereo",label:"3D stereo · 60 Hz"},{value:"mono",label:"Mono · 120 Hz"}]
+        mode: "stereo"
+    }
+    SignalSpy { id: glassesSpy; target: glasses; signalName: "picked" }
     SignalSpy { id: spy; target: selector; signalName: "picked" }
     SignalSpy { id: actionSpy; target: selector; signalName: "actionRequested" }
     function init() {
@@ -25,6 +33,16 @@ TestCase {
     }
     function segment(value) { return findChild(selector, "mode-" + value); }
     function click(value) { var s = segment(value); mouseClick(s, s.width / 2, s.height / 2); }
+    // The glasses display choice reuses the selector with its own options; a hint only ever blocks "canvas".
+    function test_custom_options_pick_their_values() {
+        glasses.hint = "Stop the glasses to switch.";
+        var mono = findChild(glasses, "mode-mono");
+        verify(mono && mono.enabled && findChild(glasses, "mode-stereo").checked);
+        mouseClick(mono, mono.width / 2, mono.height / 2);
+        compare(glassesSpy.count, 1);
+        compare(glassesSpy.signalArguments[0][0], "mono");
+        glasses.hint = "";
+    }
     function test_pick_emits_only_changes() {
         click("canvas");
         compare(spy.count, 1);

@@ -533,6 +533,36 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(order, ["move", "move", ("stereo", ("DP-1",))])
         finally: self.close(manager)
 
+    def test_mono_starts_the_glasses_at_120_hz_without_stereo(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager = self.manager(fake)
+        launched = []
+        manager.sdk = Mock(); manager.sdk.process.poll.return_value = None
+        # The 120 Hz timing appears only once the glasses switch.
+        manager.sdk.mono.side_effect = lambda: fake.outputs["DP-1"]["availableModes"].append("1920x1080@120.00Hz")
+        manager.dedicated = Mock(); manager.dedicated.output = "DP-1"
+        manager.start = Mock(side_effect=lambda present, direct: launched.append(manager.direct_arguments()))
+        try:
+            self.xr_monitors(fake, manager)
+            with self.assertRaisesRegex(ValueError, "stereo or mono"): manager.set_glasses_mode("4k")
+            perform(manager, {"action": "set_glasses_mode", "glassesMode": "mono"})
+            self.assertEqual(json.loads(manager.presentation_profile.read_text())["glassesMode"], "mono")
+            manager.start_dedicated()
+            manager.sdk.mono.assert_called_once(); manager.sdk.verify_mono.assert_called_once()
+            manager.sdk.stereo.assert_not_called(); manager.sdk.verify_stereo.assert_not_called()
+            manager.dedicated.start.assert_called_once_with("DP-1")
+            self.assertEqual(launched, [["--direct", "DP-1"]])
+            self.assertTrue(manager.stereo_active)    # restored through the stereo_off path at Stop
+            self.assertEqual(manager.status()["glassesMode"], "mono")
+            events = [json.loads(line)["stage"] for line in (manager.directory / "display-events.jsonl").read_text().splitlines()]
+            self.assertEqual(events[0], "mono-start")
+            manager.set_glasses_mode("stereo")
+            self.assertIn("--stereo", manager.direct_arguments())
+        finally:
+            manager.stereo_active = False
+            self.close(manager)
+
     def test_canvas_adopts_glasses_windows_even_when_starting_empty(self):
         fake = CanvasHypr()
         self.glasses(fake)

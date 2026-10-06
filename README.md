@@ -537,7 +537,11 @@ fullscreen presentation development.
 ### Head-tracked presentation
 
 **Start in glasses** is the XR path. It switches the Pro 2 to standard SBS
-3840×1080 at 60 Hz, preserving its prior mode for restoration. The SDK acknowledges
+3840×1080 at 60 Hz, preserving its prior mode for restoration. The **3D stereo · 60 Hz / Mono · 120 Hz**
+choice above the Start buttons picks the glasses mode for the next start: side-by-side is the only 3D
+timing the glasses offer, so mono trades depth for 1920×1080 at 120 Hz. Both eyes then see the same image,
+which halves the smear of text while you turn your head; head tracking, the virtual monitors and their
+resolution are the same in both modes, and Stop restores the glasses the same way. The SDK acknowledges
 the request before the computer drives the new timing, so verification happens
 after scanout starts. Left and right views use parallel cameras separated by IPD;
 the eye offset is applied in head coordinates. The native desktop cursor is included in capture.

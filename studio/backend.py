@@ -36,6 +36,10 @@ REQUIRED_CONTROLS = 10
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
                   "save_comfort", "restore_comfort")
+# Glasses display modes for Start in glasses, each with the EDID mode that shows the switch took effect.
+# Stereo is side-by-side 3D at 60 Hz (the only SBS timing the glasses offer); mono drops depth for 120 Hz,
+# which halves the smear of head-locked text. Both restore through the same stereo_off path.
+GLASSES_MODES = {"stereo": "3840x1080", "mono": "1920x1080@120"}
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
@@ -258,6 +262,7 @@ class Manager:
         self.laptop_off_enabled = presentation.get("laptopOff", False) is True
         # Virtual monitors counterpart of the canvas adopt policy; on unless turned off.
         self.bring_windows_enabled = presentation.get("bringWindows", True) is not False
+        self.glasses_mode = "mono" if presentation.get("glassesMode") == "mono" else "stereo"
         self.battery_saver_enabled = presentation.get("batterySaver", False) is True
         self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
 
@@ -809,7 +814,7 @@ class Manager:
         headset = self.dedicated.output
         if not isinstance(headset, str):
             raise RuntimeError("The glasses are not ready for stereo. Stop XR, then try again.")
-        args = ["--direct", headset, "--stereo"]
+        args = ["--direct", headset] + (["--stereo"] if self.glasses_mode == "stereo" else [])
         self.spectator_skipped = ""
         if self.spectator_enabled:
             # A missing computer display costs the recording window, never the stereo start.
@@ -905,36 +910,41 @@ class Manager:
         self.redistribute_windows(ids, monitors)
 
     def run_stereo(self, displays):
-        stage = "switching the glasses to stereo"
+        # stereo_active means "the glasses are in an XR video mode" for mono as well: one restore path.
+        mono, timing = self.glasses_mode == "mono", GLASSES_MODES[self.glasses_mode]
+        stage = "switching the glasses to " + ("mono 120 Hz" if mono else "stereo")
         try:
-            self.display_event("stereo-start")
+            self.display_event("mono-start" if mono else "stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
             self.record_stereo()
-            self.sdk.stereo(True)
+            if mono: self.sdk.mono()
+            else: self.sdk.stereo(True)
             self.display_event("stereo-request-acknowledged")
-            stage = "waiting for stereo video"
+            stage = "waiting for " + ("mono 120 Hz" if mono else "stereo") + " video"
             # Wait for the device's new EDID before taking a snapshot for the handoff.
             for _ in range(100):
                 monitors = self.monitors()
                 target: dict[str, Any] = next((m for m in monitors if m["name"] == displays[0]), {})
-                if any(mode.startswith("3840x1080") for mode in target.get("availableModes", [])):
+                if any(mode.startswith(timing) for mode in target.get("availableModes", [])):
                     break
                 time.sleep(.1)
             else:
-                raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+                raise RuntimeError("The glasses did not switch to " + ("120 Hz" if mono else "stereo")
+                                   + " video. Reconnect them, then try again.")
             stage = "preparing the glasses display"
             self.display_event("stereo-edid-ready")
             self.dedicated.start(displays[0])
             stage = "opening the XR view"
             self.start(present=True, direct=True)
-            stage = "checking the stereo image"
-            self.sdk.verify_stereo()
+            stage = "checking the glasses video mode"
+            if mono: self.sdk.verify_mono()
+            else: self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
                 stage = "turning off the laptop display"
                 self.disable_laptop_display()
         except Exception as exc:
-            message = f"Could not start stereo while {stage}. {exc}"
+            message = f"Could not start {'mono 120 Hz' if mono else 'stereo'} while {stage}. {exc}"
             self.display_event("stereo-start-failed", message)
             try:
                 self.stop_viewer()
@@ -978,7 +988,12 @@ class Manager:
     def save_presentation(self):
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
                                                 "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled,
-                                                "bringWindows":self.bring_windows_enabled})
+                                                "bringWindows":self.bring_windows_enabled,"glassesMode":self.glasses_mode})
+
+    def set_glasses_mode(self, mode):
+        if mode not in GLASSES_MODES: raise ValueError("Choose 3D stereo or mono 120 Hz")
+        self.glasses_mode = mode
+        self.save_presentation()
 
     def set_bring_windows(self, enabled):
         if type(enabled) is not bool: raise ValueError("Bringing windows into XR must be on or off")
@@ -1233,7 +1248,7 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "glassesMode": self.glasses_mode, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
                 "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
@@ -1366,10 +1381,10 @@ def action_present_direct(manager, request):
     if manager.canvas_mode:
         if request.get("canvas"):
             manager.canvas.save(request["canvas"])
-        response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Stereo active."}
+        response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Mono 120 Hz active." if manager.glasses_mode == "mono" else "Stereo active."}
     else:
         manager.apply(request["layout"])
-        response = {"layout": manager.applied, "message": "Stereo active."}
+        response = {"layout": manager.applied, "message": "Mono 120 Hz active." if manager.glasses_mode == "mono" else "Stereo active."}
     if not already_direct:
         manager.start_dedicated()
         if manager.spectator_skipped:
@@ -1447,6 +1462,15 @@ def action_bring_windows(manager, request):
     manager.set_bring_windows(request.get("enabled"))
     message = ("Your laptop windows will move to the virtual monitors when stereo starts." if manager.bring_windows_enabled
                else "Laptop windows stay on the laptop when stereo starts; windows on the glasses still move.")
+    return {"message": message}
+
+
+def action_glasses_mode(manager, request):
+    manager.set_glasses_mode(request.get("glassesMode"))
+    message = ("Mono 120 Hz: sharper text while you move your head, without 3D depth." if manager.glasses_mode == "mono"
+               else "3D stereo: depth at 60 Hz.")
+    if manager.direct:
+        message += " Stop and start the glasses again to switch."
     return {"message": message}
 
 
@@ -1547,6 +1571,7 @@ def perform(manager, request):
         "set_laptop_off": action_laptop_off,
         "set_battery_saver": action_battery_saver,
         "set_bring_windows": action_bring_windows,
+        "set_glasses_mode": action_glasses_mode,
         "restore_laptop": action_restore_laptop,
         "set_spectator": action_spectator,
         "set_render_mode": action_render_mode,

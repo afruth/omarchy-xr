@@ -109,6 +109,13 @@ class SDK:
     def verify_stereo(self):
         self.display_command("verify_stereo")
 
+    def mono(self):
+        """The glasses at 1920x1080, 120 Hz for direct mono; stereo(False) restores them like stereo."""
+        self.display_command("mono")
+
+    def verify_mono(self):
+        self.display_command("verify_mono")
+
     def display_command(self, command):
         deadline = time.monotonic() + 20
         while self.pending and time.monotonic() < deadline:
