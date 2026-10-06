@@ -705,7 +705,9 @@ that target changes, XR selects the monitor's existing workspace once, without a
 dwell delay. Gaps, looking away, and stale tracking preserve the last selected monitor. Looking around within one
 monitor never repeats selection or steers the mouse. Mouse motion never changes
 the gaze target. Workspace selection uses normal Omarchy behavior, including any
-configured one-time cursor warp. XR+Up at monitor level frames the window you look at on the selected monitor.
+configured one-time cursor warp. When your look rests on a window, it is focused and the pointer moves
+to the look point; resting on another part of the window that is already focused, with the pointer in
+it, leaves the pointer where it is. Explicit focus (the confirm tap, XR+Up, search) always moves it. XR+Up at monitor level frames the window you look at on the selected monitor.
 Zoom approaches the looked-at point on that monitor along its local
 normal without changing the workspace bend. A zoom gesture keeps that first look
 point until pan, fit, or recenter. With no look hit, zoom uses the selected
