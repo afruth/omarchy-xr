@@ -230,7 +230,10 @@ public:
     // pointerSerial changes once per gaze dwell; pointerX/Y are that dwell's monitor pixel
     // coordinates (window-buffer pixels in canvas mode). The adapter warps the desktop pointer there
     // exactly once per serial. Canvas mode writes v4 (same fields, output = window address) to both files.
-    void publishHover(bool enabled, const std::string& output, float u, float v, unsigned pointerSerial=0, float pointerX=0, float pointerY=0) {
+    // A v3 line ends in " d" when its pointer serial is a dwell rather than an explicit focus (controls v10 keep
+    // the pointer still inside the focused window on a dwell); older controls ignore the extra field.
+    void publishHover(bool enabled, const std::string& output, float u, float v, unsigned pointerSerial=0, float pointerX=0, float pointerY=0,
+                      bool pointerDwell=false) {
         if (path.empty()) return;
         const auto now = bootSeconds();
         if (enabled == hoverEnabled && output == hoverOutput && pointerSerial == hoverPointerSerial && now == hoverStamp) return;
@@ -240,7 +243,8 @@ public:
         std::ostringstream values;
         values << body << std::setprecision(9) << u << ' ' << v;
         std::ostringstream pointer;
-        pointer << values.str() << ' ' << pointerSerial << ' ' << std::setprecision(9) << pointerX << ' ' << pointerY << '\n';
+        pointer << values.str() << ' ' << pointerSerial << ' ' << std::setprecision(9) << pointerX << ' ' << pointerY
+                << (pointerDwell && !canvasMode ? " d" : "") << '\n';
         writeFile(path + ".hover", (canvasMode ? "v4 " : "v3 ") + pointer.str());
         if (!mirror.empty()) writeFile(mirror + ".hover", canvasMode ? "v4 " + pointer.str() : values.str() + '\n');
     }

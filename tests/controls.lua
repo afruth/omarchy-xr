@@ -187,6 +187,20 @@ dwell(0,0,0);assert(#movements==0)                        -- no dwell yet
 dwell(1,100,200);assert(#movements==1 and movements[1].x==2120 and movements[1].y==300 and windowFocuses[1]=="0xa")
 dwell(1,100,200);dwell(1,150,220);assert(#movements==1)  -- same serial: once
 dwell(2,1500,200);assert(#movements==2 and movements[2].x==3520 and #windowFocuses==1) -- window 0xb is already active
+-- v10: a dwell (" d") inside the focused window with the pointer already in it leaves the pointer alone; an
+-- explicit focus (no flag) still warps, and so does a dwell on another window or with the pointer elsewhere.
+local cursorBefore=hl.get_cursor_pos
+hl.get_cursor_pos=function() return cursor end
+local function dwellOnly(pointerSerial,px,py)
+ serial=serial+1
+ files[path..".hover"]=string.format("v3 42 %d 1 OMXR-test-1 0 0 %d %g %g d",serial,pointerSerial,px,py)
+ omarchy_xr_controls.hover()
+end
+dwellOnly(3,1700,600);assert(#movements==2)                               -- reading around 0xb: no jump
+dwell(4,1700,600);assert(#movements==3 and movements[3].x==3720)         -- explicit focus: warps
+dwellOnly(5,100,200);assert(#movements==4 and windowFocuses[2]=="0xa")   -- another window: focus and warp
+cursor={x=10,y=10};dwellOnly(6,1700,600);assert(#movements==5)           -- pointer on the laptop: warp into 0xb
+hl.get_cursor_pos=cursorBefore
 hl.dispatch=dispatch
 sample(1,"OMXR-test-2");assert(#focuses==4 and focuses[4]=="name:work")
 omarchy_xr_controls.hover();assert(#focuses==4) -- duplicate sample
@@ -197,8 +211,8 @@ now=110;files["/proc/uptime"]="110";omarchy_xr_controls.refresh()
 assert(omarchy_xr_controls.hover_timer==nil and liveTimer.enabled==false)
 repeatSample(sample, 200)
 dwell(9,100,100)
-assert(#focuses==5 and #movements==2) -- a stale session neither focuses nor warps
-print("Halo transitions select existing workspaces once; a dwell warps the pointer once and focuses the window under it; stale sessions cannot focus")
+assert(#focuses==5 and #movements==5) -- a stale session neither focuses nor warps
+print("Halo transitions select existing workspaces once; a dwell warps the pointer once and focuses the window under it, but not within the focused window; stale sessions cannot focus")
 end
 
 local function testSettings()

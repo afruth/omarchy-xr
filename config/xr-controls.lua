@@ -1333,15 +1333,27 @@ end
 local function hoverTarget(line)
     local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v4 (%d+) (%d+) ([01]) (%S+) %S+ %S+ (%d+) (%S+) (%S+)")
     if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
-    owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
-    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
+    local kind
+    owner,serialText,mode,name,pointerSerial,px,py,kind=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+) ?(%a?)")
+    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py),kind=="d" end
     owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
     if owner then return owner,serialText,mode,name end
     return line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ")
 end
 -- A dwell warps the desktop pointer to the look point once and focuses the window under it.
 -- Hyprland's follow-mouse may already focus it; the explicit dispatch covers the other policies.
-local function warpPointer(name,px,py)
+-- v10: a dwell inside the window that is already focused, with the pointer already in it, leaves the
+-- pointer where it is (reading around a window must not drag the pointer along); an explicit focus warps.
+local function warpPointer(name,px,py,dwell)
+    -- Focused (Hyprland's flag or the active window) with the desktop pointer already inside it.
+    local function settledIn(w)
+        local fine,current=pcall(hl.get_active_window)
+        if not w.active and not (fine and current and current.address==w.address) then return false end
+        local ok,cursor=pcall(hl.get_cursor_pos)
+        if not ok or type(cursor)~="table" then return false end
+        local cx,cy=pair(cursor);local wx,wy=pair(w.at);local ww,wh=pair(w.size)
+        return cx>=wx and cx<wx+ww and cy>=wy and cy<wy+wh
+    end
     for _,monitor in ipairs(hl.get_monitors()) do
         if monitor.name==name then
             local scale=monitor.scale or 1
@@ -1359,6 +1371,7 @@ local function warpPointer(name,px,py)
                         end
                     end
                 end
+                if best and dwell and settledIn(best) then return end
                 if best and not best.active then pcall(function() hl.dispatch(hl.dsp.focus({window=best})) end) end
             end
             -- Focusing warps the cursor to the window's centre, so the move to the look point comes last.
@@ -1394,14 +1407,14 @@ local function selectGazeWorkspace()
     if not file then return end
     local line=file:read("*l");file:close()
     if not line then return end
-    local owner,serialText,mode,name,pointerSerial,px,py=hoverTarget(line)
+    local owner,serialText,mode,name,pointerSerial,px,py,dwell=hoverTarget(line)
     local serialNumber=tonumber(serialText)
     if not noteHover(owner, serialNumber) then pointerSerialSeen=pointerSerial;return end
     if canvasMode then canvasHover(mode,name,pointerSerial,px,py);return end
     if waitForFocus(mode,name,pointerSerial) then return end
     if pointerSerial and pointerSerial~=pointerSerialSeen then
         -- The first sample of a session only records the serial; a pre-existing dwell is not replayed.
-        if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py) end
+        if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py,dwell) end
         pointerSerialSeen=pointerSerial
     end
     hoverName=mode=="1" and name or nil

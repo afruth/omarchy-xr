@@ -484,6 +484,9 @@ void canvasFocusAndHover() {
         const auto hover=readFile(path+".hover");
         assert(hover=="v4 "+owner+" 1 1 0x5005 0 0 3 640.5 360\n");
         assert(readFile(mirror+".hover")==hover);
+        input.publishHover(true,"0x5005",0,0,4,640.5f,360,true);   // the canvas never marks a dwell
+        AsyncFile::instance().flush();
+        assert(readFile(path+".hover")=="v4 "+owner+" 2 1 0x5005 0 0 4 640.5 360\n");
     }
     {
         LiveControls monitors(pose);
@@ -492,6 +495,10 @@ void canvasFocusAndHover() {
         AsyncFile::instance().flush();
         assert(readFile(path+".hover")=="v3 "+owner+" 1 1 OMXR-a 0 0 2 10 20\n");
         assert(readFile(mirror+".hover")==owner+" 1 1 OMXR-a 0 0\n");
+        monitors.publishHover(true,"OMXR-a",0,0,3,10,20,true);      // a dwell serial (controls v10)
+        AsyncFile::instance().flush();
+        assert(readFile(path+".hover")=="v3 "+owner+" 2 1 OMXR-a 0 0 3 10 20 d\n");
+        assert(readFile(mirror+".hover")==owner+" 2 1 OMXR-a 0 0\n");
     }
     if(saved)setenv("OMARCHY_XR_MIRROR_STATE",savedCopy.c_str(),1);
     else unsetenv("OMARCHY_XR_MIRROR_STATE");

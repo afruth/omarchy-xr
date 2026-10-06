@@ -228,6 +228,7 @@ struct View {
     theme::Accent accent;
     unsigned pointerSerial=0;
     float pointerX=0, pointerY=0;
+    bool pointerDwell=false;   // the current pointer serial came from a dwell, not an explicit focus
     std::string dwellOutput;
     // Window canvas mode (--canvas): the scene, its window list file and the hot-reload state.
     std::unique_ptr<canvas::Scene> canvas;
@@ -363,7 +364,7 @@ struct View {
             const auto previous=selection.output;
             selection.observe(gaze.current);
             if (selection.output!=previous) selectionAnchor=baseView();
-            if (dwell.settings.pointer) { ++pointerSerial; pointerX=settled->pixelX; pointerY=settled->pixelY; }
+            if (dwell.settings.pointer) { ++pointerSerial; pointerX=settled->pixelX; pointerY=settled->pixelY; pointerDwell=true; }
             std::cout << "Gaze: settled on " << settled->output << " at " << int(settled->pixelX) << "," << int(settled->pixelY) << std::endl;
         }
     }
@@ -1281,7 +1282,7 @@ struct View {
     void focusGazedWindow() {
         if (!gaze.current) { fitTarget(); return; }
         selectGazed();
-        ++pointerSerial; pointerX=gaze.current->pixelX; pointerY=gaze.current->pixelY;
+        ++pointerSerial; pointerX=gaze.current->pixelX; pointerY=gaze.current->pixelY; pointerDwell=false;
         const auto& c=*controls;
         const bool inside=c.paneValid && c.paneOutput==selection.output && pointerX>=c.paneX && pointerX<c.paneX+c.paneW
             && pointerY>=c.paneY && pointerY<c.paneY+c.paneH;
@@ -1483,7 +1484,7 @@ struct View {
     // The search closes first (keeping the camera), so the keyboard goes to the window.
     void explicitFocus(const std::string& name, float px, float py) {
         if (canvas->search.open) { canvas->searchClose(false, baseView()); syncPrompt(); }
-        selection.output=name; hoverOutput=name; ++pointerSerial; pointerX=px; pointerY=py; canvas->noteConfirm();
+        selection.output=name; hoverOutput=name; ++pointerSerial; pointerX=px; pointerY=py; pointerDwell=false; canvas->noteConfirm();
         restageRequested=name==canvas->stagedName ? std::string() : name;
     }
     // A hit's projected px into window-buffer px (§3.4 step 2).
@@ -2217,7 +2218,7 @@ struct View {
         // Share exactly the halo target; the compositor consumes monitor transitions only. Canvas mode
         // publishes explicit focus actions, windowed too (§3.4).
         // While the Quickshell prompt holds the keyboard, hover is off (no pointer warp, §5.4).
-        controls->publishHover(canvas ? !hoverOutput.empty() && !promptHoldsKeys() : (direct && !selection.output.empty()), canvas ? hoverOutput : selection.output, 0, 0, pointerSerial, pointerX, pointerY);
+        controls->publishHover(canvas ? !hoverOutput.empty() && !promptHoldsKeys() : (direct && !selection.output.empty()), canvas ? hoverOutput : selection.output, 0, 0, pointerSerial, pointerX, pointerY, !canvas && pointerDwell);
         projectPanels(viewportWidth, viewportHeight, lastCameraTime);
         collectGpu();
         const bool timeCapture=gpuTimers.begin(GpuTimers::Capture);
