@@ -82,7 +82,7 @@ class CanvasTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = Path(self.temp.name) / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "controls.version").write_text("9\n")
+        (self.runtime / "controls.version").write_text("10\n")
         self.state = Path(self.temp.name) / "state"
         env = patch.dict(os.environ, {"OMARCHY_XR_RUNTIME": str(self.runtime), "HYPRLAND_INSTANCE_SIGNATURE": "test-session"})
         env.start()
@@ -273,17 +273,17 @@ class CanvasTests(unittest.TestCase):
             self.assertTrue(manager.canvas.active)
         finally: self.close(manager)
 
-    def test_canvas_mode_requires_controls_v9(self):
+    def test_canvas_mode_requires_controls_v10(self):
         manager = self.manager(CanvasHypr())
         try:
-            (self.runtime / "controls.version").write_text("7\n")
+            (self.runtime / "controls.version").write_text("9\n")
             with self.assertRaisesRegex(RuntimeError, "XR controls need setup"): manager.set_render_mode("canvas")
             self.assertEqual(manager.render_mode, "monitors")
             process = Mock(); process.poll.return_value = None; manager.viewer = process
             self.assertIn("XR controls need setup", manager.controls_hint())
             (self.runtime / "controls.version").unlink()
             self.assertEqual(manager.controls_version(), 0)
-            (self.runtime / "controls.version").write_text("9\n")
+            (self.runtime / "controls.version").write_text("10\n")
             self.assertEqual(manager.controls_hint(), "")
             manager.viewer = None
             manager.set_render_mode("canvas")
@@ -435,7 +435,7 @@ class CanvasTests(unittest.TestCase):
             manager.canvas.ensure(manager.monitors())
             self.assertEqual(list(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xa1"])
             self.assertEqual([c["workspace"]["name"] for c in fake.clients], ["omxr-park", "1", "2"])
-            manager.redistribute_laptop_windows({1, 2}, manager.monitors())
+            manager.redistribute_windows({1, 2}, manager.monitors())
             self.assertEqual([c["workspace"]["name"] for c in fake.clients], ["omxr-park", "1", "2"])
         finally: self.close(manager)
 
@@ -471,6 +471,86 @@ class CanvasTests(unittest.TestCase):
             self.assertTrue((manager.directory / "canvas.tsv").read_text().splitlines()[0].endswith(" empty 0 60 1 0 1"))
         finally: self.close(manager)
 
+    def glasses(self, fake):
+        """The glasses' 2D output (DP-1, workspaces 7 and 8) beside the laptop (workspace 1)."""
+        fake.outputs["DP-1"] = {"name": "DP-1", "description": "VITURE Beast", "width": 1920, "height": 1080,
+                                "x": 1920, "y": 0, "scale": 1, "refreshRate": 60, "activeWorkspace": {"id": 7, "name": "7"},
+                                "availableModes": ["1920x1080@60.00Hz"]}
+        fake.workspaces = [{"id": 1, "monitor": "eDP-1", "windows": 1}, {"id": 7, "monitor": "DP-1", "windows": 3},
+                           {"id": 8, "monitor": "DP-1", "windows": 0}, {"id": -98, "monitor": "DP-1", "windows": 1}]
+        fake.clients = [client("0xa1", 1), client("0xb2", 7), client("0xc3", 7),
+                        client("0xd4", 7, **{"class": "omarchy-xr-spectator"}), client("0xf6", 7, pid=os.getppid()),
+                        client("0xe5", {"id": -98, "name": "special:scratch"})]
+
+    def xr_monitors(self, fake, manager):
+        manager.apply(default_layout())
+        for index, name in enumerate(sorted(manager.owned)):
+            fake.outputs[name]["activeWorkspace"] = {"id": 10 + index, "name": str(10 + index)}
+
+    def test_glasses_windows_move_to_virtual_monitors_before_the_handoff(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager = self.manager(fake)
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_bring_windows(False)
+            manager.bring_windows_into_xr(["DP-1"])
+            # Spread over the virtual monitors' visible workspaces; the laptop, Studio, the recording window
+            # and special workspaces stay where they are.
+            self.assertEqual({c["address"]: c["workspace"]["id"] for c in fake.clients},
+                             {"0xa1": 1, "0xb2": 10, "0xc3": 11, "0xd4": 7, "0xe5": -98, "0xf6": 7})
+            manager.set_bring_windows(True)
+            self.assertTrue(json.loads(manager.presentation_profile.read_text())["bringWindows"])
+            fake.window("0xb2")["workspace"] = {"id": 7, "name": "7"}
+            manager.bring_windows_into_xr(["DP-1"])
+            self.assertIn(fake.window("0xa1")["workspace"]["id"], {10, 11, 12})
+            with self.assertRaisesRegex(ValueError, "on or off"): manager.set_bring_windows("yes")
+        finally: self.close(manager)
+
+    def test_bring_windows_setting_defaults_on_and_is_reported(self):
+        manager = self.manager(CanvasHypr())
+        try:
+            self.assertTrue(manager.bring_windows_enabled)
+            self.assertTrue(manager.status()["bringWindowsEnabled"])
+            perform(manager, {"action": "set_bring_windows", "enabled": False})
+        finally: manager.lock.close()
+        manager = self.manager(CanvasHypr())
+        try: self.assertFalse(manager.status()["bringWindowsEnabled"])
+        finally: manager.lock.close()
+
+    def test_stereo_start_moves_glasses_windows_before_switching_the_glasses(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager = self.manager(fake)
+        order = []
+        fake.on_move = lambda: order.append("move")
+        manager.sdk = Mock(); manager.sdk.process.poll.return_value = None
+        manager.run_stereo = Mock(side_effect=lambda displays: order.append(("stereo", tuple(displays))))
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_bring_windows(False)
+            manager.start_dedicated()
+            self.assertEqual(order, ["move", "move", ("stereo", ("DP-1",))])
+        finally: self.close(manager)
+
+    def test_canvas_adopts_glasses_windows_even_when_starting_empty(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager = self.manager(fake, "canvas")
+        try:
+            manager.canvas.save({"adoptPolicy": "empty"})
+            manager.canvas.ensure(manager.monitors())
+            manager.bring_windows_into_xr(["DP-1"])
+            self.assertEqual({c["address"]: c["workspace"]["name"] for c in fake.clients},
+                             {"0xa1": "1", "0xb2": "omxr-park", "0xc3": "omxr-park", "0xd4": "7", "0xe5": "special:scratch",
+                              "0xf6": "7"})
+            # Journaled like the start migration, so Stop returns them to the glasses' workspace.
+            self.assertEqual(sorted(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xb2", "0xc3"])
+            manager.canvas.save({"adoptPolicy": "all"})
+            manager.bring_windows_into_xr(["DP-1"])
+            self.assertEqual(fake.window("0xa1")["workspace"]["name"], "omxr-park")
+        finally: self.close(manager)
+
     def test_laptop_off_adoption_targets_park(self):
         fake = CanvasHypr()
         manager = self.manager(fake, "canvas")
@@ -478,7 +558,7 @@ class CanvasTests(unittest.TestCase):
         try:
             manager.canvas.ensure(manager.monitors())
             fake.clients = [client("0xa1", 1), client("0xb2", 2), client("bogus", 1)]
-            manager.redistribute_laptop_windows({1}, manager.monitors())
+            manager.redistribute_windows({1}, manager.monitors())
             moves = fake.evals("window.move")
             self.assertEqual(moves, ['hl.dispatch(hl.dsp.window.move({window="address:0xa1", workspace="name:omxr-park", follow=false}))'])
             self.assertEqual(list(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xa1"])
@@ -579,7 +659,7 @@ class CanvasTests(unittest.TestCase):
         try:
             status = manager.status()
             self.assertEqual((status["renderMode"], status["canvasActive"], status["controlsVersion"], status["canvasWindows"]),
-                             ("monitors", False, 9, 0))
+                             ("monitors", False, 10, 0))
             manager.set_render_mode("canvas")
             manager.canvas.ensure(manager.monitors())
             process = Mock(); process.poll.return_value = None; process.pid = 123; manager.viewer = process

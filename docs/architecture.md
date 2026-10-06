@@ -228,6 +228,13 @@ Studio edits a draft. Save persists the draft; Apply validates non-overlapping
 rectangles, creates or updates owned monitors, verifies actual dimensions,
 removes obsolete outputs, then writes the renderer layout. Layout editing leaves physical outputs alone. Dedicated presentation temporarily
 changes the VITURE mode and classification, then restores them on exit. An existing viewer stops before apply to release its captures.
+Stereo start moves windows into XR before the glasses switch (`bring_windows_into_xr`): the SBS switch and
+the AR EDID each disconnect the glasses' 2D output, and Hyprland's `CMonitor::onDisconnect` moves its
+workspaces to the first other monitor (the laptop), as hidden workspaces the headset cannot show. The
+glasses' windows always move (round-robin onto the virtual monitors' visible workspaces, or adopted by the
+canvas); laptop windows move when the mode's setting is on (`bringWindows` in `presentation.json`, the
+canvas `adoptPolicy`). Only the glasses' then-empty workspaces follow Hyprland's fallback and return to
+the glasses at Stop; the windows leave with the XR workspaces (or the canvas journal) as usual.
 Monitor identifiers remain stable during an editor session.
 Choosing the other render mode while XR runs switches in place (`switch_live`): the
 Hyprland side first (canvas output and window migration, or `apply(layout)` with

@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 9
+local CONTROLS_VERSION = 10
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 -- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops
@@ -356,6 +356,7 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
 local hoverName   -- the monitor the halo is on, for the pane publisher
+local lastXrHover -- the XR monitor last gazed at, where search brings a window from outside XR
 local pointerSerialSeen
 -- Observe existing workspace shortcuts, including a workspace already visible on
 -- another monitor. Resolve after dispatch finishes, coalescing both event types.
@@ -951,13 +952,13 @@ local function writePane(line)
 end
 -- Virtual monitors mode windows for the XR layer (docs/xr-controls-plan.md §5.3-5.4): the visible windows of
 -- every XR monitor, monitors left to right, each one's windows left to right and top to bottom.
-local monitorWindows
+local monitorWindows,xrMonitors
 do
     local function rect(w)
         local x,y=pair(w.at);local width,height=pair(w.size)
         return x,y,width,height
     end
-    local function xrMonitors()
+    xrMonitors=function()
         local fine,monitors=pcall(hl.get_monitors)
         local out={}
         if not fine or type(monitors)~="table" then return out end
@@ -1012,11 +1013,30 @@ local function monitorCycle(step)
 end
 -- Search outside the canvas (§5.5): the renderer ranks every regular window from `.windows` (the 4-field header,
 -- no canvas output), refreshed every second while XR runs and at once when search opens. Enter comes back as
--- `.land` (v1 <owner> <seq> <address> <stamp>): focus the window, which brings its workspace up on its monitor,
--- point at it and publish its pane for the camera.
+-- `.land` (v1 <owner> <seq> <address> <stamp>): a window outside the virtual monitors (v10) first moves to the
+-- XR monitor in view (bringTarget); then focus it, which brings its workspace up on its monitor, point at it
+-- and publish its pane for the camera.
 -- Both scenes write `.windows` with the one sequence number in canvas.windowsSeq, which survives reloads, so
 -- the renderer never keeps a stale list after a mode switch.
 local monitorSearch={written=-math.huge,landSeq=0,landOwner=nil}
+-- The XR monitor a window from outside XR (the laptop, or a workspace Hyprland parked there) comes to: the one
+-- gazed at, else the last one gazed at, else the focused one, else the leftmost. nil when the window is already
+-- on an XR monitor, on any of its workspaces, or no XR monitor has an active workspace.
+local function bringTarget(address)
+    local monitors=xrMonitors()
+    for _,m in ipairs(monitors) do
+        local fine,list=pcall(hl.get_windows,{monitor=m.name})
+        for _,w in ipairs(fine and list or {}) do if w.address==address then return nil end end
+    end
+    local want=hoverName or lastXrHover
+    if not want then
+        local workspace=hl.get_active_workspace()
+        want=workspace and workspace.monitor and workspace.monitor.name
+    end
+    local target=monitors[1]
+    for _,m in ipairs(monitors) do if m.name==want then target=m end end
+    if target and target.active_workspace and target.active_workspace.id then return target end
+end
 function monitorSearch.publish(now)
     local rows=windowRows(listWindows())
     canvas.windowsSeq=canvas.windowsSeq+1;monitorSearch.written=now
@@ -1038,8 +1058,14 @@ function monitorSearch.tick(now)
     address=address:lower()
     local fine,w=pcall(hl.get_window,"address:"..address)
     if not fine or not w then return end
-    local x,y=pair(w.at);local width,height=pair(w.size)
+    local target=bringTarget(address)
     gazeDispatch=true
+    if target then
+        windowDispatch("move",address,{workspace=tostring(math.floor(target.active_workspace.id)),follow=false})
+        fine,w=pcall(hl.get_window,"address:"..address)
+        if not fine or not w then gazeDispatch=false;return end
+    end
+    local x,y=pair(w.at);local width,height=pair(w.size)
     hl.dispatch(hl.dsp.focus({window="address:"..address}))
     hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+width/2),y=math.floor(y+height/2)}))
     gazeDispatch=false
@@ -1363,7 +1389,7 @@ local function noteHover(owner, serialNumber)
     return true
 end
 local function selectGazeWorkspace()
-    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;hoverName=nil;return end
+    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;hoverName=nil;lastXrHover=nil;return end
     local file=io.open(path..".hover","r")
     if not file then return end
     local line=file:read("*l");file:close()
@@ -1379,6 +1405,7 @@ local function selectGazeWorkspace()
         pointerSerialSeen=pointerSerial
     end
     hoverName=mode=="1" and name or nil
+    if hoverName and hoverName:match("^OMXR%-") then lastXrHover=hoverName end
     if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
     if gazeTarget==name then return end
     focusMonitor(name)

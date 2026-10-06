@@ -29,10 +29,10 @@ from input_settings import ACTIONS as CONTROL_ACTIONS, DEFAULTS, desktop_binding
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
 from atomic_file import atomic_write
 from clock import boot_time
-from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
+from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE, EXCLUDED_CLASSES
 
-# Controls v9 keep laptop and Canvas windows separate and require explicit transfers.
-REQUIRED_CONTROLS = 9
+# Controls v10 bring a searched window from outside XR to the gazed virtual monitor.
+REQUIRED_CONTROLS = 10
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
                   "save_comfort", "restore_comfort")
@@ -216,17 +216,7 @@ class Manager:
             raise SystemExit(1)
         self.runner, self.renderer = runner, str(renderer)
         self.presentation_profile = self.directory / "presentation.json"
-        try:
-            presentation = json.loads(self.presentation_profile.read_text())
-            self.spectator_enabled = presentation.get("spectator", False) is True
-            self.laptop_off_enabled = presentation.get("laptopOff", False) is True
-            self.battery_saver_enabled = presentation.get("batterySaver", False) is True
-            self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
-        except (OSError, ValueError, AttributeError):
-            self.spectator_enabled = False
-            self.laptop_off_enabled = False
-            self.battery_saver_enabled = False
-            self.render_mode = "monitors"
+        self.load_presentation()
         self.write_power()
         self.environment = Environment(self.directory)
         self.graphics_limits = None
@@ -256,6 +246,20 @@ class Manager:
         self.canvas = CanvasSession(self)
         self.recover_journal()
         self.recover_stranded_stereo()
+
+    def load_presentation(self):
+        try:
+            presentation = json.loads(self.presentation_profile.read_text())
+        except (OSError, ValueError):
+            presentation = {}
+        if not isinstance(presentation, dict):
+            presentation = {}
+        self.spectator_enabled = presentation.get("spectator", False) is True
+        self.laptop_off_enabled = presentation.get("laptopOff", False) is True
+        # Virtual monitors counterpart of the canvas adopt policy; on unless turned off.
+        self.bring_windows_enabled = presentation.get("bringWindows", True) is not False
+        self.battery_saver_enabled = presentation.get("batterySaver", False) is True
+        self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
 
     def recover_journal(self):
         if self.journal.exists():
@@ -738,7 +742,7 @@ class Manager:
         if not all(self.output_matches(verified.get(self.prefix+m["id"],{}),m,rate) for m in self.applied["monitors"]):
             raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
 
-    def redistribute_laptop_windows(self, workspace_ids, monitors):
+    def redistribute_windows(self, workspace_ids, monitors):
         if self.canvas.active:
             if workspace_ids:
                 # Journaled like the start migration, so Stop returns them to their workspaces.
@@ -748,15 +752,18 @@ class Manager:
         targets = [m["activeWorkspace"]["id"] for m in monitors if m["name"] in self.owned
                    and m.get("activeWorkspace",{}).get("id",0)>0]
         if not workspace_ids: return
-        if not targets: raise RuntimeError("There is no active XR monitor for the windows from your laptop display.")
+        if not targets: raise RuntimeError("There is no active XR monitor for the windows from your computer displays.")
         clients = json.loads(self.runner("-j", "clients"))
         index = 0
         for client in clients:
             if client.get("workspace",{}).get("id") not in workspace_ids: continue
+            # Studio, the recording window and the XR search prompt belong to the computer display.
+            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") in (os.getpid(), os.getppid())
+                    or str(client.get("title", "")).startswith("Omarchy XR")): continue
             address = client.get("address", "")
             if not re.fullmatch(r"0x[0-9a-fA-F]+", address): continue
             target = targets[index % len(targets)]; index += 1
-            self.runner("eval", f'hl.dispatch(hl.dsp.window.move({{workspace="{target}", follow=false, window="address:{address}"}}))')
+            self.runner("eval", f'hl.dispatch(hl.dsp.window.move({{window="address:{address}", workspace="{target}", follow=false}}))')
 
     def reconcile_laptop_workspaces(self, monitors, disabling=False):
         active = {m["name"] for m in internal(monitors)}
@@ -764,7 +771,7 @@ class Manager:
         current = {name:{w["id"] for w in workspaces if w.get("monitor")==name and w["id"]>0} for name in active}
         lost = set().union(*(ids for name,ids in self.internal_workspaces.items() if name not in active)) if self.internal_workspaces else set()
         if disabling: lost.update(set().union(*current.values()) if current else set())
-        self.redistribute_laptop_windows(lost, monitors)
+        self.redistribute_windows(lost, monitors)
         self.internal_workspaces = {} if disabling else current
 
     def _monitor_args(self):
@@ -877,7 +884,25 @@ class Manager:
             self.original_output = current
         if not self.sdk.process or self.sdk.process.poll() is not None:
             self.sdk.connect()
+        self.bring_windows_into_xr(displays)
         self.run_stereo(displays)
+
+    def bring_windows_into_xr(self, glasses):
+        """Move windows into XR before the stereo handoff takes the glasses' 2D output away.
+
+        Left alone, Hyprland parks that output's workspaces on a hidden workspace of the first other
+        monitor (the laptop), where the headset cannot show or reach them. The glasses' windows always
+        move; the laptop's move when the mode's "bring existing windows" setting is on.
+        """
+        monitors = self.monitors()
+        sources = set(glasses)
+        laptop = self.canvas.settings()["adoptPolicy"] == "all" if self.canvas_mode else self.bring_windows_enabled
+        if laptop:
+            sources |= {m["name"] for m in internal(monitors)}
+        workspaces = json.loads(self.runner("-j", "workspaces"))
+        ids = {w["id"] for w in workspaces if w.get("monitor") in sources and type(w.get("id")) is int and w["id"] > 0
+               and w.get("windows", 0) > 0}
+        self.redistribute_windows(ids, monitors)
 
     def run_stereo(self, displays):
         stage = "switching the glasses to stereo"
@@ -952,7 +977,13 @@ class Manager:
 
     def save_presentation(self):
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
-                                                "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled})
+                                                "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled,
+                                                "bringWindows":self.bring_windows_enabled})
+
+    def set_bring_windows(self, enabled):
+        if type(enabled) is not bool: raise ValueError("Bringing windows into XR must be on or off")
+        self.bring_windows_enabled = enabled
+        self.save_presentation()
 
     def write_power(self):
         # The renderer re-reads power.tsv every 2 s, so a change reaches a running XR view.
@@ -1202,7 +1233,7 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
                 "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
@@ -1412,6 +1443,13 @@ def action_laptop_off(manager, request):
     return {"message": message}
 
 
+def action_bring_windows(manager, request):
+    manager.set_bring_windows(request.get("enabled"))
+    message = ("Your laptop windows will move to the virtual monitors when stereo starts." if manager.bring_windows_enabled
+               else "Laptop windows stay on the laptop when stereo starts; windows on the glasses still move.")
+    return {"message": message}
+
+
 def action_battery_saver(manager, request):
     manager.set_battery_saver(request.get("enabled"))
     message = ("Battery saver on: on battery, XR captures at most 30 fps." if manager.battery_saver_enabled
@@ -1508,6 +1546,7 @@ def perform(manager, request):
         "present": action_present,
         "set_laptop_off": action_laptop_off,
         "set_battery_saver": action_battery_saver,
+        "set_bring_windows": action_bring_windows,
         "restore_laptop": action_restore_laptop,
         "set_spectator": action_spectator,
         "set_render_mode": action_render_mode,

@@ -58,7 +58,7 @@ assert(not bindings["CTRL + ALT + Up"] and #gestures==0)
 files[path..".active"]="42 100"
 omarchy_xr_controls.refresh()
 assert(bindings["CTRL + ALT + Up"] and gestures[#gestures].direction=="vertical")
-assert(omarchy_xr_controls.version==9 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
+assert(omarchy_xr_controls.version==10 and omarchy_xr_controls.hover_timer.timeout==33 and omarchy_xr_controls.hover_timer.enabled)
 firstTimer=omarchy_xr_controls.hover_timer
 end
 local function testDoubleTap()
@@ -500,7 +500,7 @@ local function testCanvasActivation()
     clock(140,"canvas","43");omarchy_xr_controls.refresh()
     assert(#unbound==0);assert(not events["window.open"]) -- foreign owner
     clock(140);omarchy_xr_controls.refresh()
-    assert(omarchy_xr_controls.version==9);assert(files["/run/omarchy-xr/controls.version"]=="9\n")
+    assert(omarchy_xr_controls.version==10);assert(files["/run/omarchy-xr/controls.version"]=="10\n")
     assert(#unbound==0);assert(bindings["SUPER + F"].options.description=="Full screen")
     assert(events["window.open"]);assert(events["window.fullscreen"]);assert(events["window.move_to_workspace"])
     assert(bindings["CTRL + ALT + P"])
@@ -1071,11 +1071,27 @@ local function testMonitorWindows()
     assert(files[path..".pane"]:match(" OMXR%-b 0 0 1920 1080 "))
     dispatched={};tick(240.2);assert(#dispatched==0)                  -- each landing once
     files[path..".land"]="v1 42 2 0x1 200\n";tick(240.3);assert(#dispatched==0) -- stale
+    -- v10: a window outside XR (the laptop, or a workspace Hyprland parked there) comes to the gazed XR monitor's
+    -- visible workspace first; one on an XR monitor, even on a hidden workspace there, is only focused.
+    list[#list+1]={address="0x6",at={x=10,y=10},size={x=800,y=600},workspace=ws(1),monitor="eDP-1",mapped=true,class="foot",title="laptop"}
+    files[path..".land"]="v1 42 3 0x6 240\n";dispatched={};tick(240.4)
+    assert(dispatched[1].kind=="window.move" and dispatched[1].spec.window=="address:0x6")
+    assert(dispatched[1].spec.workspace=="4" and dispatched[1].spec.follow==false)    -- OMXR-a is gazed
+    assert(last("focus").window=="address:0x6")
+    files[path..".land"]="v1 42 4 0x4 240\n";dispatched={};tick(240.5)
+    assert(count("window.move")==0 and last("focus").window=="address:0x4")
+    -- Gaze between monitors: the last XR monitor gazed at; another one gazed at since takes over.
+    files[path..".hover"]="v3 42 7001 0 - 0 0 0 0 0";omarchy_xr_controls.hover()
+    files[path..".land"]="v1 42 5 0x6 240\n";dispatched={};tick(240.6)
+    assert(last("window.move").workspace=="4")
+    files[path..".hover"]="v3 42 7002 1 OMXR-b 0 0 0 100 100";omarchy_xr_controls.hover()
+    files[path..".land"]="v1 42 6 0x6 240\n";dispatched={};tick(240.7)
+    assert(last("window.move").workspace=="5")
     -- A renderer restarted within the freshness window: .keys follows the new session at once.
     files[path..".active"]="77 240";omarchy_xr_controls.refresh()
     assert(files[path..".keys"]:match("^v1 77 %d+ %d+\nmodifier\tCTRL %+ ALT\n"))
     files[path..".active"]="42 240";omarchy_xr_controls.refresh()
-    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window, search lists every window and lands once passed")
+    print("Monitor windows: XR previous/next walk the XR monitors' visible windows with a pane, fill maximizes the gazed monitor's window, search lists every window, lands once and brings windows from outside XR to the gazed monitor passed")
 end
 testMonitorWindows()
 assert(expiredHandleCrashes==0,expiredHandleCrashes.." keybind call(s) on an expired handle (segfaults Hyprland)")

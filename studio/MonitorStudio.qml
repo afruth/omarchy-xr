@@ -128,6 +128,7 @@ Item {
     property bool directOutput: false
     property bool stereoOutput: false
     property bool laptopOffEnabled: false
+    property bool bringWindowsEnabled: true
     property bool batterySaverEnabled: false
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
@@ -209,6 +210,7 @@ Item {
             canImportEnvironment: canImportEnvironment,
             workspaceDegrees: workspaceDegrees, workspaceFollow: workspaceFollow,
             laptopOffEnabled: laptopOffEnabled,
+            bringWindowsEnabled: bringWindowsEnabled,
             batterySaverEnabled: batterySaverEnabled,
             laptopDisplay: laptopDisplay,
             spectatorEnabled: spectatorEnabled,
@@ -483,6 +485,7 @@ Item {
                     root.spectatorEnabled = !!response.spectatorEnabled;
                     root.spectatorSkipped = response.spectatorSkipped || "";
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
+                    root.bringWindowsEnabled = response.bringWindowsEnabled !== false;
                     root.batterySaverEnabled = !!response.batterySaverEnabled;
                     if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
                         root.laptopDisplay = response.laptopDisplay;
@@ -1012,7 +1015,7 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 9 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v9 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v9.") + " A terminal opens to install them." : ""
+                                    hint: root.loaded && root.controlsVersion < 10 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v10 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v10.") + " A terminal opens to install them." : ""
                                     actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground
@@ -1025,11 +1028,17 @@ Item {
                                         : "Keep your normal workspaces on larger virtual screens."
                                 }
                                 RowLayout {
-                                    visible: root.renderMode === "canvas" && !root.viewing
+                                    visible: !root.viewing
                                     Layout.fillWidth: true
-                                    Label { Layout.fillWidth:true; text:"Bring existing windows into XR" }
+                                    Label {
+                                        Layout.fillWidth:true
+                                        text:"Bring existing windows into XR"
+                                        helpText: root.renderMode === "canvas"
+                                            ? "Your laptop windows join the canvas at start. Windows on the glasses always come along."
+                                            : "Your laptop windows move to the virtual monitors when stereo starts. Windows on the glasses always come along."
+                                    }
                                     Ui.ToggleSwitch {
-                                        checked: root.canvasDraft.adoptPolicy !== "empty"
+                                        checked: root.renderMode === "canvas" ? root.canvasDraft.adoptPolicy !== "empty" : root.bringWindowsEnabled
                                         enabled: root.loaded && !root.busy
                                         activeFocusOnTab:true
                                         Accessible.role:Accessible.CheckBox
@@ -1037,7 +1046,8 @@ Item {
                                         Accessible.checked:checked
                                         Keys.onSpacePressed:if(enabled)toggled()
                                         Accessible.onToggleAction:if(enabled)toggled()
-                                        onToggled: root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                        onToggled: root.renderMode === "canvas" ? root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                            : root.send("set_bring_windows", !root.bringWindowsEnabled)
                                     }
                                 }
                                 Flow {
@@ -1056,7 +1066,7 @@ Item {
                                         visible: !root.viewing
                                         text: root.pendingAction === "start" ? "Opening…" : "Preview on desktop"
                                         enabled: root.loaded && !root.busy && !!root.glasses.runtimeInstalled
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 10)
                                         helpText: "Apply this setup and open XR on your desktop"
                                         onClicked: root.send("start")
                                     }
@@ -2456,7 +2466,7 @@ Item {
                                         text: "Preview on desktop"
                                         helpText: "Apply this setup and preview it on your desktop"
                                         enabled: root.loaded && !!root.glasses.runtimeInstalled && !root.viewing && !root.busy
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 10)
                                         onClicked: root.send("start")
                                     }
                                     Action {

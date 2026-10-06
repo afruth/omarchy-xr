@@ -100,7 +100,9 @@ the selected Omarchy theme.
 4. Place application windows on the XR workspaces using your usual Omarchy controls.
 5. **Start in glasses** on **Controls** applies the draft, connects the SDK, switches the
    glasses to SBS, and takes a temporary DRM lease through the installed helper. The renderer has no desktop window and
-   the headset disappears from the normal desktop layout until you stop it.
+   the headset disappears from the normal desktop layout until you stop it. Before the glasses switch,
+   Studio moves the windows that were on the glasses onto the virtual monitors, so they stay reachable
+   in XR. With **Bring existing windows into XR** on (the default), your laptop windows come along too.
    **Utilities → Preview & cleanup → Open fullscreen mono** retains the regular-window fallback.
    **Open windowed preview** opens the applied layout in a regular window.
    **Stop stereo** (or **Close preview**) stops presentation and returns XR workspaces and their open windows
@@ -123,14 +125,16 @@ on the laptop; use XR search or move a window explicitly to transfer it to the c
 arrow; notifications float inside the ring, over the windows. The second tab becomes **Canvas** with the ring and capture settings; the
 capture budget (default 300 Mpix/s) sets how many window pixels per second the canvas may export, and a
 line under it shows the live use while the canvas runs. Window canvas
-needs the v9 controls adapter, so after updating choose **Install XR controls** under the mode selector
+needs the v10 controls adapter, so after updating choose **Install XR controls** under the mode selector
 (or **Utilities → Setup & integrations → Set up everything**, or `make install-controls`). Until you do,
 the option is disabled. See
 [docs/window-canvas.md](docs/window-canvas.md) for pointer behaviour, keys, and recovery.
 
 **Start in glasses** and **Preview on desktop** both prepare the current setup automatically.
-In Window canvas, **Bring existing windows into XR** chooses whether startup moves your
-regular windows into the canvas or begins empty. Starting applies the canvas settings draft.
+**Bring existing windows into XR** chooses whether startup moves your laptop windows into XR: onto the
+virtual monitors when stereo starts, or into the canvas (Window canvas mode, which otherwise begins
+empty). Windows that were on the glasses always move, because the glasses stop being a desktop display
+while stereo runs. Starting applies the canvas settings draft.
 
 Monitor edits show a **Pending Apply** summary. **Save layout** stores the draft without
 changing the live session; **Revert changes** returns to the last loaded or applied layout.
@@ -652,7 +656,7 @@ Studio (see below); the design is in [`docs/xr-controls-plan.md`](docs/xr-contro
 | XR+Down | zoom out a level: window → its monitor → all monitors | zoom out a level (Fill restores first) |
 | XR+Return | maximize the gazed monitor's window and fit that monitor | Fill / restore |
 | XR+Left / XR+Right | previous / next window across the XR monitors at the current level: all monitors only select it, monitor level centres it at monitor zoom, window level fits it | previous / next window around the ring at the current level (Overview only selects) |
-| XR+/ | search every window; Enter brings up its workspace and fits it | search |
+| XR+/ | search every window; Enter brings up its workspace and fits it, and first brings a window from outside XR (such as the laptop) to the monitor you look at | search |
 | XR+Page_Up / Page_Down | — | scroll the cylinder |
 | XR+Shift+arrows, XR+, / XR+. (Shift: height) | — | nudge, resize by 100 px |
 | XR+P, XR+A, XR+Z / XR+Shift+Z | — | pin, arrange, undo / redo |
