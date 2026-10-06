@@ -508,9 +508,13 @@ struct View {
         selection.output=name; selectionAnchor=baseView();
         fitSelection();
     }
+    // How far a camera target turns the view, in degrees of heading, for the Camera log lines.
+    float targetTurnDeg() const {
+        return std::remainder(headingDeg(tracking::multiply(baseView(), targetRotation))-headingDeg(currentView()), 360.f);
+    }
     void fitSelection() {
         interactionUntil=monotonicSeconds()+.4;
-        if (focusSelected(true, 0)) { level=Level::Monitor; levelOutput=selection.output; std::cout << "Camera: fit selected monitor face-on " << selection.output << std::endl; }
+        if (focusSelected(true, 0)) { level=Level::Monitor; levelOutput=selection.output; std::cout << "Camera: fit selected monitor face-on " << selection.output << " (turn " << int(std::lround(targetTurnDeg())) << " deg)" << std::endl; }
         else std::cout << "Camera: no selected monitor; fit ignored" << std::endl;
     }
     // The zoom levels (XR Up/Down and the flick gestures). In: all monitors -> the gazed monitor -> the
@@ -711,7 +715,7 @@ struct View {
         const auto target=navigation::panFocus(pose, focusAnchor, focusDepth, focusX, focusY);
         targetRotation=target.rotation; targetPanX=target.pan.x; targetPanY=target.pan.y; targetPanZ=target.pan.z;
         level=monitorZoom ? Level::Monitor : Level::Pane; levelOutput=p.output;
-        std::cout << "Camera: " << (monitorZoom ? "centre active window at monitor zoom " : "fit active window ") << int(controls->paneW) << "x" << int(controls->paneH) << " on " << p.output << std::endl;
+        std::cout << "Camera: " << (monitorZoom ? "centre active window at monitor zoom " : "fit active window ") << int(controls->paneW) << "x" << int(controls->paneH) << " on " << p.output << " (turn " << int(std::lround(targetTurnDeg())) << " deg)" << std::endl;
         return true;
     }
     bool ensureLease() {
@@ -1286,6 +1290,8 @@ struct View {
         const auto& c=*controls;
         const bool inside=c.paneValid && c.paneOutput==selection.output && pointerX>=c.paneX && pointerX<c.paneX+c.paneW
             && pointerY>=c.paneY && pointerY<c.paneY+c.paneH;
+        std::cout << "Camera: focus the window at " << int(pointerX) << "," << int(pointerY) << " on " << selection.output
+                  << (inside ? " (the known window)" : " (waiting for its pane)") << std::endl;
         awaitPane(PaneFallback::Monitor, inside);
     }
     enum class PaneFallback { Monitor, Pane, None };
