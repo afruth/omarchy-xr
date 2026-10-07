@@ -326,7 +326,8 @@ class Manager:
         output = data.get("originalOutput")
         self.original_output = output if isinstance(output, dict) else None
         try:
-            self.ensure_sdk()
+            if self.sdk_mode_changed:
+                self.ensure_sdk()  # a mono session restores without the SDK, glasses present or not
             self.stop_viewer()
         except Exception as exc:
             if not self.restoration_error:

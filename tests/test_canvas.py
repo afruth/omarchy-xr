@@ -621,6 +621,19 @@ class CanvasTests(unittest.TestCase):
             self.assertFalse((manager.directory / "stereo.json").exists())
         finally: self.close(manager)
 
+    def test_a_mono_journal_recovers_without_connecting_the_sdk(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        (manager.directory / "stereo.json").write_text(json.dumps({"stereoActive": True, "originalOutput": None, "sdkModeChanged": False}))
+        manager.sdk = Mock(); manager.sdk.connect.side_effect = RuntimeError("No glasses"); manager.dedicated = Mock()
+        manager.sdk.process = None
+        try:
+            manager.recover_stranded_stereo()
+            manager.sdk.connect.assert_not_called()
+            self.assertFalse(manager.stereo_active)
+            self.assertFalse((manager.directory / "stereo.json").exists())
+        finally: self.close(manager)
+
     def test_a_stereo_journal_without_the_flag_still_restores_through_the_sdk(self):
         fake = CanvasHypr()
         manager = self.manager(fake)
