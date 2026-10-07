@@ -5,7 +5,7 @@ Hyprland Lua controls. Runtime package: `omarchy-xr-bin`; marketplace plugin:
 `afruth.omarchy-xr`. This release uses reserved-rights application terms, not an
 open-source licence. Earlier MIT-licensed versions keep their existing terms.
 
-**Release status:** [v0.5.2 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.5.2)
+**Release status:** [v0.6.0 is published](https://github.com/afruth/omarchy-xr/releases/tag/v0.6.0)
 with the bundled SDK, Arch package, AUR recipe and SHA-256 checksums. The source
 repository is public. Installation uses GitHub releases directly and does not
 require AUR. The [marketplace submission](https://github.com/omacom/omarchy-plugin-marketplace/issues/8144)
@@ -14,11 +14,11 @@ AUR publication is deferred; its recipe remains available in the release.
 
 ## Install the published package
 
-Download `omarchy-xr-bin-0.5.2-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the
+Download `omarchy-xr-bin-0.6.0-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the
 release page. Verify the package hash against that file, then run:
 
 ```sh
-sudo pacman -U ./omarchy-xr-bin-0.5.2-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omarchy-xr-bin-0.6.0-1-x86_64.pkg.tar.zst
 omarchy-xr-setup --controls --notifications
 ```
 
@@ -67,7 +67,7 @@ Open XR Monitor Studio from the bar, then choose **Utilities → Setup & integra
 → Install XR runtime**. A missing runtime also produces a prominent install card
 on the **Controls** tab, so setup is visible before the first stereo attempt.
 The button opens a terminal, downloads the complete
-v0.5.2 package from GitHub, enforces its pinned size of 6,148,601 bytes while
+v0.6.0 package from GitHub, enforces its pinned size of 6,148,601 bytes while
 streaming, verifies its SHA-256 against the digest pinned in the
 plugin, and runs `sudo pacman -U --needed` with normal confirmation prompts.
 It then runs setup as your desktop user to display the terms and enable controls
