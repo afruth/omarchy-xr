@@ -533,52 +533,72 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(order, ["move", "move", ("stereo", ("DP-1",))])
         finally: self.close(manager)
 
-    def test_mono_starts_the_glasses_at_120_hz_without_stereo(self):
-        fake = CanvasHypr()
-        self.glasses(fake)
+    def mono_manager(self, fake, refresh_hz):
+        """A mono start whose renderer reports refresh_hz in pose.sock.stats; returns (manager, launched args)."""
         manager = self.manager(fake)
         launched = []
         manager.sdk = Mock(); manager.sdk.process.poll.return_value = None
-        # The 120 Hz timing appears only once the glasses switch.
-        manager.sdk.mono.side_effect = lambda: fake.outputs["DP-1"]["availableModes"].append("1920x1080@120.00Hz")
         manager.dedicated = Mock(); manager.dedicated.output = "DP-1"
-        manager.start = Mock(side_effect=lambda present, direct: launched.append(manager.direct_arguments()))
+        def start(present, direct):
+            launched.append(manager.direct_arguments())
+            manager.viewer = Mock(pid=4321); manager.viewer.poll.return_value = None
+            Path(str(manager.pose_socket) + ".stats").write_text(json.dumps({"pid": 4321, "refreshHz": refresh_hz}))
+        manager.start = Mock(side_effect=start)
+        manager.stop_viewer = Mock()
+        return manager, launched
+
+    def test_mono_drives_the_glasses_at_120_hz_without_an_sdk_mode_change(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager, launched = self.mono_manager(fake, 120)
         try:
             self.xr_monitors(fake, manager)
             with self.assertRaisesRegex(ValueError, "stereo or mono"): manager.set_glasses_mode("4k")
             perform(manager, {"action": "set_glasses_mode", "glassesMode": "mono"})
             self.assertEqual(json.loads(manager.presentation_profile.read_text())["glassesMode"], "mono")
-            manager.start_dedicated()
-            manager.sdk.mono.assert_called_once(); manager.sdk.verify_mono.assert_called_once()
-            manager.sdk.stereo.assert_not_called(); manager.sdk.verify_stereo.assert_not_called()
-            manager.dedicated.start.assert_called_once_with("DP-1")
-            self.assertEqual(launched, [["--direct", "DP-1"]])
-            self.assertTrue(manager.stereo_active)    # restored through the stereo_off path at Stop
-            self.assertEqual(manager.status()["glassesMode"], "mono")
-            events = [json.loads(line)["stage"] for line in (manager.directory / "display-events.jsonl").read_text().splitlines()]
-            self.assertEqual(events[0], "mono-start")
-            manager.set_glasses_mode("stereo")
-            self.assertIn("--stereo", manager.direct_arguments())
-        finally:
-            manager.stereo_active = False
-            self.close(manager)
-
-    def test_mono_start_reads_the_kernel_edid_when_hyprland_misses_the_120_hz_hotplug(self):
-        fake = CanvasHypr()
-        self.glasses(fake)
-        manager = self.manager(fake)
-        manager.sdk = Mock(); manager.sdk.process.poll.return_value = None
-        manager.dedicated = Mock(); manager.dedicated.output = "DP-1"
-        manager.start = Mock()
-        try:
-            self.xr_monitors(fake, manager)
-            manager.set_glasses_mode("mono")
             with patch("backend.edid_offers", return_value=True) as offers:
                 manager.start_dedicated()
             offers.assert_called_with("DP-1", 1920, 1080, 119)
+            manager.sdk.stereo.assert_not_called(); manager.sdk.verify_stereo.assert_not_called()
             manager.dedicated.start.assert_called_once_with("DP-1")
+            self.assertEqual(launched, [["--direct", "DP-1"]])
+            self.assertTrue(manager.stereo_active)    # restored through the shared path at Stop
+            self.assertEqual(manager.status()["glassesMode"], "mono")
+            events = [json.loads(line)["stage"] for line in (manager.directory / "display-events.jsonl").read_text().splitlines()]
+            self.assertEqual((events[0], events[-1]), ("mono-start", "stereo-running"))
+            manager.set_glasses_mode("stereo")
+            self.assertIn("--stereo", manager.direct_arguments())
         finally:
-            manager.stereo_active = False
+            manager.viewer = None; manager.stereo_active = False
+            self.close(manager)
+
+    def test_mono_refuses_before_any_change_when_120_hz_is_not_offered(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager, launched = self.mono_manager(fake, 120)
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_glasses_mode("mono")
+            with patch("backend.edid_offers", return_value=False), self.assertRaisesRegex(RuntimeError, "do not offer 1920×1080 at 120 Hz"):
+                manager.start_dedicated()
+            manager.dedicated.start.assert_not_called(); manager.sdk.stereo.assert_not_called()
+            self.assertEqual(fake.window("0xb2")["workspace"]["id"], 7)   # no window moved
+            self.assertFalse(manager.stereo_active or launched)
+        finally:
+            self.close(manager)
+
+    def test_mono_fails_clearly_when_the_renderer_runs_at_60_hz(self):
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager, _ = self.mono_manager(fake, 60)
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_glasses_mode("mono")
+            with patch("backend.edid_offers", return_value=True), self.assertRaisesRegex(RuntimeError, "run at 60 Hz instead of 120 Hz"):
+                manager.start_dedicated()
+            manager.stop_viewer.assert_called()       # rolled back
+        finally:
+            manager.viewer = None; manager.stereo_active = False
             self.close(manager)
 
     def test_canvas_adopts_glasses_windows_even_when_starting_empty(self):

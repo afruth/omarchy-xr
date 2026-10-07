@@ -157,24 +157,11 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(session.mode_journal.exists())
             session.close()
 
-    def test_mono_requests_120_hz_and_restores_the_60_hz_original(self):
-        session, library, _ = self.make_session()
-        with tempfile.TemporaryDirectory() as directory:
-            session.mode_journal = Path(directory)/"mode.json"
-            session.connect(0x1301)
-            library.xr_device_provider_get_display_mode.side_effect = [0x31,0x31,0x34,0x31]
-            self.assertIn("120 Hz", sdk_command(session, "mono"))
-            library.xr_device_provider_set_display_mode.assert_called_with(session.handle, 0x34)
-            self.assertEqual(json.loads(session.mode_journal.read_text()),{"mode":0x31})
-            self.assertIn("verified", sdk_command(session, "verify_mono"))
-            sdk_command(session, "stereo_off")       # the shared restore path: back to the 2D family
-            library.xr_device_provider_set_display_mode.assert_called_with(session.handle, 0x31)
-            sdk_command(session, "restore_rate")     # 0x31 is already the original rate: nothing more
-            self.assertEqual(library.xr_device_provider_set_display_mode.call_count, 2)
-            sdk_command(session, "verify_restore")
-            self.assertIsNone(session.original_mode)
-            self.assertFalse(session.mode_journal.exists())
-            session.close()
+    def test_mono_is_not_an_sdk_mode(self):
+        # Mono 120 Hz follows the host timing; asking the SDK for 0x34 left the glasses at 0x31 and the link down.
+        session, _, _ = self.make_session()
+        with self.assertRaisesRegex(ValueError, "Unknown SDK command"):
+            sdk_command(session, "mono")
 
     def test_stereo_ack_does_not_require_host_timing_to_change_immediately(self):
         session, library, _ = self.make_session()

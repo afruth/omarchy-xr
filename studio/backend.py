@@ -36,10 +36,12 @@ REQUIRED_CONTROLS = 10
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
                   "save_comfort", "restore_comfort")
-# Glasses display modes for Start in glasses, each with the EDID mode that shows the switch took effect.
-# Stereo is side-by-side 3D at 60 Hz (the only SBS timing the glasses offer); mono drops depth for 120 Hz,
-# which halves the smear of head-locked text. Both restore through the same stereo_off path.
-GLASSES_MODES = {"stereo": "3840x1080", "mono": "1920x1080@120"}
+# Glasses display modes for Start in glasses. Stereo asks the SDK for side-by-side 3D at 60 Hz (the only SBS
+# timing the glasses offer). Mono drops depth for 120 Hz, which halves the smear of head-locked text: the 2D
+# EDID already offers 1920x1080@120 and the glasses follow the host timing, so mono needs no SDK mode change,
+# only the handoff and a renderer that drives the fastest 1920x1080 mode (an SDK 0x34 request while the host
+# still drove 60 Hz left the glasses at 0x31 and the link down). Both restore through the same path.
+GLASSES_MODES = ("stereo", "mono")
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
@@ -894,6 +896,10 @@ class Manager:
             self.original_output = current
         if not self.sdk.process or self.sdk.process.poll() is not None:
             self.sdk.connect()
+        # Checked before anything changes: the handoff builds its EDID from the kernel's copy.
+        if self.glasses_mode == "mono" and not edid_offers(displays[0], 1920, 1080, 119):
+            raise RuntimeError("Could not start mono 120 Hz. The glasses do not offer 1920×1080 at 120 Hz right now. "
+                               "Unplug and reconnect them, then try again.")
         self.bring_windows_into_xr(displays)
         self.run_stereo(displays)
 
@@ -916,36 +922,24 @@ class Manager:
 
     def run_stereo(self, displays):
         # stereo_active means "the glasses are in an XR video mode" for mono as well: one restore path.
-        mono, timing = self.glasses_mode == "mono", GLASSES_MODES[self.glasses_mode]
+        mono = self.glasses_mode == "mono"
         stage = "switching the glasses to " + ("mono 120 Hz" if mono else "stereo")
         try:
             self.display_event("mono-start" if mono else "stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
             self.record_stereo()
-            if mono: self.sdk.mono()
-            else: self.sdk.stereo(True)
-            self.display_event("stereo-request-acknowledged")
-            stage = "waiting for " + ("mono 120 Hz" if mono else "stereo") + " video"
-            # Wait for the device's new EDID before taking a snapshot for the handoff.
-            for _ in range(100):
-                monitors = self.monitors()
-                target: dict[str, Any] = next((m for m in monitors if m["name"] == displays[0]), {})
-                if any(mode.startswith(timing) for mode in target.get("availableModes", [])):
-                    break
-                # Mono changes only the refresh rate, a hotplug Hyprland may miss: ask the kernel's EDID too.
-                if mono and edid_offers(displays[0], 1920, 1080, 119):
-                    break
-                time.sleep(.1)
-            else:
-                raise RuntimeError("The glasses did not switch to " + ("120 Hz" if mono else "stereo")
-                                   + " video. Reconnect them, then try again.")
+            if not mono:
+                self.sdk.stereo(True)
+                self.display_event("stereo-request-acknowledged")
+                stage = "waiting for stereo video"
+                self.wait_for_stereo_edid(displays[0])
             stage = "preparing the glasses display"
             self.display_event("stereo-edid-ready")
             self.dedicated.start(displays[0])
             stage = "opening the XR view"
             self.start(present=True, direct=True)
             stage = "checking the glasses video mode"
-            if mono: self.sdk.verify_mono()
+            if mono: self.wait_for_viewer_refresh(119)
             else: self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
@@ -960,6 +954,30 @@ class Manager:
                 self.display_event("stereo-rollback-failed", recovery)
                 raise RuntimeError(message + " Studio also could not restore the displays: " + str(recovery)) from exc
             raise RuntimeError(message) from exc
+
+    def wait_for_stereo_edid(self, name):
+        # Wait for the device's new EDID before taking a snapshot for the handoff.
+        for _ in range(100):
+            target: dict[str, Any] = next((m for m in self.monitors() if m["name"] == name), {})
+            if any(mode.startswith("3840x1080") for mode in target.get("availableModes", [])):
+                return
+            time.sleep(.1)
+        raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+
+    def wait_for_viewer_refresh(self, minimum):
+        """The renderer's own report of the leased refresh rate (pose.sock.stats), for mono 120 Hz."""
+        for _ in range(80):
+            if self.viewer is None or self.viewer.poll() is not None: break
+            try:
+                stats = json.loads(Path(str(self.pose_socket) + ".stats").read_text())
+                if stats.get("pid") == self.viewer.pid and stats.get("refreshHz", 0) > 0:
+                    if stats["refreshHz"] < minimum:
+                        raise RuntimeError(f"The glasses run at {stats['refreshHz']} Hz instead of 120 Hz. "
+                                           "Unplug and reconnect them, then try again.")
+                    return
+            except (OSError, ValueError, KeyError): pass
+            time.sleep(.1)
+        raise RuntimeError("The XR view did not report its refresh rate. Try again.")
 
     def place_spectator(self):
         """Pin the recording window to the active workspace of an enabled computer display.

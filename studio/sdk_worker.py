@@ -212,13 +212,12 @@ class Session:
             time.sleep(.1)
         raise RuntimeError(f"Display mode readback mismatch: expected {expected:#x}, got {actual!r}")
 
-    def begin_stereo(self, mode=0x32):
-        """0x32: standard SBS 3840x1080, 60 Hz (stereo); 0x34: 1920x1080, 120 Hz (mono)."""
+    def begin_stereo(self):
         if self.original_mode is None:
             self.original_mode = self.check("get_display_mode", self.handle)
             if self.mode_journal:
                 atomic_write(self.mode_journal, json.dumps({"mode": self.original_mode}))
-        self.check("set_display_mode", self.handle, mode)
+        self.check("set_display_mode", self.handle, 0x32)  # standard SBS 3840x1080, 60 Hz
         # Gen2 readback reports the active host video timing. Verify only after
         # the host starts the new 3840-wide scanout, not immediately after ACK.
         self.mode = self.check("get_display_mode", self.handle)
@@ -348,8 +347,6 @@ class PosePublisher:
 SDK_COMMANDS = {
     "stereo": (lambda s: s.begin_stereo(), "Stereo SBS requested; waiting for the host video mode."),
     "verify_stereo": (lambda s: s.wait_mode(0x32), "Stereo video mode verified (3840×1080 at 60 Hz)."),
-    "mono": (lambda s: s.begin_stereo(0x34), "Mono 120 Hz requested; waiting for the host video mode."),
-    "verify_mono": (lambda s: s.wait_mode(0x34), "Mono video mode verified (1920×1080 at 120 Hz)."),
     "stereo_off": (lambda s: s.end_stereo(), "Previous display mode requested; waiting for host restoration."),
     "restore_rate": (lambda s: s.restore_rate(), "Previous refresh rate requested."),
     "verify_restore": (lambda s: s.verify_restore(), "Previous glasses display mode restored and verified."),
