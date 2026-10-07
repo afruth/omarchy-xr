@@ -601,6 +601,37 @@ class CanvasTests(unittest.TestCase):
             manager.viewer = None; manager.stereo_active = False
             self.close(manager)
 
+    def test_mono_stops_cleanly_after_the_glasses_disconnected(self):
+        # The glasses dropped off USB and video mid-session: no SDK to talk to and no DP-1 output.
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        manager.sdk = Mock()
+        manager.sdk.stereo.side_effect = manager.sdk.restore_rate.side_effect = manager.sdk.verify_restore.side_effect = \
+            RuntimeError("Head tracking must be connected before stereo can start.")
+        manager.dedicated = Mock()
+        manager.stereo_active, manager.sdk_mode_changed = True, False
+        manager.original_output = {"name": "DP-1", "width": 1920, "height": 1080, "x": 1920, "y": 0, "scale": 1, "refreshRate": 60.0}
+        manager.record_stereo()
+        self.assertFalse(json.loads((manager.directory / "stereo.json").read_text())["sdkModeChanged"])
+        try:
+            manager.stop_viewer()
+            manager.sdk.stereo.assert_not_called(); manager.sdk.verify_restore.assert_not_called()
+            manager.dedicated.stop.assert_called_once()
+            self.assertFalse(manager.stereo_active)
+            self.assertFalse((manager.directory / "stereo.json").exists())
+        finally: self.close(manager)
+
+    def test_a_stereo_journal_without_the_flag_still_restores_through_the_sdk(self):
+        fake = CanvasHypr()
+        manager = self.manager(fake)
+        (manager.directory / "stereo.json").write_text(json.dumps({"stereoActive": True, "originalOutput": None}))
+        manager.sdk = Mock(); manager.dedicated = Mock()
+        try:
+            manager.recover_stranded_stereo()
+            self.assertTrue(manager.sdk_mode_changed)
+            manager.sdk.stereo.assert_called_once_with(False)
+        finally: self.close(manager)
+
     def test_canvas_adopts_glasses_windows_even_when_starting_empty(self):
         fake = CanvasHypr()
         self.glasses(fake)

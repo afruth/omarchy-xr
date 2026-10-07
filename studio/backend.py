@@ -239,6 +239,9 @@ class Manager:
         self.dedicated = Dedicated(self.directory, self.renderer)
         self.direct = False
         self.stereo_active = False
+        # Whether this XR session asked the SDK for a video mode (stereo SBS); a mono session never does,
+        # so its restore needs neither the SDK nor, once they are unplugged, the glasses.
+        self.sdk_mode_changed = True
         self.original_output = None
         self.restoration_error = ""
         self.spectator_skipped = ""
@@ -301,7 +304,8 @@ class Manager:
             self.restoration_error = "; ".join(filter(None, (self.restoration_error, str(exc))))
 
     def record_stereo(self):
-        atomic_json(self.directory / "stereo.json", {"stereoActive": True, "originalOutput": self.original_output})
+        atomic_json(self.directory / "stereo.json", {"stereoActive": True, "originalOutput": self.original_output,
+                                                     "sdkModeChanged": self.sdk_mode_changed})
 
     def clear_stereo(self):
         (self.directory / "stereo.json").unlink(missing_ok=True)
@@ -318,6 +322,7 @@ class Manager:
         if not isinstance(data, dict) or data.get("stereoActive") is not True:
             return
         self.stereo_active = True
+        self.sdk_mode_changed = data.get("sdkModeChanged") is not False   # older journals: stereo
         output = data.get("originalOutput")
         self.original_output = output if isinstance(output, dict) else None
         try:
@@ -450,6 +455,8 @@ class Manager:
     def leave_side_by_side(self, failures):
         if not self.stereo_active:
             return False
+        if not self.sdk_mode_changed:
+            return True  # mono: the SDK never changed the glasses' mode
         try:
             self.sdk.stereo(False)  # request old EDID family before re-detection
         except Exception as exc:
@@ -464,8 +471,10 @@ class Manager:
         if not self.stereo_active:
             return
         try:
-            self.restore_saved_output()
-            self.sdk.verify_restore()
+            if self.sdk_mode_changed or detect(self.monitors())["displays"]:
+                self.restore_saved_output()
+            if self.sdk_mode_changed:
+                self.sdk.verify_restore()
             self.stereo_active = False
             self.original_output = None
             self.clear_stereo()
@@ -528,7 +537,8 @@ class Manager:
             return
         original = dict(self.original_output)
         name = self.wait_for_output(original, f'{original["width"]}x{original["height"]}@')
-        self.sdk.restore_rate()
+        if self.sdk_mode_changed:
+            self.sdk.restore_rate()
         # Refresh-rate changes trigger a second link negotiation.
         self.wait_for_refresh(name, original)
         mode = f'{original["width"]}x{original["height"]}@{original["refreshRate"]}'
@@ -927,6 +937,7 @@ class Manager:
         try:
             self.display_event("mono-start" if mono else "stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
+            self.sdk_mode_changed = not mono
             self.record_stereo()
             if not mono:
                 self.sdk.stereo(True)
