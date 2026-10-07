@@ -201,6 +201,17 @@ dwell(4,1700,600);assert(#movements==3 and movements[3].x==3720)         -- expl
 dwellOnly(5,100,200);assert(#movements==4 and windowFocuses[2]=="0xa")   -- another window: focus and warp
 cursor={x=10,y=10};dwellOnly(6,1700,600);assert(#movements==5)           -- pointer on the laptop: warp into 0xb
 hl.get_cursor_pos=cursorBefore
+-- A fullscreen window hides the windows under it on its workspace: the gaze stops there (focusing one under it
+-- would make Hyprland bring it forward fullscreen). Windows of hidden workspaces never count; pinned ones do.
+local tiledWindows=hl.get_windows
+hl.get_windows=function() return {
+ {address="0xa",at={x=2020,y=100},size={x=960,y=1080},mapped=true,active=false,floating=false,workspace={id=5}},
+ {address="0xf",at={x=2020,y=100},size={x=1920,y=1080},mapped=true,active=false,floating=false,fullscreen=2,workspace={id=5}},
+ {address="0xd",at={x=2800,y=100},size={x=500,y=500},mapped=true,active=false,floating=true,workspace={id=9}},
+ {address="0xe",at={x=2100,y=150},size={x=200,y=200},mapped=true,active=false,floating=true,pinned=true,workspace={id=9}}} end
+dwell(7,900,200);assert(windowFocuses[#windowFocuses]=="0xf" and #movements==6)    -- not 0xa under it, not 0xd
+dwell(8,150,100);assert(windowFocuses[#windowFocuses]=="0xe" and #movements==7)    -- a pinned window above it
+hl.get_windows=tiledWindows
 hl.dispatch=dispatch
 sample(1,"OMXR-test-2");assert(#focuses==4 and focuses[4]=="name:work")
 omarchy_xr_controls.hover();assert(#focuses==4) -- duplicate sample
@@ -211,8 +222,8 @@ now=110;files["/proc/uptime"]="110";omarchy_xr_controls.refresh()
 assert(omarchy_xr_controls.hover_timer==nil and liveTimer.enabled==false)
 repeatSample(sample, 200)
 dwell(9,100,100)
-assert(#focuses==5 and #movements==5) -- a stale session neither focuses nor warps
-print("Halo transitions select existing workspaces once; a dwell warps the pointer once and focuses the window under it, but not within the focused window; stale sessions cannot focus")
+assert(#focuses==5 and #movements==7) -- a stale session neither focuses nor warps
+print("Halo transitions select existing workspaces once; a dwell warps the pointer once and focuses the window under it, but not within the focused window nor through a fullscreen one; stale sessions cannot focus")
 end
 
 local function testSettings()

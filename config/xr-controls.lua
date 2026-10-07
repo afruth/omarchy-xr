@@ -1360,14 +1360,23 @@ local function warpPointer(name,px,py,dwell)
             local x,y=monitor.x+px/scale,monitor.y+py/scale
             local ok,windows=pcall(hl.get_windows,{monitor=name,mapped=true})
             if ok and windows then
+                -- Only what is on screen: the visible workspace, plus pinned windows above every workspace. A
+                -- fullscreen or maximized window there hides the windows under it, and focusing one of those
+                -- would make Hyprland bring it forward fullscreen: the gaze stops at the covering window.
+                local active=monitor.active_workspace and monitor.active_workspace.id
+                local function shown(w)
+                    return not w.hidden and (w.pinned or not active or not w.workspace or w.workspace.id==active)
+                end
+                local cover
+                for _,w in ipairs(windows) do if shown(w) and (w.fullscreen or 0)~=0 then cover=w end end
                 local best
                 for _,w in ipairs(windows) do
                     local at,size=w.at,w.size
-                    if type(at)=="table" and type(size)=="table" then
+                    if type(at)=="table" and type(size)=="table" and shown(w) and (not cover or w==cover or w.pinned) then
                         local wx,wy=at.x or at[1],at.y or at[2]
                         local ww,wh=size.x or size[1],size.y or size[2]
-                        if wx and x>=wx and x<wx+ww and y>=wy and y<wy+wh and not w.hidden then
-                            if not best or w.floating then best=w end
+                        if wx and x>=wx and x<wx+ww and y>=wy and y<wy+wh then
+                            if not best or w.floating or w.pinned then best=w end
                         end
                     end
                 end
