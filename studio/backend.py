@@ -20,7 +20,7 @@ from typing import Any
 from laptop_display import LaptopDisplay, internal
 from workspace_presets import built_in_setups
 from environment import Environment
-from glasses import Recovery, detect
+from glasses import Recovery, detect, edid_offers
 from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
@@ -29,13 +29,19 @@ from input_settings import ACTIONS as CONTROL_ACTIONS, DEFAULTS, desktop_binding
 from graphics_limits import detect as detect_graphics_limits, validate_dimensions
 from atomic_file import atomic_write
 from clock import boot_time
-from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE
+from canvas import CanvasSession, DEFAULTS as CANVAS_DEFAULTS, CANVAS_WORKSPACE, PARK_WORKSPACE, EXCLUDED_CLASSES
 
-# Controls v9 keep laptop and Canvas windows separate and require explicit transfers.
-REQUIRED_CONTROLS = 9
+# Controls v10 bring a searched window from outside XR to the gazed virtual monitor.
+REQUIRED_CONTROLS = 10
 CONTROLS_HINT = "XR controls need setup — open Utilities → Setup & integrations"
 CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfort_sample_on", "comfort_sample_off",
                   "save_comfort", "restore_comfort")
+# Glasses display modes for Start in glasses. Stereo asks the SDK for side-by-side 3D at 60 Hz (the only SBS
+# timing the glasses offer). Mono drops depth for 120 Hz, which halves the smear of head-locked text: the 2D
+# EDID already offers 1920x1080@120 and the glasses follow the host timing, so mono needs no SDK mode change,
+# only the handoff and a renderer that drives the fastest 1920x1080 mode (an SDK 0x34 request while the host
+# still drove 60 Hz left the glasses at 0x31 and the link down). Both restore through the same path.
+GLASSES_MODES = ("stereo", "mono")
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
@@ -216,17 +222,7 @@ class Manager:
             raise SystemExit(1)
         self.runner, self.renderer = runner, str(renderer)
         self.presentation_profile = self.directory / "presentation.json"
-        try:
-            presentation = json.loads(self.presentation_profile.read_text())
-            self.spectator_enabled = presentation.get("spectator", False) is True
-            self.laptop_off_enabled = presentation.get("laptopOff", False) is True
-            self.battery_saver_enabled = presentation.get("batterySaver", False) is True
-            self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
-        except (OSError, ValueError, AttributeError):
-            self.spectator_enabled = False
-            self.laptop_off_enabled = False
-            self.battery_saver_enabled = False
-            self.render_mode = "monitors"
+        self.load_presentation()
         self.write_power()
         self.environment = Environment(self.directory)
         self.graphics_limits = None
@@ -243,6 +239,9 @@ class Manager:
         self.dedicated = Dedicated(self.directory, self.renderer)
         self.direct = False
         self.stereo_active = False
+        # Whether this XR session asked the SDK for a video mode (stereo SBS); a mono session never does,
+        # so its restore needs neither the SDK nor, once they are unplugged, the glasses.
+        self.sdk_mode_changed = True
         self.original_output = None
         self.restoration_error = ""
         self.spectator_skipped = ""
@@ -256,6 +255,21 @@ class Manager:
         self.canvas = CanvasSession(self)
         self.recover_journal()
         self.recover_stranded_stereo()
+
+    def load_presentation(self):
+        try:
+            presentation = json.loads(self.presentation_profile.read_text())
+        except (OSError, ValueError):
+            presentation = {}
+        if not isinstance(presentation, dict):
+            presentation = {}
+        self.spectator_enabled = presentation.get("spectator", False) is True
+        self.laptop_off_enabled = presentation.get("laptopOff", False) is True
+        # Virtual monitors counterpart of the canvas adopt policy; on unless turned off.
+        self.bring_windows_enabled = presentation.get("bringWindows", True) is not False
+        self.glasses_mode = "mono" if presentation.get("glassesMode") == "mono" else "stereo"
+        self.battery_saver_enabled = presentation.get("batterySaver", False) is True
+        self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
 
     def recover_journal(self):
         if self.journal.exists():
@@ -290,7 +304,8 @@ class Manager:
             self.restoration_error = "; ".join(filter(None, (self.restoration_error, str(exc))))
 
     def record_stereo(self):
-        atomic_json(self.directory / "stereo.json", {"stereoActive": True, "originalOutput": self.original_output})
+        atomic_json(self.directory / "stereo.json", {"stereoActive": True, "originalOutput": self.original_output,
+                                                     "sdkModeChanged": self.sdk_mode_changed})
 
     def clear_stereo(self):
         (self.directory / "stereo.json").unlink(missing_ok=True)
@@ -307,10 +322,12 @@ class Manager:
         if not isinstance(data, dict) or data.get("stereoActive") is not True:
             return
         self.stereo_active = True
+        self.sdk_mode_changed = data.get("sdkModeChanged") is not False   # older journals: stereo
         output = data.get("originalOutput")
         self.original_output = output if isinstance(output, dict) else None
         try:
-            self.ensure_sdk()
+            if self.sdk_mode_changed:
+                self.ensure_sdk()  # a mono session restores without the SDK, glasses present or not
             self.stop_viewer()
         except Exception as exc:
             if not self.restoration_error:
@@ -439,6 +456,8 @@ class Manager:
     def leave_side_by_side(self, failures):
         if not self.stereo_active:
             return False
+        if not self.sdk_mode_changed:
+            return True  # mono: the SDK never changed the glasses' mode
         try:
             self.sdk.stereo(False)  # request old EDID family before re-detection
         except Exception as exc:
@@ -453,8 +472,10 @@ class Manager:
         if not self.stereo_active:
             return
         try:
-            self.restore_saved_output()
-            self.sdk.verify_restore()
+            if self.sdk_mode_changed or detect(self.monitors())["displays"]:
+                self.restore_saved_output()
+            if self.sdk_mode_changed:
+                self.sdk.verify_restore()
             self.stereo_active = False
             self.original_output = None
             self.clear_stereo()
@@ -492,7 +513,9 @@ class Manager:
                 name = actual["name"]
                 original["name"] = name
                 self.original_output = original
-            if actual and any(str(mode).startswith(family) for mode in actual.get("availableModes", [])):
+            # Hyprland can miss the last hotplug and keep a stale mode list; the mode it drives is live.
+            live = actual and f'{actual.get("width")}x{actual.get("height")}@' == family and not actual.get("disabled", False)
+            if actual and (live or any(str(mode).startswith(family) for mode in actual.get("availableModes", []))):
                 return name
             time.sleep(.1)
         raise RuntimeError("The glasses did not return to normal video. Unplug and reconnect them, then try again.")
@@ -504,6 +527,9 @@ class Manager:
             modes = restored.get("availableModes", [])
             if any(mode.startswith(wanted) and abs(float(mode.split("@")[1].removesuffix("Hz")) - original["refreshRate"]) < 1 for mode in modes):
                 return
+            if (f'{restored.get("width")}x{restored.get("height")}@' == wanted and not restored.get("disabled", False)
+                    and abs(restored.get("refreshRate", 0) - original["refreshRate"]) < 1):
+                return  # driven at the original timing although the mode list is stale
             time.sleep(.1)
         raise RuntimeError("The glasses did not restore their previous display settings. Unplug and reconnect them.")
 
@@ -512,7 +538,8 @@ class Manager:
             return
         original = dict(self.original_output)
         name = self.wait_for_output(original, f'{original["width"]}x{original["height"]}@')
-        self.sdk.restore_rate()
+        if self.sdk_mode_changed:
+            self.sdk.restore_rate()
         # Refresh-rate changes trigger a second link negotiation.
         self.wait_for_refresh(name, original)
         mode = f'{original["width"]}x{original["height"]}@{original["refreshRate"]}'
@@ -738,7 +765,7 @@ class Manager:
         if not all(self.output_matches(verified.get(self.prefix+m["id"],{}),m,rate) for m in self.applied["monitors"]):
             raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
 
-    def redistribute_laptop_windows(self, workspace_ids, monitors):
+    def redistribute_windows(self, workspace_ids, monitors):
         if self.canvas.active:
             if workspace_ids:
                 # Journaled like the start migration, so Stop returns them to their workspaces.
@@ -748,15 +775,18 @@ class Manager:
         targets = [m["activeWorkspace"]["id"] for m in monitors if m["name"] in self.owned
                    and m.get("activeWorkspace",{}).get("id",0)>0]
         if not workspace_ids: return
-        if not targets: raise RuntimeError("There is no active XR monitor for the windows from your laptop display.")
+        if not targets: raise RuntimeError("There is no active XR monitor for the windows from your computer displays.")
         clients = json.loads(self.runner("-j", "clients"))
         index = 0
         for client in clients:
             if client.get("workspace",{}).get("id") not in workspace_ids: continue
+            # Studio, the recording window and the XR search prompt belong to the computer display.
+            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") in (os.getpid(), os.getppid())
+                    or str(client.get("title", "")).startswith("Omarchy XR")): continue
             address = client.get("address", "")
             if not re.fullmatch(r"0x[0-9a-fA-F]+", address): continue
             target = targets[index % len(targets)]; index += 1
-            self.runner("eval", f'hl.dispatch(hl.dsp.window.move({{workspace="{target}", follow=false, window="address:{address}"}}))')
+            self.runner("eval", f'hl.dispatch(hl.dsp.window.move({{window="address:{address}", workspace="{target}", follow=false}}))')
 
     def reconcile_laptop_workspaces(self, monitors, disabling=False):
         active = {m["name"] for m in internal(monitors)}
@@ -764,7 +794,7 @@ class Manager:
         current = {name:{w["id"] for w in workspaces if w.get("monitor")==name and w["id"]>0} for name in active}
         lost = set().union(*(ids for name,ids in self.internal_workspaces.items() if name not in active)) if self.internal_workspaces else set()
         if disabling: lost.update(set().union(*current.values()) if current else set())
-        self.redistribute_laptop_windows(lost, monitors)
+        self.redistribute_windows(lost, monitors)
         self.internal_workspaces = {} if disabling else current
 
     def _monitor_args(self):
@@ -802,7 +832,7 @@ class Manager:
         headset = self.dedicated.output
         if not isinstance(headset, str):
             raise RuntimeError("The glasses are not ready for stereo. Stop XR, then try again.")
-        args = ["--direct", headset, "--stereo"]
+        args = ["--direct", headset] + (["--stereo"] if self.glasses_mode == "stereo" else [])
         self.spectator_skipped = ""
         if self.spectator_enabled:
             # A missing computer display costs the recording window, never the stereo start.
@@ -877,39 +907,58 @@ class Manager:
             self.original_output = current
         if not self.sdk.process or self.sdk.process.poll() is not None:
             self.sdk.connect()
+        # Checked before anything changes: the handoff builds its EDID from the kernel's copy.
+        if self.glasses_mode == "mono" and not edid_offers(displays[0], 1920, 1080, 119):
+            raise RuntimeError("Could not start mono 120 Hz. The glasses do not offer 1920×1080 at 120 Hz right now. "
+                               "Unplug and reconnect them, then try again.")
+        self.bring_windows_into_xr(displays)
         self.run_stereo(displays)
 
+    def bring_windows_into_xr(self, glasses):
+        """Move windows into XR before the stereo handoff takes the glasses' 2D output away.
+
+        Left alone, Hyprland parks that output's workspaces on a hidden workspace of the first other
+        monitor (the laptop), where the headset cannot show or reach them. The glasses' windows always
+        move; the laptop's move when the mode's "bring existing windows" setting is on.
+        """
+        monitors = self.monitors()
+        sources = set(glasses)
+        laptop = self.canvas.settings()["adoptPolicy"] == "all" if self.canvas_mode else self.bring_windows_enabled
+        if laptop:
+            sources |= {m["name"] for m in internal(monitors)}
+        workspaces = json.loads(self.runner("-j", "workspaces"))
+        ids = {w["id"] for w in workspaces if w.get("monitor") in sources and type(w.get("id")) is int and w["id"] > 0
+               and w.get("windows", 0) > 0}
+        self.redistribute_windows(ids, monitors)
+
     def run_stereo(self, displays):
-        stage = "switching the glasses to stereo"
+        # stereo_active means "the glasses are in an XR video mode" for mono as well: one restore path.
+        mono = self.glasses_mode == "mono"
+        stage = "switching the glasses to " + ("mono 120 Hz" if mono else "stereo")
         try:
-            self.display_event("stereo-start")
+            self.display_event("mono-start" if mono else "stereo-start")
             self.stereo_active = True  # restore even if mode setting partially fails
+            self.sdk_mode_changed = not mono
             self.record_stereo()
-            self.sdk.stereo(True)
-            self.display_event("stereo-request-acknowledged")
-            stage = "waiting for stereo video"
-            # Wait for the device's new EDID before taking a snapshot for the handoff.
-            for _ in range(100):
-                monitors = self.monitors()
-                target: dict[str, Any] = next((m for m in monitors if m["name"] == displays[0]), {})
-                if any(mode.startswith("3840x1080") for mode in target.get("availableModes", [])):
-                    break
-                time.sleep(.1)
-            else:
-                raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+            if not mono:
+                self.sdk.stereo(True)
+                self.display_event("stereo-request-acknowledged")
+                stage = "waiting for stereo video"
+                self.wait_for_stereo_edid(displays[0])
             stage = "preparing the glasses display"
             self.display_event("stereo-edid-ready")
             self.dedicated.start(displays[0])
             stage = "opening the XR view"
             self.start(present=True, direct=True)
-            stage = "checking the stereo image"
-            self.sdk.verify_stereo()
+            stage = "checking the glasses video mode"
+            if mono: self.wait_for_viewer_refresh(119)
+            else: self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
                 stage = "turning off the laptop display"
                 self.disable_laptop_display()
         except Exception as exc:
-            message = f"Could not start stereo while {stage}. {exc}"
+            message = f"Could not start {'mono 120 Hz' if mono else 'stereo'} while {stage}. {exc}"
             self.display_event("stereo-start-failed", message)
             try:
                 self.stop_viewer()
@@ -917,6 +966,30 @@ class Manager:
                 self.display_event("stereo-rollback-failed", recovery)
                 raise RuntimeError(message + " Studio also could not restore the displays: " + str(recovery)) from exc
             raise RuntimeError(message) from exc
+
+    def wait_for_stereo_edid(self, name):
+        # Wait for the device's new EDID before taking a snapshot for the handoff.
+        for _ in range(100):
+            target: dict[str, Any] = next((m for m in self.monitors() if m["name"] == name), {})
+            if any(mode.startswith("3840x1080") for mode in target.get("availableModes", [])):
+                return
+            time.sleep(.1)
+        raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+
+    def wait_for_viewer_refresh(self, minimum):
+        """The renderer's own report of the leased refresh rate (pose.sock.stats), for mono 120 Hz."""
+        for _ in range(80):
+            if self.viewer is None or self.viewer.poll() is not None: break
+            try:
+                stats = json.loads(Path(str(self.pose_socket) + ".stats").read_text())
+                if stats.get("pid") == self.viewer.pid and stats.get("refreshHz", 0) > 0:
+                    if stats["refreshHz"] < minimum:
+                        raise RuntimeError(f"The glasses run at {stats['refreshHz']} Hz instead of 120 Hz. "
+                                           "Unplug and reconnect them, then try again.")
+                    return
+            except (OSError, ValueError, KeyError): pass
+            time.sleep(.1)
+        raise RuntimeError("The XR view did not report its refresh rate. Try again.")
 
     def place_spectator(self):
         """Pin the recording window to the active workspace of an enabled computer display.
@@ -952,7 +1025,18 @@ class Manager:
 
     def save_presentation(self):
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
-                                                "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled})
+                                                "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled,
+                                                "bringWindows":self.bring_windows_enabled,"glassesMode":self.glasses_mode})
+
+    def set_glasses_mode(self, mode):
+        if mode not in GLASSES_MODES: raise ValueError("Choose 3D stereo or mono 120 Hz")
+        self.glasses_mode = mode
+        self.save_presentation()
+
+    def set_bring_windows(self, enabled):
+        if type(enabled) is not bool: raise ValueError("Bringing windows into XR must be on or off")
+        self.bring_windows_enabled = enabled
+        self.save_presentation()
 
     def write_power(self):
         # The renderer re-reads power.tsv every 2 s, so a change reaches a running XR view.
@@ -1202,7 +1286,7 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "glassesMode": self.glasses_mode, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
                 "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
@@ -1335,10 +1419,10 @@ def action_present_direct(manager, request):
     if manager.canvas_mode:
         if request.get("canvas"):
             manager.canvas.save(request["canvas"])
-        response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Stereo active."}
+        response = {"canvas": manager.canvas.ensure(manager.monitors()), "message": "Mono 120 Hz active." if manager.glasses_mode == "mono" else "Stereo active."}
     else:
         manager.apply(request["layout"])
-        response = {"layout": manager.applied, "message": "Stereo active."}
+        response = {"layout": manager.applied, "message": "Mono 120 Hz active." if manager.glasses_mode == "mono" else "Stereo active."}
     if not already_direct:
         manager.start_dedicated()
         if manager.spectator_skipped:
@@ -1409,6 +1493,22 @@ def action_present(manager, request):
 def action_laptop_off(manager, request):
     manager.set_laptop_off(request.get("enabled"))
     message = "Laptop display will turn off during stereo." if manager.laptop_off_enabled else "Laptop display restored; automatic shutoff disabled."
+    return {"message": message}
+
+
+def action_bring_windows(manager, request):
+    manager.set_bring_windows(request.get("enabled"))
+    message = ("Your laptop windows will move to the virtual monitors when stereo starts." if manager.bring_windows_enabled
+               else "Laptop windows stay on the laptop when stereo starts; windows on the glasses still move.")
+    return {"message": message}
+
+
+def action_glasses_mode(manager, request):
+    manager.set_glasses_mode(request.get("glassesMode"))
+    message = ("Mono 120 Hz: sharper text while you move your head, without 3D depth." if manager.glasses_mode == "mono"
+               else "3D stereo: depth at 60 Hz.")
+    if manager.direct:
+        message += " Stop and start the glasses again to switch."
     return {"message": message}
 
 
@@ -1508,6 +1608,8 @@ def perform(manager, request):
         "present": action_present,
         "set_laptop_off": action_laptop_off,
         "set_battery_saver": action_battery_saver,
+        "set_bring_windows": action_bring_windows,
+        "set_glasses_mode": action_glasses_mode,
         "restore_laptop": action_restore_laptop,
         "set_spectator": action_spectator,
         "set_render_mode": action_render_mode,

@@ -5,7 +5,7 @@ local state = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/stat
 local runtime = os.getenv("XDG_RUNTIME_DIR")
 local runtime_root = (runtime and runtime ~= "" and (runtime .. "/omarchy-xr")) or (state .. "/omarchy-xr")
 local path = runtime_root .. "/pose.sock.controls"
-local CONTROLS_VERSION = 9
+local CONTROLS_VERSION = 10
 -- Window canvas (v6): fixed names shared with the backend and the renderer (§3.3, §5.5).
 local CANVAS_WS, PARK_WS = "omxr-canvas", "omxr-park"
 -- Sliver strip (§3.3, M5): 8 px inside the output's right edge, stacked 24 px apart; the stack stops
@@ -356,6 +356,7 @@ omarchy_xr_controls = {version=CONTROLS_VERSION, tap_bindings=taps, recenter=fun
 -- changes within that monitor never steer the pointer or repeat focus dispatches.
 local gazeOwner, gazeSerial, gazeTarget
 local hoverName   -- the monitor the halo is on, for the pane publisher
+local lastXrHover -- the XR monitor last gazed at, where search brings a window from outside XR
 local pointerSerialSeen
 -- Observe existing workspace shortcuts, including a workspace already visible on
 -- another monitor. Resolve after dispatch finishes, coalescing both event types.
@@ -951,13 +952,13 @@ local function writePane(line)
 end
 -- Virtual monitors mode windows for the XR layer (docs/xr-controls-plan.md §5.3-5.4): the visible windows of
 -- every XR monitor, monitors left to right, each one's windows left to right and top to bottom.
-local monitorWindows
+local monitorWindows,xrMonitors
 do
     local function rect(w)
         local x,y=pair(w.at);local width,height=pair(w.size)
         return x,y,width,height
     end
-    local function xrMonitors()
+    xrMonitors=function()
         local fine,monitors=pcall(hl.get_monitors)
         local out={}
         if not fine or type(monitors)~="table" then return out end
@@ -1012,11 +1013,30 @@ local function monitorCycle(step)
 end
 -- Search outside the canvas (§5.5): the renderer ranks every regular window from `.windows` (the 4-field header,
 -- no canvas output), refreshed every second while XR runs and at once when search opens. Enter comes back as
--- `.land` (v1 <owner> <seq> <address> <stamp>): focus the window, which brings its workspace up on its monitor,
--- point at it and publish its pane for the camera.
+-- `.land` (v1 <owner> <seq> <address> <stamp>): a window outside the virtual monitors (v10) first moves to the
+-- XR monitor in view (bringTarget); then focus it, which brings its workspace up on its monitor, point at it
+-- and publish its pane for the camera.
 -- Both scenes write `.windows` with the one sequence number in canvas.windowsSeq, which survives reloads, so
 -- the renderer never keeps a stale list after a mode switch.
 local monitorSearch={written=-math.huge,landSeq=0,landOwner=nil}
+-- The XR monitor a window from outside XR (the laptop, or a workspace Hyprland parked there) comes to: the one
+-- gazed at, else the last one gazed at, else the focused one, else the leftmost. nil when the window is already
+-- on an XR monitor, on any of its workspaces, or no XR monitor has an active workspace.
+local function bringTarget(address)
+    local monitors=xrMonitors()
+    for _,m in ipairs(monitors) do
+        local fine,list=pcall(hl.get_windows,{monitor=m.name})
+        for _,w in ipairs(fine and list or {}) do if w.address==address then return nil end end
+    end
+    local want=hoverName or lastXrHover
+    if not want then
+        local workspace=hl.get_active_workspace()
+        want=workspace and workspace.monitor and workspace.monitor.name
+    end
+    local target=monitors[1]
+    for _,m in ipairs(monitors) do if m.name==want then target=m end end
+    if target and target.active_workspace and target.active_workspace.id then return target end
+end
 function monitorSearch.publish(now)
     local rows=windowRows(listWindows())
     canvas.windowsSeq=canvas.windowsSeq+1;monitorSearch.written=now
@@ -1038,8 +1058,14 @@ function monitorSearch.tick(now)
     address=address:lower()
     local fine,w=pcall(hl.get_window,"address:"..address)
     if not fine or not w then return end
-    local x,y=pair(w.at);local width,height=pair(w.size)
+    local target=bringTarget(address)
     gazeDispatch=true
+    if target then
+        windowDispatch("move",address,{workspace=tostring(math.floor(target.active_workspace.id)),follow=false})
+        fine,w=pcall(hl.get_window,"address:"..address)
+        if not fine or not w then gazeDispatch=false;return end
+    end
+    local x,y=pair(w.at);local width,height=pair(w.size)
     hl.dispatch(hl.dsp.focus({window="address:"..address}))
     hl.dispatch(hl.dsp.cursor.move({x=math.floor(x+width/2),y=math.floor(y+height/2)}))
     gazeDispatch=false
@@ -1307,32 +1333,54 @@ end
 local function hoverTarget(line)
     local owner,serialText,mode,name,pointerSerial,px,py=line:match("^v4 (%d+) (%d+) ([01]) (%S+) %S+ %S+ (%d+) (%S+) (%S+)")
     if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
-    owner,serialText,mode,name,pointerSerial,px,py=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+)")
-    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py) end
+    local kind
+    owner,serialText,mode,name,pointerSerial,px,py,kind=line:match("^v3 (%d+) (%d+) ([01]) ([%w_-]+) %S+ %S+ (%d+) (%S+) (%S+) ?(%a?)")
+    if owner then return owner,serialText,mode,name,tonumber(pointerSerial),tonumber(px),tonumber(py),kind=="d" end
     owner,serialText,mode,name=line:match("^v2 (%d+) (%d+) ([01]) ([%w_-]+) ")
     if owner then return owner,serialText,mode,name end
     return line:match("^(%d+) (%d+) ([01]) ([%w_-]+) ")
 end
 -- A dwell warps the desktop pointer to the look point once and focuses the window under it.
 -- Hyprland's follow-mouse may already focus it; the explicit dispatch covers the other policies.
-local function warpPointer(name,px,py)
+-- v10: a dwell inside the window that is already focused, with the pointer already in it, leaves the
+-- pointer where it is (reading around a window must not drag the pointer along); an explicit focus warps.
+local function warpPointer(name,px,py,dwell)
+    -- Focused (Hyprland's flag or the active window) with the desktop pointer already inside it.
+    local function settledIn(w)
+        local fine,current=pcall(hl.get_active_window)
+        if not w.active and not (fine and current and current.address==w.address) then return false end
+        local ok,cursor=pcall(hl.get_cursor_pos)
+        if not ok or type(cursor)~="table" then return false end
+        local cx,cy=pair(cursor);local wx,wy=pair(w.at);local ww,wh=pair(w.size)
+        return cx>=wx and cx<wx+ww and cy>=wy and cy<wy+wh
+    end
     for _,monitor in ipairs(hl.get_monitors()) do
         if monitor.name==name then
             local scale=monitor.scale or 1
             local x,y=monitor.x+px/scale,monitor.y+py/scale
             local ok,windows=pcall(hl.get_windows,{monitor=name,mapped=true})
             if ok and windows then
+                -- Only what is on screen: the visible workspace, plus pinned windows above every workspace. A
+                -- fullscreen or maximized window there hides the windows under it, and focusing one of those
+                -- would make Hyprland bring it forward fullscreen: the gaze stops at the covering window.
+                local active=monitor.active_workspace and monitor.active_workspace.id
+                local function shown(w)
+                    return not w.hidden and (w.pinned or not active or not w.workspace or w.workspace.id==active)
+                end
+                local cover
+                for _,w in ipairs(windows) do if shown(w) and (w.fullscreen or 0)~=0 then cover=w end end
                 local best
                 for _,w in ipairs(windows) do
                     local at,size=w.at,w.size
-                    if type(at)=="table" and type(size)=="table" then
+                    if type(at)=="table" and type(size)=="table" and shown(w) and (not cover or w==cover or w.pinned) then
                         local wx,wy=at.x or at[1],at.y or at[2]
                         local ww,wh=size.x or size[1],size.y or size[2]
-                        if wx and x>=wx and x<wx+ww and y>=wy and y<wy+wh and not w.hidden then
-                            if not best or w.floating then best=w end
+                        if wx and x>=wx and x<wx+ww and y>=wy and y<wy+wh then
+                            if not best or w.floating or w.pinned then best=w end
                         end
                     end
                 end
+                if best and dwell and settledIn(best) then return end
                 if best and not best.active then pcall(function() hl.dispatch(hl.dsp.focus({window=best})) end) end
             end
             -- Focusing warps the cursor to the window's centre, so the move to the look point comes last.
@@ -1363,22 +1411,23 @@ local function noteHover(owner, serialNumber)
     return true
 end
 local function selectGazeWorkspace()
-    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;hoverName=nil;return end
+    if not active then gazeOwner=nil;gazeSerial=nil;gazeTarget=nil;pointerSerialSeen=nil;hoverName=nil;lastXrHover=nil;return end
     local file=io.open(path..".hover","r")
     if not file then return end
     local line=file:read("*l");file:close()
     if not line then return end
-    local owner,serialText,mode,name,pointerSerial,px,py=hoverTarget(line)
+    local owner,serialText,mode,name,pointerSerial,px,py,dwell=hoverTarget(line)
     local serialNumber=tonumber(serialText)
     if not noteHover(owner, serialNumber) then pointerSerialSeen=pointerSerial;return end
     if canvasMode then canvasHover(mode,name,pointerSerial,px,py);return end
     if waitForFocus(mode,name,pointerSerial) then return end
     if pointerSerial and pointerSerial~=pointerSerialSeen then
         -- The first sample of a session only records the serial; a pre-existing dwell is not replayed.
-        if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py) end
+        if pointerSerialSeen~=nil and pointerSerial>0 and mode=="1" and name:match("^OMXR%-") then warpPointer(name,px,py,dwell) end
         pointerSerialSeen=pointerSerial
     end
     hoverName=mode=="1" and name or nil
+    if hoverName and hoverName:match("^OMXR%-") then lastXrHover=hoverName end
     if mode~="1" or not name:match("^OMXR%-") then gazeTarget=nil;return end
     if gazeTarget==name then return end
     focusMonitor(name)

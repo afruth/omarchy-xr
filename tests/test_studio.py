@@ -538,6 +538,21 @@ class LayoutTests(unittest.TestCase):
                 self.assertIn("original lease failure",events[-2]["error"])
             finally:manager.lock.close()
 
+    def test_restore_accepts_the_driven_mode_when_hyprland_kept_a_stale_mode_list(self):
+        # Hyprland missed the hotplug back to 2D: it drives 1920x1080@60 but still lists only the SBS mode.
+        with tempfile.TemporaryDirectory() as temp:
+            manager=Manager(temp,"/unused",FakeHypr())
+            original={"name":"DP-2","width":1920,"height":1080,"x":1920,"y":0,"scale":1,"refreshRate":60.0}
+            stale={**original,"description":"CVT VITURE","availableModes":["3840x1080@60.00Hz"]}
+            manager.monitors=Mock(return_value=[stale])
+            try:
+                self.assertEqual(manager.wait_for_output(dict(original),"1920x1080@"),"DP-2")
+                manager.wait_for_refresh("DP-2",original)
+                with patch("time.sleep"), self.assertRaisesRegex(RuntimeError,"did not return to normal video"):
+                    manager.monitors=Mock(return_value=[{**stale,"width":3840}])
+                    manager.wait_for_output(dict(original),"1920x1080@")
+            finally:manager.lock.close()
+
     def test_restore_waits_for_mode_family_before_refresh_request(self):
         with tempfile.TemporaryDirectory() as temp:
             manager=Manager(temp,"/unused",FakeHypr())

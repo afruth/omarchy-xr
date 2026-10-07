@@ -68,6 +68,38 @@ def detect(monitors, usb=Path("/sys/bus/usb/devices")):
     return {"usb": bool(devices), "devices": devices, "displays": displays}
 
 
+def _timings(block):
+    """(width, height, refresh Hz) of each 18-byte detailed timing descriptor in one EDID block."""
+    start, end = (54, 126) if block[:8] == bytes.fromhex("00ffffffffffff00") else (block[2], 127) if block[0] == 2 else (0, 0)
+    for i in range(start, end - 17, 18):
+        d = block[i:i + 18]
+        clock = (d[0] | d[1] << 8) * 10000
+        if clock == 0:
+            if start != 54: break  # CTA: the descriptors end at the first empty one
+            continue
+        width, blank_w = d[2] | (d[4] & 0xF0) << 4, d[3] | (d[4] & 0x0F) << 8
+        height, blank_h = d[5] | (d[7] & 0xF0) << 4, d[6] | (d[7] & 0x0F) << 8
+        if (width + blank_w) and (height + blank_h):
+            yield width, height, clock / ((width + blank_w) * (height + blank_h))
+
+
+def edid_offers(connector, width, height, min_hz, drm=Path("/sys/class/drm")):
+    """Whether the kernel's current EDID for this connector has a width x height timing at min_hz or faster.
+
+    Hyprland can miss the hotplug when only the refresh rate changes, so its mode list may be stale; the kernel's
+    EDID is the device's own answer.
+    """
+    for path in drm.glob("card*-" + connector + "/edid"):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        for start in range(0, len(data) - len(data) % 128, 128):
+            if any(w == width and h == height and hz >= min_hz for w, h, hz in _timings(data[start:start + 128])):
+                return True
+    return False
+
+
 class Recovery:
     def __init__(self):
         self.process = None

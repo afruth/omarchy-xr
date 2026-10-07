@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "studio"))
-from sdk_worker import Session, PosePublisher, record_keep_alive, gl_euler
+from sdk_worker import Session, PosePublisher, record_keep_alive, gl_euler, sdk_command
 from clock import boot_time
 from sdk import SDK
 
@@ -156,6 +156,12 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(session.original_mode)
             self.assertFalse(session.mode_journal.exists())
             session.close()
+
+    def test_mono_is_not_an_sdk_mode(self):
+        # Mono 120 Hz follows the host timing; asking the SDK for 0x34 left the glasses at 0x31 and the link down.
+        session, _, _ = self.make_session()
+        with self.assertRaisesRegex(ValueError, "Unknown SDK command"):
+            sdk_command(session, "mono")
 
     def test_stereo_ack_does_not_require_host_timing_to_change_immediately(self):
         session, library, _ = self.make_session()

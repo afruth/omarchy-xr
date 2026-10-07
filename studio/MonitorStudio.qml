@@ -64,6 +64,9 @@ Item {
     }
     property string renderMode: "monitors"
     property string requestedMode: ""
+    // Start in glasses: "stereo" (3D, 60 Hz) or "mono" (120 Hz, sharper while turning). Applies at the next start.
+    property string glassesMode: "stereo"
+    property string requestedGlassesMode: ""
     property bool canvasActive: false
     property int canvasWindows: 0
     property string canvasSelection: ""
@@ -128,6 +131,7 @@ Item {
     property bool directOutput: false
     property bool stereoOutput: false
     property bool laptopOffEnabled: false
+    property bool bringWindowsEnabled: true
     property bool batterySaverEnabled: false
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
@@ -209,6 +213,7 @@ Item {
             canImportEnvironment: canImportEnvironment,
             workspaceDegrees: workspaceDegrees, workspaceFollow: workspaceFollow,
             laptopOffEnabled: laptopOffEnabled,
+            bringWindowsEnabled: bringWindowsEnabled,
             batterySaverEnabled: batterySaverEnabled,
             laptopDisplay: laptopDisplay,
             spectatorEnabled: spectatorEnabled,
@@ -269,7 +274,7 @@ Item {
         if (!requestId) return;
         if (action !== "status") {
             error = false;
-            notify(action === "check" ? "Checking glasses connection…" : action === "reinitialize" ? "Starting recovery — watch for the administrator prompt…" : action === "present_direct" ? (root.directOutput ? "Updating monitors in the running XR session…" : "Starting stereo and reserving the glasses…") : action === "set_render_mode" && root.viewing ? "Switching the XR view…" : "Working…");
+            notify(action === "check" ? "Checking glasses connection…" : action === "reinitialize" ? "Starting recovery — watch for the administrator prompt…" : action === "present_direct" ? (root.directOutput ? "Updating monitors in the running XR session…" : (root.glassesMode === "mono" ? "Starting mono 120 Hz and reserving the glasses…" : "Starting stereo and reserving the glasses…")) : action === "set_render_mode" && root.viewing ? "Switching the XR view…" : "Working…");
         }
         backend.write(JSON.stringify({
             requestId: requestId,
@@ -281,6 +286,7 @@ Item {
             enabled: enabled === undefined ? true : enabled,
             controls: controlDraft,
             renderMode: requestedMode || renderMode,
+            glassesMode: requestedGlassesMode || glassesMode,
             canvas: canvasDraft,
             setupName: setupName,
             setupId: selectedSetup === undefined ? setupId : selectedSetup,
@@ -460,6 +466,8 @@ Item {
                     if (response.controls) {root.controlDraft=response.controls;root.controlsDirty=false;}
                     if (response.controlsMeta) root.controlsMeta=response.controlsMeta;
                     if (replyAction === "set_render_mode") root.requestedMode = "";
+                    if (replyAction === "set_glasses_mode") root.requestedGlassesMode = "";
+                    if (response.glassesMode) root.glassesMode = response.glassesMode;
                     if (response.canvas && ["set_canvas_settings","present_direct","start"].indexOf(replyAction)>=0 && response.ok) root.canvasDirty = false;
                     if (replyAction === "use_setup") root.saveBeforeSwitch=false;
                     if (response.canvas) root.adoptCanvas(response.canvas);
@@ -483,6 +491,7 @@ Item {
                     root.spectatorEnabled = !!response.spectatorEnabled;
                     root.spectatorSkipped = response.spectatorSkipped || "";
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
+                    root.bringWindowsEnabled = response.bringWindowsEnabled !== false;
                     root.batterySaverEnabled = !!response.batterySaverEnabled;
                     if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
                         root.laptopDisplay = response.laptopDisplay;
@@ -1000,7 +1009,7 @@ Item {
                                     Layout.fillWidth: true
                                     Heading {
                                         Layout.fillWidth: true
-                                        text: root.directOutput ? "Stereo active" : root.viewing ? "Preview active" : "XR session"
+                                        text: root.directOutput ? (root.glassesMode === "mono" ? "Mono 120 Hz active" : "Stereo active") : root.viewing ? "Preview active" : "XR session"
                                     }
                                     Label {
                                         text: root.sdk.tracking ? "Tracking active" : root.glasses.usb ? "Glasses connected" : "Glasses disconnected"
@@ -1012,7 +1021,7 @@ Item {
                                     Layout.fillWidth: true
                                     mode: root.renderMode
                                     locked: root.busy || !root.loaded
-                                    hint: root.loaded && root.controlsVersion < 9 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v9 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v9.") + " A terminal opens to install them." : ""
+                                    hint: root.loaded && root.controlsVersion < 10 ? (root.controlsVersion > 0 ? "Window canvas needs XR controls v10 (v" + root.controlsVersion + " installed)." : "Window canvas needs XR controls v10.") + " A terminal opens to install them." : ""
                                     actionText: root.controlsVersion > 0 ? "Update XR controls" : "Install XR controls"
                                     accent: Color.accent
                                     foreground: Color.foreground
@@ -1025,11 +1034,17 @@ Item {
                                         : "Keep your normal workspaces on larger virtual screens."
                                 }
                                 RowLayout {
-                                    visible: root.renderMode === "canvas" && !root.viewing
+                                    visible: !root.viewing
                                     Layout.fillWidth: true
-                                    Label { Layout.fillWidth:true; text:"Bring existing windows into XR" }
+                                    Label {
+                                        Layout.fillWidth:true
+                                        text:"Bring existing windows into XR"
+                                        helpText: root.renderMode === "canvas"
+                                            ? "Your laptop windows join the canvas at start. Windows on the glasses always come along."
+                                            : "Your laptop windows move to the virtual monitors when stereo starts. Windows on the glasses always come along."
+                                    }
                                     Ui.ToggleSwitch {
-                                        checked: root.canvasDraft.adoptPolicy !== "empty"
+                                        checked: root.renderMode === "canvas" ? root.canvasDraft.adoptPolicy !== "empty" : root.bringWindowsEnabled
                                         enabled: root.loaded && !root.busy
                                         activeFocusOnTab:true
                                         Accessible.role:Accessible.CheckBox
@@ -1037,8 +1052,25 @@ Item {
                                         Accessible.checked:checked
                                         Keys.onSpacePressed:if(enabled)toggled()
                                         Accessible.onToggleAction:if(enabled)toggled()
-                                        onToggled: root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                        onToggled: root.renderMode === "canvas" ? root.setCanvas("adoptPolicy", checked ? "empty" : "all")
+                                            : root.send("set_bring_windows", !root.bringWindowsEnabled)
                                     }
+                                }
+                                ModeSelector {
+                                    objectName: "glasses-mode"
+                                    Layout.fillWidth: true
+                                    options: [{value:"stereo",label:"3D stereo · 60 Hz"},{value:"mono",label:"Mono · 120 Hz"}]
+                                    mode: root.requestedGlassesMode || root.glassesMode
+                                    locked: root.busy || !root.loaded || root.directOutput
+                                    accent: Color.accent
+                                    foreground: Color.foreground
+                                    onPicked: function(m) { root.requestedGlassesMode = m; root.send("set_glasses_mode"); }
+                                }
+                                Hint {
+                                    text: (root.glassesMode === "mono"
+                                        ? "Both eyes see the same image at 120 Hz: sharper text while you turn your head, no 3D depth."
+                                        : "Screens appear at a real distance in 3D; the glasses run at 60 Hz, so text smears more while you turn.")
+                                        + (root.directOutput ? " Stop the glasses to switch." : "")
                                 }
                                 Flow {
                                     Layout.fillWidth: true
@@ -1056,13 +1088,13 @@ Item {
                                         visible: !root.viewing
                                         text: root.pendingAction === "start" ? "Opening…" : "Preview on desktop"
                                         enabled: root.loaded && !root.busy && !!root.glasses.runtimeInstalled
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 10)
                                         helpText: "Apply this setup and open XR on your desktop"
                                         onClicked: root.send("start")
                                     }
                                     Action {
                                         visible: root.viewing || root.activeCount > 0
-                                        text: root.directOutput ? "Stop stereo" : root.viewing ? "Close preview" : "Restore desktop"
+                                        text: root.directOutput ? (root.glassesMode === "mono" ? "Stop glasses" : "Stop stereo") : root.viewing ? "Close preview" : "Restore desktop"
                                         helpText: "Move your XR windows back to your computer display"
                                         enabled: (root.viewing || root.activeCount > 0) && !root.busy
                                         onClicked: root.send("stop_viewer")
@@ -2413,7 +2445,7 @@ Item {
                                 title: "Performance"
                                 helpText: "Frame rate and capture details for troubleshooting"
                                 Hint {
-                                    text: root.directOutput ? "Stereo · dedicated display" : "Mono · desktop rendering"
+                                    text: root.directOutput ? (root.glassesMode === "mono" ? "Mono 120 Hz · dedicated display" : "Stereo · dedicated display") : "Mono · desktop rendering"
                                     helpText: root.directOutput ? "Direct side-by-side stereo on the glasses" : sdkControls.sdk.nativeDof === false ? "Flat preview on the glasses; built-in tracking is unavailable" : "Flat preview on the glasses"
                                 }
                                 QQC.ScrollView {
@@ -2456,7 +2488,7 @@ Item {
                                         text: "Preview on desktop"
                                         helpText: "Apply this setup and preview it on your desktop"
                                         enabled: root.loaded && !!root.glasses.runtimeInstalled && !root.viewing && !root.busy
-                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 9)
+                                            && (root.renderMode !== "canvas" || root.controlsVersion >= 10)
                                         onClicked: root.send("start")
                                     }
                                     Action {

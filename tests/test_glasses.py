@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "studio"))
-from glasses import Recovery, controllers, detect, RESET_SCRIPT
+from glasses import Recovery, controllers, detect, edid_offers, RESET_SCRIPT
 
 
 BIND_HARNESS = r"""
@@ -204,3 +204,32 @@ class GlassesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def dtd(width, height, hz, blank_w=280, blank_h=45):
+    """An 18-byte detailed timing descriptor for width x height at about hz."""
+    clock = round(hz * (width + blank_w) * (height + blank_h) / 10000)
+    return bytes([clock & 0xFF, clock >> 8, width & 0xFF, blank_w & 0xFF, (width >> 8) << 4 | blank_w >> 8,
+                  height & 0xFF, blank_h & 0xFF, (height >> 8) << 4 | blank_h >> 8]) + bytes(10)
+
+
+class EdidTests(unittest.TestCase):
+    def edid(self, base, cta=()):
+        block = bytearray(128); block[:8] = bytes.fromhex("00ffffffffffff00"); block[54:72] = base; block[126] = 1 if cta else 0
+        ext = bytearray(128)
+        if cta:
+            ext[0], ext[2] = 2, 4
+            for i, d in enumerate(cta): ext[4 + 18 * i:22 + 18 * i] = d
+        return bytes(block) + (bytes(ext) if cta else b"")
+
+    def test_finds_a_fast_mode_in_the_base_block_or_the_cta_extension(self):
+        with tempfile.TemporaryDirectory() as drm:
+            connector = Path(drm) / "card1-DP-2"; connector.mkdir()
+            (connector / "edid").write_bytes(self.edid(dtd(1920, 1080, 60)))
+            self.assertTrue(edid_offers("DP-2", 1920, 1080, 59, Path(drm)))
+            self.assertFalse(edid_offers("DP-2", 1920, 1080, 119, Path(drm)))
+            (connector / "edid").write_bytes(self.edid(dtd(1920, 1080, 60), [dtd(3840, 1080, 120), dtd(1920, 1080, 120)]))
+            self.assertTrue(edid_offers("DP-2", 1920, 1080, 119, Path(drm)))
+            self.assertFalse(edid_offers("DP-1", 1920, 1080, 59, Path(drm)))   # another connector
+            (connector / "edid").write_bytes(b"")
+            self.assertFalse(edid_offers("DP-2", 1920, 1080, 59, Path(drm)))
