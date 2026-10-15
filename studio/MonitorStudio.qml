@@ -485,6 +485,8 @@ Item {
                         if (!JsonEqual.same(root.performance, response.performance))
                             root.performance = response.performance;
                     }
+                    // The laptop display may just have come back on: say why XR closed.
+                    if (response.viewerExit && response.viewerExit !== root.viewerExit) root.notify(response.viewerExit, true);
                     root.viewerExit = response.viewerExit || "";
                     root.controlsHint = response.controlsHint || "";
                     if (root.performance.geometryDistance > 0) root.geometryDistance=root.performance.geometryDistance;
@@ -566,7 +568,8 @@ Item {
         onTriggered: if (!root.busy && !root.feedbackError) root.feedback = "";
     }
     Timer {
-        interval: root.opened ? 3000 : 10000
+        // A glasses session polls quickly even with Studio closed: an unplug is noticed here.
+        interval: root.opened || root.directOutput ? 3000 : 10000
         repeat: true
         running: root.loaded && (root.opened || root.viewing)
         onTriggered: if (!root.busy) root.send("status")

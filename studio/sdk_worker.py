@@ -347,6 +347,7 @@ class PosePublisher:
 SDK_COMMANDS = {
     "stereo": (lambda s: s.begin_stereo(), "Stereo SBS requested; waiting for the host video mode."),
     "verify_stereo": (lambda s: s.wait_mode(0x32), "Stereo video mode verified (3840×1080 at 60 Hz)."),
+    "verify_mono": (lambda s: s.wait_mode(0x34), "Mono video mode verified (1920×1080 at 120 Hz)."),
     "stereo_off": (lambda s: s.end_stereo(), "Previous display mode requested; waiting for host restoration."),
     "restore_rate": (lambda s: s.restore_rate(), "Previous refresh rate requested."),
     "verify_restore": (lambda s: s.verify_restore(), "Previous glasses display mode restored and verified."),

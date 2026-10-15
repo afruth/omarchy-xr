@@ -100,6 +100,16 @@ def edid_offers(connector, width, height, min_hz, drm=Path("/sys/class/drm")):
     return False
 
 
+def connector_state(connector, drm=Path("/sys/class/drm")):
+    """The kernel's hotplug state for a video port ("connected", "disconnected"), or "" when unknown."""
+    for path in drm.glob("card*-" + connector + "/status"):
+        try:
+            return path.read_text().strip()
+        except OSError:
+            continue
+    return ""
+
+
 class Recovery:
     def __init__(self):
         self.process = None

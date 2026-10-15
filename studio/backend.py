@@ -20,7 +20,7 @@ from typing import Any
 from laptop_display import LaptopDisplay, internal
 from workspace_presets import built_in_setups
 from environment import Environment
-from glasses import Recovery, detect, edid_offers
+from glasses import Recovery, connector_state, detect, edid_offers
 from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
@@ -40,7 +40,9 @@ CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfo
 # timing the glasses offer). Mono drops depth for 120 Hz, which halves the smear of head-locked text: the 2D
 # EDID already offers 1920x1080@120 and the glasses follow the host timing, so mono needs no SDK mode change,
 # only the handoff and a renderer that drives the fastest 1920x1080 mode (an SDK 0x34 request while the host
-# still drove 60 Hz left the glasses at 0x31 and the link down). Both restore through the same path.
+# still drove 60 Hz left the glasses at 0x31 and the link down). The renderer's own 120 Hz does not prove the
+# glasses show it: they can stay dark at 0x31 while it presents, so mono also needs the 0x34 readback. Both
+# restore through the same path.
 GLASSES_MODES = ("stereo", "mono")
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
@@ -951,7 +953,9 @@ class Manager:
             stage = "opening the XR view"
             self.start(present=True, direct=True)
             stage = "checking the glasses video mode"
-            if mono: self.wait_for_viewer_refresh(119)
+            if mono:
+                self.wait_for_viewer_refresh(119)
+                self.verify_mono_video()
             else: self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
@@ -975,6 +979,13 @@ class Manager:
                 return
             time.sleep(.1)
         raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+
+    def verify_mono_video(self):
+        try:
+            self.sdk.verify_mono()
+        except RuntimeError as exc:
+            raise RuntimeError("The glasses did not take the 120 Hz picture (" + str(exc) + "). "
+                               "Unplug and reconnect them, then try again.") from exc
 
     def wait_for_viewer_refresh(self, minimum):
         """The renderer's own report of the leased refresh rate (pose.sock.stats), for mono 120 Hz."""
@@ -1241,6 +1252,31 @@ class Manager:
         except Exception as exc:
             self.restoration_error = str(exc)
 
+    def glasses_unplugged(self):
+        """A glasses session whose glasses are gone: no VITURE on USB, or its leased video port disconnected."""
+        if not self.direct or not self.viewer or self.viewer.poll() is not None:
+            return False
+        if not self.sdk.devices():
+            return True
+        output = self.dedicated.output
+        return bool(output) and connector_state(output) == "disconnected"
+
+    def note_unplugged_glasses(self):
+        # The renderer keeps presenting into a leased port with nothing on it, so without this check an
+        # unplugged session (laptop display off, windows parked in XR) stays up until the user finds Stop.
+        if not self.glasses_unplugged():
+            return
+        time.sleep(1)  # a brief USB or link renegotiation is not an unplug
+        if not self.glasses_unplugged():
+            return
+        self.append_backend_log("Glasses disconnected during the XR session; stopping it")
+        self.display_event("glasses-disconnected")
+        self.viewer_exit = "The glasses were disconnected, so XR stopped and your windows returned to this computer."
+        try:
+            self.stop_viewer()
+        except Exception as exc:
+            self.restoration_error = str(exc)
+
     def glasses_status(self, monitors):
         try:
             glasses = detect(monitors if monitors is not None else [])
@@ -1279,6 +1315,7 @@ class Manager:
             monitors = None
         self.reconcile_status(monitors)
         self.note_exited_viewer()
+        self.note_unplugged_glasses()
         glasses = self.glasses_status(monitors)
         performance = self.performance_sample()
         laptop_status = self.laptop.status()
