@@ -518,6 +518,25 @@ class CanvasTests(unittest.TestCase):
         try: self.assertFalse(manager.status()["bringWindowsEnabled"])
         finally: manager.lock.close()
 
+    def test_stabilization_level_is_written_for_the_renderer_and_remembered(self):
+        manager = self.manager(CanvasHypr())
+        tsv = manager.directory / "stabilization.tsv"
+        try:
+            self.assertEqual(tsv.read_text(), "stabilization-v1 1\n")   # the base, written for a fresh install
+            self.assertEqual(manager.status()["stabilization"], 1)
+            response = perform(manager, {"action": "set_stabilization", "stabilization": 2.5})
+            self.assertIn("under 0.375°", response["message"])
+            self.assertEqual(tsv.read_text(), "stabilization-v1 2.5\n")
+            for bad in (5, 0.5, 1.25, True, "2", None):
+                with self.assertRaisesRegex(ValueError, "1× to 4×"): manager.set_stabilization(bad)
+            self.assertEqual(manager.stabilization, 2.5)
+        finally: manager.lock.close()
+        manager = self.manager(CanvasHypr())
+        try:
+            self.assertEqual(manager.status()["stabilization"], 2.5)
+            self.assertEqual(tsv.read_text(), "stabilization-v1 2.5\n")
+        finally: manager.lock.close()
+
     def test_stereo_start_moves_glasses_windows_before_switching_the_glasses(self):
         fake = CanvasHypr()
         self.glasses(fake)

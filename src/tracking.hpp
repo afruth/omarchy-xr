@@ -55,9 +55,19 @@ inline std::optional<Prediction> parsePrediction(const std::string& line) {
         || p.samples<2 || p.samples>8 || p.minCutoff<0 || p.minCutoff>30 || p.beta<0 || p.beta>5) return std::nullopt;
     return p;
 }
+// Stabilization strength from Studio, live-loaded from stabilization.tsv beside the layout:
+//   stabilization-v1 <strength 1..4>
+// 1 is the tuned base above, unchanged. Higher levels add a hold zone of 0.25 degrees per level.
+inline std::optional<double> parseStabilization(const std::string& line) {
+    std::istringstream in(line); std::string version,extra; double strength=0;
+    if (!(in>>version>>strength) || version!="stabilization-v1" || (in>>extra) || !std::isfinite(strength)
+        || strength<1 || strength>4) return std::nullopt;
+    return strength;
+}
 struct Camera {
     Quaternion view;
     Prediction prediction;
+    double strength=1;    // stabilization level 1..4; see holdDegrees()
     double roll=0,pitch=0,yaw=0,neutralYaw=0;
     double timestamp=-1, deviceTimestamp=0, predictionMs=0;
     bool centered=false, predictionActive=false;
@@ -78,6 +88,14 @@ struct Camera {
     double settledSpeed=0;   // deg/s of the stabilised output, 4 Hz smoothed: what a dwell watches
     bool filterReady=false;
     double filterTime=-1, cutoffHz=0, coherence=1;
+    // Hold zone (stabilization above 1x): the shown pose stays put while the filtered head stays within
+    // holdRadius of it, so small sways, typing and breathing move nothing. Beyond it the shown pose is
+    // dragged along at that distance. A deliberate movement - coherent, and fast or sharply accelerating,
+    // per the 8 Hz velocity - shrinks the radius while it drags, so a turn ends up tracked exactly; once
+    // the head is still the radius grows back around where it stopped, centring the zone there. A slow
+    // turn is too noisy to score as coherent, so pulling at the edge for a sustained 0.3 s counts as
+    // deliberate too; a shake keeps going slack and never builds that up.
+    double shown[3]{}, holdRadius=0, fastVelocity[3]{}, fastSpeed=0, acceleration=0, dragSeconds=0;
     struct Step { double t=0, d[3]{}; };
     Step steps[32]{};
     int stepCount=0, stepNext=0;
@@ -104,9 +122,11 @@ struct Camera {
         const double alpha=1/(1+tau/dt);
         return previous+alpha*(value-previous);
     }
+    double holdDegrees() const { return 0.25*(std::clamp(strength,1.0,4.0)-1); }
+    static double smoothstep(double x) { x=std::clamp(x,0.0,1.0); return x*x*(3-2*x); }
     void resetFilter(const double value[3], double t) {
-        for(int i=0;i<3;++i) axes[i]={value[i],value[i],0};
-        settledSpeed=0;
+        for(int i=0;i<3;++i) { axes[i]={value[i],value[i],0}; shown[i]=value[i]; fastVelocity[i]=0; }
+        settledSpeed=0; holdRadius=holdDegrees(); fastSpeed=acceleration=dragSeconds=0;
         filterReady=true; filterTime=t; stepCount=stepNext=0; cutoffHz=prediction.minCutoff; coherence=1;
     }
     // Returns the stabilised angles for one sample taken at time t (seconds, on the sample clock).
@@ -130,26 +150,56 @@ struct Camera {
             path+=std::sqrt(s.d[0]*s.d[0]+s.d[1]*s.d[1]+s.d[2]*s.d[2]);
         }
         coherence=path>1e-4 ? std::clamp(std::sqrt(net[0]*net[0]+net[1]*net[1]+net[2]*net[2])/path,0.0,1.0) : 1;
-        double speed=0;
+        double speed=0, fast=0;
         for(int i=0;i<3;++i){
             const double rawVelocity=(value[i]-axes[i].raw)/dt;
             axes[i].velocity=lowpass(axes[i].velocity, rawVelocity, dt, 1.0);
+            fastVelocity[i]=lowpass(fastVelocity[i], rawVelocity, dt, 8.0);
             speed+=axes[i].velocity*axes[i].velocity;
+            fast+=fastVelocity[i]*fastVelocity[i];
         }
-        speed=std::sqrt(speed);
+        speed=std::sqrt(speed); fast=std::sqrt(fast);
+        acceleration=lowpass(acceleration, (fast-fastSpeed)/dt, dt, 8.0); fastSpeed=fast;
         cutoffHz=prediction.minCutoff+prediction.beta*std::max(0.0,speed-prediction.restSpeed)*coherenceGate();
+        double before[3];
+        for(int i=0;i<3;++i){
+            before[i]=shown[i];
+            axes[i].filtered=lowpass(axes[i].filtered, value[i], dt, cutoffHz);
+            axes[i].raw=value[i];
+        }
+        hold(dt, speed);
         double moved=0;
         for(int i=0;i<3;++i){
-            const double before=axes[i].filtered;
-            axes[i].filtered=lowpass(axes[i].filtered, value[i], dt, cutoffHz);
-            moved+=(axes[i].filtered-before)*(axes[i].filtered-before);
-            axes[i].raw=value[i];
-            value[i]=axes[i].filtered;
+            moved+=(shown[i]-before[i])*(shown[i]-before[i]);
+            value[i]=shown[i];
         }
         // The dwell watches the stabilised output, so a smoothed shake still counts as settled,
         // and it needs a quick estimate: a 4 Hz smoothing settles within a quarter second of a turn.
         settledSpeed=lowpass(settledSpeed, std::sqrt(moved)/dt, dt, 4.0);
         filterTime=t;
+    }
+    // speed: the 1 Hz smoothed head speed, steady enough to tell a slow turn from a still head.
+    void hold(double dt, double speed) {
+        const double zone=holdDegrees();
+        if(zone<=0) { for(int i=0;i<3;++i) shown[i]=axes[i].filtered; holdRadius=0; return; }
+        double d[3], distance=0;
+        for(int i=0;i<3;++i){ d[i]=axes[i].filtered-shown[i]; distance+=d[i]*d[i]; }
+        distance=std::sqrt(distance);
+        holdRadius=std::min(holdRadius, zone);
+        // Deliberate: past the rest speed, or accelerating like the start of a turn (a stronger level asks
+        // for a sharper start); either way only when the motion is coherent, never a shake.
+        const double rest=std::max(prediction.restSpeed, 0.5), sharp=50*std::clamp(strength,1.0,4.0);
+        const bool taut=distance>=holdRadius*0.98;
+        dragSeconds=std::max(0.0, dragSeconds+(taut ? dt : -2*dt));
+        const double intent=std::max(coherenceGate()*std::max(smoothstep((fastSpeed-rest)/rest), smoothstep((acceleration-sharp)/sharp)),
+                                     smoothstep((dragSeconds-0.15)/0.15));
+        // A still head re-centres first: with the zone shrunk to nothing every sample would pull at its edge.
+        if(speed<rest)
+            holdRadius=std::min(zone, holdRadius+zone*dt/0.4);           // re-centre the zone over 0.4 s
+        else if(taut && intent>0)
+            holdRadius-=std::min(holdRadius, 0.5*fastSpeed*intent*dt);   // catch up at most half again the head's speed
+        if(distance>holdRadius)
+            for(int i=0;i<3;++i) shown[i]+=d[i]*(1-holdRadius/distance);
     }
     // Angular speed of the stabilised output in deg/s, 4 Hz smoothed. With the filter off it is the
     // one-hertz smoothed raw velocity magnitude.

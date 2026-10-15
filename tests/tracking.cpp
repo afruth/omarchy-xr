@@ -13,10 +13,12 @@ tracking::Camera unfiltered() { tracking::Camera c; c.prediction.minCutoff=0; re
 void packetParsing();
 void prediction();
 void grab();
+void stabilization();
 int main() {
     packetParsing();
     prediction();
     grab();
+    stabilization();
     std::cout<<"SDK reference camera: six directions, 60 combined poses, yaw-only recenter, wrap and freshness passed\n";
 }
 
@@ -203,4 +205,59 @@ void grab() {
     assert(c.accept("euler-nwu-v1 20.2 0 0 -20",20.2));    // straight ahead now shows what was at 30° left
     same(tracking::matrix(c.view),view(0,0,0));
     std::cout<<"Grab: the view holds through a yaw sweep across the wrap, release keeps the new heading passed\n";
+}
+
+// Stabilization above 1x: a hold zone that keeps small movements from moving anything while a
+// deliberate turn is still followed exactly. Yaw is fed at 240 Hz with 0.01 degree of sensor noise.
+struct Run { double moved=0, last=0, headSpeed=0; };
+Run steer(tracking::Camera& c, double t0, double seconds, double (*yawOf)(double), double measureFrom=0) {
+    Run r; double prev=0; bool first=true;
+    for(int i=0;i<int(seconds*240);++i){
+        const double t=t0+i/240.0, noise=0.01*std::sin(i*12.9898);
+        assert(c.accept("euler-nwu-v1 "+std::to_string(t)+" 0 0 "+std::to_string(yawOf(t-t0)+noise),t+0.0005));
+        if(t-t0>=measureFrom){ if(!first) r.moved+=std::abs(c.yaw-prev); first=false; r.headSpeed=std::max(r.headSpeed,c.headSpeed()); }
+        prev=c.yaw;
+    }
+    r.last=c.yaw; return r;
+}
+tracking::Camera steady(double strength) { tracking::Camera c; c.strength=strength; return c; }
+void stabilization() {
+    constexpr double pi=3.14159265358979323846;
+    assert(tracking::parseStabilization("stabilization-v1 2.5")==2.5 && tracking::parseStabilization("stabilization-v1 1")==1);
+    for(const char* bad:{"","stabilization-v1","stabilization-v1 0.5","stabilization-v1 4.5","stabilization-v1 nan",
+                         "stabilization-v1 2 junk","stabilization-v2 2","tracking-v2 12 3 30 6 0.5 0.1"})
+        assert(!tracking::parseStabilization(bad));
+    // Breathing sway (0.3 degree at 0.25 Hz) plus a 9 Hz tremor: 1x lets it through, 3x and 4x hold the
+    // image still and the dwell sees a settled head.
+    auto sway=[](double t){ return 0.3*std::sin(2*pi*0.25*t)+0.15*std::sin(2*pi*9*t); };
+    auto base=steady(1), firm=steady(3), firmest=steady(4);
+    assert(steer(base,0,4,sway,1).moved>0.5);
+    assert(steer(firm,0,4,sway,1).moved<0.01);
+    const Run held=steer(firmest,0,4,sway,1);
+    assert(held.moved<0.01 && held.headSpeed<0.5);
+    // A slow half-degree drift at 1 deg/s: held at 4x, half of it shows at 2x.
+    auto drift=[](double t){ return t<1 ? 0.0 : std::min(0.5,t-1); };
+    auto gentle=steady(2), still=steady(4);
+    const double shown2=steer(gentle,10,3,drift).last, shown4=steer(still,10,3,drift).last;
+    assert(shown2>0.15 && shown2<0.35 && std::abs(shown4)<0.02);
+    // A deliberate 30 degree turn is followed and ends exactly where the head stops ...
+    auto turn=[](double t){ const double x=std::clamp((t-1)/0.5,0.0,1.0); return 30*x*x*(3-2*x); };
+    auto turning=steady(4);
+    assert(std::abs(steer(turning,20,3,turn).last-30)<0.02);
+    // ... and the zone re-centres there: a further 0.3 degree nudge in the turn's direction moves nothing.
+    assert(steer(turning,23,2,[](double t){ return 30+0.3*std::clamp(t/0.3,0.0,1.0); }).moved<0.01);
+    // A slow 3 deg/s, 10 degree turn is followed too; the filter's settling tail stays inside the zone,
+    // so the image stops when the head does.
+    auto slow=steady(4);
+    const double reached=steer(slow,30,6,[](double t){ return t<1 ? 0.0 : std::min(10.0,3*(t-1)); }).last;
+    assert(reached>9.25 && reached<=10.01);
+    assert(steer(slow,36,2,[](double){ return 10.0; }).moved<0.01);
+    // Lowering the level live drops the zone at once: the image returns to the filtered head pose.
+    auto live=steady(4);
+    steer(live,40,2,[](double t){ return t<1 ? 0.0 : 0.5; });
+    assert(std::abs(live.yaw)<0.02);
+    live.strength=1;
+    steer(live,42,0.1,[](double){ return 0.5; });
+    assert(std::abs(live.yaw-0.5)<0.02);
+    std::cout<<"Stabilization: sway, tremor and slow drift held; turns followed exactly; zone re-centres; live level change passed\n";
 }
