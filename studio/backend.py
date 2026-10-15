@@ -788,8 +788,8 @@ class Manager:
         index = 0
         for client in clients:
             if client.get("workspace",{}).get("id") not in workspace_ids: continue
-            # Studio, the recording window and the XR search prompt belong to the computer display.
-            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") in (os.getpid(), os.getppid())
+            # The recording window and the XR search prompt belong to the computer display; Studio comes along.
+            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") == os.getpid()
                     or str(client.get("title", "")).startswith("Omarchy XR")): continue
             address = client.get("address", "")
             if not re.fullmatch(r"0x[0-9a-fA-F]+", address): continue

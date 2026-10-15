@@ -364,7 +364,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(manager.canvas.load(), DEFAULTS)
             manager.canvas.publish()
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
-            self.assertEqual(lines, [GOLDEN, f"exclude {os.getpid()}", f"exclude {os.getppid()}"])
+            self.assertEqual(lines, [GOLDEN, f"exclude {os.getpid()}"])   # Studio's own window is adopted
             saved = manager.canvas.save({"refresh": 120, "outputScale": 1.25, "exclude": ["firefox"], "radius": 3})
             self.assertEqual(manager.canvas.load(), saved)
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
@@ -495,10 +495,10 @@ class CanvasTests(unittest.TestCase):
             self.xr_monitors(fake, manager)
             manager.set_bring_windows(False)
             manager.bring_windows_into_xr(["DP-1"])
-            # Spread over the virtual monitors' visible workspaces; the laptop, Studio, the recording window
-            # and special workspaces stay where they are.
+            # Spread over the virtual monitors' visible workspaces, Studio's window too; the laptop, the
+            # recording window and special workspaces stay where they are.
             self.assertEqual({c["address"]: c["workspace"]["id"] for c in fake.clients},
-                             {"0xa1": 1, "0xb2": 10, "0xc3": 11, "0xd4": 7, "0xe5": -98, "0xf6": 7})
+                             {"0xa1": 1, "0xb2": 10, "0xc3": 11, "0xd4": 7, "0xe5": -98, "0xf6": 12})
             manager.set_bring_windows(True)
             self.assertTrue(json.loads(manager.presentation_profile.read_text())["bringWindows"])
             fake.window("0xb2")["workspace"] = {"id": 7, "name": "7"}
@@ -549,7 +549,7 @@ class CanvasTests(unittest.TestCase):
             self.xr_monitors(fake, manager)
             manager.set_bring_windows(False)
             manager.start_dedicated()
-            self.assertEqual(order, ["move", "move", ("stereo", ("DP-1",))])
+            self.assertEqual(order, ["move", "move", "move", ("stereo", ("DP-1",))])
         finally: self.close(manager)
 
     def mono_manager(self, fake, refresh_hz):
@@ -742,9 +742,9 @@ class CanvasTests(unittest.TestCase):
             manager.bring_windows_into_xr(["DP-1"])
             self.assertEqual({c["address"]: c["workspace"]["name"] for c in fake.clients},
                              {"0xa1": "1", "0xb2": "omxr-park", "0xc3": "omxr-park", "0xd4": "7", "0xe5": "special:scratch",
-                              "0xf6": "7"})
+                              "0xf6": "omxr-park"})   # Studio's window comes along so it stays reachable in XR
             # Journaled like the start migration, so Stop returns them to the glasses' workspace.
-            self.assertEqual(sorted(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xb2", "0xc3"])
+            self.assertEqual(sorted(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xb2", "0xc3", "0xf6"])
             manager.canvas.save({"adoptPolicy": "all"})
             manager.bring_windows_into_xr(["DP-1"])
             self.assertEqual(fake.window("0xa1")["workspace"]["name"], "omxr-park")

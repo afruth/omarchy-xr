@@ -162,7 +162,9 @@ named `OMXR-…` outputs. It will not remove unrelated monitors.
 
 Layout coordinates map to the panel plane and to the relative arrangement of
 Hyprland outputs. The output group is offset to the right of existing displays so
-it does not overlap your physical desktop. Studio stays on your physical desktop; dedicated XR reserves the VITURE output.
+it does not overlap your physical desktop. Studio is an ordinary window: it goes into XR with your other windows
+(the window canvas adopts it; virtual monitors take it when it was on the glasses or with **Bring existing
+windows** on), so it stays reachable with the laptop display off. Dedicated XR reserves the VITURE output.
 Only app-owned virtual monitors are captured, avoiding capture of the viewer itself.
 
 Save writes a layout without applying it. Apply also saves. State, the renderer

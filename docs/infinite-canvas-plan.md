@@ -95,7 +95,7 @@ Phantomat (`kaolti/phantomat`, BSD-3-Clause, fork of `hyprland-scroll-overview`)
 
 Alternative considered: `ext_foreign_toplevel_list_v1` + `hyprland_toplevel_mapping_manager_v1` in the renderer **[verified: advertised]**. Not chosen: the Lua side is needed anyway for staging, focus and rules, and `focus_history_id`/`at`/workspace exist only in Hyprland's own API.
 
-**Exclusions** (never adopted): class `omarchy-xr-spectator`, the renderer's own SDL window (title prefix `Omarchy XR`), the search prompt `omarchy-xr-search`, the Studio panel and Quickshell services (matched by pid published by the backend in `canvas.tsv`), anything with a helper `xdg_tag`, `special:` workspaces.
+**Exclusions** (never adopted): class `omarchy-xr-spectator`, the renderer's own SDL window (title prefix `Omarchy XR`), the search prompt `omarchy-xr-search`, Studio's backend (matched by pid published by the backend in `canvas.tsv`; Studio's own window is adopted like any other, so it stays reachable with the laptop display off), anything with a helper `xdg_tag`, `special:` workspaces.
 
 ### 3.2 Per-window capture protocol
 
