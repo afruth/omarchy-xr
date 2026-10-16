@@ -414,7 +414,7 @@ local function isRegular(w)
     if not w.mapped or (w.workspace and w.workspace.special) or EXCLUDED_CLASSES[w.class or ""] then return false end
     return not tostring(w.title or ""):find("^Omarchy XR") and w.xdg_tag==nil
 end
--- canvas.tsv `exclude <class|pid>` rows (the user's exclusions and Studio itself): never adopted.
+-- canvas.tsv `exclude <class|pid>` rows (the user's exclusions and Studio's backend): never adopted.
 local function isExcluded(w)
     return canvasExcludes[tostring(w.class or "")] or canvasExcludes[tostring(math.floor(w.pid or -1))] or false
 end

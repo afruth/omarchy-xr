@@ -564,6 +564,19 @@ and `0` for the cutoff disables the filter. Removing the file restores the defau
 line is ignored with a message in `viewer.log`. `pose.sock.stats` reports the live `filterCutoffHz`
 and `motionCoherence`.
 
+Studio's Stabilization slider (1× to 4× in half steps) writes `stabilization.tsv` beside it,
+`stabilization-v1 <strength 1..4>`, read on the same 250 ms check. 1× is the filter above,
+unchanged. Each step above adds 0.25° of hold zone after the filter: the shown pose stays put while
+the filtered head stays within the zone's radius of it and is dragged along at that distance beyond
+it, so sways, typing and breathing move nothing. A deliberate movement shrinks the radius while it
+drags, at most half again the head's speed, so a turn ends up tracked exactly. A movement counts as
+deliberate when it is coherent and past the rest speed, or accelerating past 50 deg/s² per level,
+or when it keeps pulling at the zone's edge for 0.3 s (a slow turn is too noisy to score as
+coherent). Once the 1 Hz head speed drops below the rest speed, the radius grows back over 0.4 s
+around where the head stopped. That re-centres the zone and absorbs the filter's settling tail, so
+the image stops when the head does. The dwell watches the shown pose, so a held sway counts as a
+settled head. `pose.sock.stats` reports `stabilization`.
+
 Each missed vblank adds 1 ms of latch margin (`MissPenalty`, at most 6 ms, draining at 1 ms per
 20 s), so the pose stays on the late latch and the margin converges. The pose is sampled at the
 start of the frame when there is no direct output, or when the lease has not reported a vblank

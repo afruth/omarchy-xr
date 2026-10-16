@@ -133,6 +133,7 @@ Item {
     property bool laptopOffEnabled: false
     property bool bringWindowsEnabled: true
     property bool batterySaverEnabled: false
+    property real stabilization: 1
     property var laptopDisplay: ({available:false,off:false,error:""})
     property bool spectatorEnabled: false
     property string spectatorSkipped: ""
@@ -280,6 +281,7 @@ Item {
             requestId: requestId,
             action: action === "check" ? "status" : action,
             textSize: enabled,
+            stabilization: enabled,
             environment: environmentSettings,
             imagePath: imagePath,
             imageResolution: imageResolution,
@@ -485,6 +487,8 @@ Item {
                         if (!JsonEqual.same(root.performance, response.performance))
                             root.performance = response.performance;
                     }
+                    // The laptop display may just have come back on: say why XR closed.
+                    if (response.viewerExit && response.viewerExit !== root.viewerExit) root.notify(response.viewerExit, true);
                     root.viewerExit = response.viewerExit || "";
                     root.controlsHint = response.controlsHint || "";
                     if (root.performance.geometryDistance > 0) root.geometryDistance=root.performance.geometryDistance;
@@ -493,6 +497,7 @@ Item {
                     root.laptopOffEnabled = !!response.laptopOffEnabled;
                     root.bringWindowsEnabled = response.bringWindowsEnabled !== false;
                     root.batterySaverEnabled = !!response.batterySaverEnabled;
+                    if (response.stabilization) root.stabilization = response.stabilization;
                     if (response.laptopDisplay && !JsonEqual.same(root.laptopDisplay, response.laptopDisplay))
                         root.laptopDisplay = response.laptopDisplay;
                     if (replyAction !== "status" || !response.ok)
@@ -566,7 +571,8 @@ Item {
         onTriggered: if (!root.busy && !root.feedbackError) root.feedback = "";
     }
     Timer {
-        interval: root.opened ? 3000 : 10000
+        // A glasses session polls quickly even with Studio closed: an unplug is noticed here.
+        interval: root.opened || root.directOutput ? 3000 : 10000
         repeat: true
         running: root.loaded && (root.opened || root.viewing)
         onTriggered: if (!root.busy) root.send("status")
@@ -1319,6 +1325,44 @@ Item {
                                     Layout.fillWidth: true
                                     visible: root.batterySaverEnabled && !!root.performance.power
                                     text: root.performance.power && root.performance.power.active ? "Active: on battery, captures at most 30 fps" : "Waiting: on external power"
+                                }
+                            }
+                            Disclosure {
+                                title: "Stabilization"
+                                helpText: "Keep the image still through small head movements"
+                                Label {
+                                    text: "Stabilization · " + (1 + stabilizationSlider.liveValue / 2) + "×"
+                                    helpText: "1× follows every head movement. Each step up ignores a little more: at 4× movements under 0.75° move nothing, while a deliberate turn still follows at once. Applies live"
+                                }
+                                Ui.PanelSlider {
+                                    id: stabilizationSlider
+                                    bar: sliderPalette
+                                    Layout.fillWidth: true
+                                    minimum: 0; maximum: 6; step: 1; integer: true; tickCount: 7
+                                    value: (root.stabilization - 1) * 2
+                                    enabled: root.loaded && !root.busy
+                                    opacity: enabled ? 1 : .4
+                                    trackColor: Qt.alpha(Color.foreground, .2)
+                                    activeFocusOnTab: true
+                                    Accessible.role: Accessible.Slider
+                                    Accessible.name: "Stabilization"
+                                    Accessible.description: (1 + liveValue / 2) + " times"
+                                    Keys.onLeftPressed: if (enabled && value > 0) root.send("set_stabilization", root.stabilization - .5)
+                                    Keys.onRightPressed: if (enabled && value < 6) root.send("set_stabilization", root.stabilization + .5)
+                                    onReleased: function(value) { if (value !== stabilizationSlider.value) root.send("set_stabilization", 1 + value / 2); }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: -3
+                                        color: "transparent"
+                                        border.width: parent.activeFocus ? 1 : 0
+                                        border.color: Color.accent
+                                        radius: Style.cornerRadius
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: root.stabilization === 1 ? "Base: the image follows every head movement" : "Head movements under " + ((root.stabilization - 1) / 4) + "° keep the image still"
                                 }
                             }
                             Disclosure {

@@ -20,7 +20,7 @@ from typing import Any
 from laptop_display import LaptopDisplay, internal
 from workspace_presets import built_in_setups
 from environment import Environment
-from glasses import Recovery, detect, edid_offers
+from glasses import Recovery, connector_state, detect, edid_offers
 from sdk import SDK
 from dedicated import Dedicated, HELPER, helper_current
 from install_runtime import installed_outdated
@@ -40,8 +40,13 @@ CAMERA_ACTIONS = ("recenter", "fit", "fit_target", "zoom_in", "zoom_out", "comfo
 # timing the glasses offer). Mono drops depth for 120 Hz, which halves the smear of head-locked text: the 2D
 # EDID already offers 1920x1080@120 and the glasses follow the host timing, so mono needs no SDK mode change,
 # only the handoff and a renderer that drives the fastest 1920x1080 mode (an SDK 0x34 request while the host
-# still drove 60 Hz left the glasses at 0x31 and the link down). Both restore through the same path.
+# still drove 60 Hz left the glasses at 0x31 and the link down). The renderer's own 120 Hz does not prove the
+# glasses show it: they can stay dark at 0x31 while it presents, so mono also needs the 0x34 readback. Both
+# restore through the same path.
 GLASSES_MODES = ("stereo", "mono")
+# Head-tracking stabilization levels: 1 is the tuned base; each step above widens the renderer's hold zone
+# (tracking::Camera::holdDegrees), so small head movements stop moving the image while turns still follow.
+STABILIZATION_LEVELS = (1, 1.5, 2, 2.5, 3, 3.5, 4)
 # Window canvas verbs (plan §5.8); the renderer reads each name as a pose-socket datagram.
 CANVAS_ACTIONS = ("overview", "search", "fill", "arrange", "undo", "redo", "pin", "help")
 
@@ -224,6 +229,7 @@ class Manager:
         self.presentation_profile = self.directory / "presentation.json"
         self.load_presentation()
         self.write_power()
+        self.write_stabilization()
         self.environment = Environment(self.directory)
         self.graphics_limits = None
         self.profile = self.directory / "layout.json"
@@ -269,6 +275,8 @@ class Manager:
         self.bring_windows_enabled = presentation.get("bringWindows", True) is not False
         self.glasses_mode = "mono" if presentation.get("glassesMode") == "mono" else "stereo"
         self.battery_saver_enabled = presentation.get("batterySaver", False) is True
+        stabilization = presentation.get("stabilization", 1)
+        self.stabilization = stabilization if stabilization in STABILIZATION_LEVELS and type(stabilization) is not bool else 1
         self.render_mode = "canvas" if presentation.get("renderMode") == "canvas" else "monitors"
 
     def recover_journal(self):
@@ -780,8 +788,8 @@ class Manager:
         index = 0
         for client in clients:
             if client.get("workspace",{}).get("id") not in workspace_ids: continue
-            # Studio, the recording window and the XR search prompt belong to the computer display.
-            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") in (os.getpid(), os.getppid())
+            # The recording window and the XR search prompt belong to the computer display; Studio comes along.
+            if (client.get("class") in EXCLUDED_CLASSES or client.get("pid") == os.getpid()
                     or str(client.get("title", "")).startswith("Omarchy XR")): continue
             address = client.get("address", "")
             if not re.fullmatch(r"0x[0-9a-fA-F]+", address): continue
@@ -951,7 +959,9 @@ class Manager:
             stage = "opening the XR view"
             self.start(present=True, direct=True)
             stage = "checking the glasses video mode"
-            if mono: self.wait_for_viewer_refresh(119)
+            if mono:
+                self.wait_for_viewer_refresh(119)
+                self.verify_mono_video()
             else: self.sdk.verify_stereo()
             self.display_event("stereo-running")
             if self.laptop_off_enabled:
@@ -975,6 +985,13 @@ class Manager:
                 return
             time.sleep(.1)
         raise RuntimeError("The glasses did not switch to stereo video. Reconnect them, then try again.")
+
+    def verify_mono_video(self):
+        try:
+            self.sdk.verify_mono()
+        except RuntimeError as exc:
+            raise RuntimeError("The glasses did not take the 120 Hz picture (" + str(exc) + "). "
+                               "Unplug and reconnect them, then try again.") from exc
 
     def wait_for_viewer_refresh(self, minimum):
         """The renderer's own report of the leased refresh rate (pose.sock.stats), for mono 120 Hz."""
@@ -1026,7 +1043,8 @@ class Manager:
     def save_presentation(self):
         atomic_json(self.presentation_profile, {"spectator":self.spectator_enabled,"laptopOff":self.laptop_off_enabled,
                                                 "renderMode":self.render_mode,"batterySaver":self.battery_saver_enabled,
-                                                "bringWindows":self.bring_windows_enabled,"glassesMode":self.glasses_mode})
+                                                "bringWindows":self.bring_windows_enabled,"glassesMode":self.glasses_mode,
+                                                "stabilization":self.stabilization})
 
     def set_glasses_mode(self, mode):
         if mode not in GLASSES_MODES: raise ValueError("Choose 3D stereo or mono 120 Hz")
@@ -1041,6 +1059,17 @@ class Manager:
     def write_power(self):
         # The renderer re-reads power.tsv every 2 s, so a change reaches a running XR view.
         atomic_write(self.directory / "power.tsv", f"power-v1 {1 if self.battery_saver_enabled else 0}\n")
+
+    def write_stabilization(self):
+        # The renderer re-reads stabilization.tsv every 250 ms, so a change reaches a running XR view.
+        atomic_write(self.directory / "stabilization.tsv", f"stabilization-v1 {self.stabilization:g}\n")
+
+    def set_stabilization(self, level):
+        if type(level) not in (int, float) or level not in STABILIZATION_LEVELS:
+            raise ValueError("Choose a stabilization level from 1× to 4× in half steps")
+        self.stabilization = level
+        self.write_stabilization()
+        self.save_presentation()
 
     def set_battery_saver(self, enabled):
         if type(enabled) is not bool: raise ValueError("Battery saver setting must be on or off")
@@ -1241,6 +1270,31 @@ class Manager:
         except Exception as exc:
             self.restoration_error = str(exc)
 
+    def glasses_unplugged(self):
+        """A glasses session whose glasses are gone: no VITURE on USB, or its leased video port disconnected."""
+        if not self.direct or not self.viewer or self.viewer.poll() is not None:
+            return False
+        if not self.sdk.devices():
+            return True
+        output = self.dedicated.output
+        return bool(output) and connector_state(output) == "disconnected"
+
+    def note_unplugged_glasses(self):
+        # The renderer keeps presenting into a leased port with nothing on it, so without this check an
+        # unplugged session (laptop display off, windows parked in XR) stays up until the user finds Stop.
+        if not self.glasses_unplugged():
+            return
+        time.sleep(1)  # a brief USB or link renegotiation is not an unplug
+        if not self.glasses_unplugged():
+            return
+        self.append_backend_log("Glasses disconnected during the XR session; stopping it")
+        self.display_event("glasses-disconnected")
+        self.viewer_exit = "The glasses were disconnected, so XR stopped and your windows returned to this computer."
+        try:
+            self.stop_viewer()
+        except Exception as exc:
+            self.restoration_error = str(exc)
+
     def glasses_status(self, monitors):
         try:
             glasses = detect(monitors if monitors is not None else [])
@@ -1279,6 +1333,7 @@ class Manager:
             monitors = None
         self.reconcile_status(monitors)
         self.note_exited_viewer()
+        self.note_unplugged_glasses()
         glasses = self.glasses_status(monitors)
         performance = self.performance_sample()
         laptop_status = self.laptop.status()
@@ -1286,7 +1341,7 @@ class Manager:
             laptop_status["available"] = bool(internal(monitors or [])) or laptop_status["off"]
         except Exception:
             laptop_status["available"] = laptop_status["off"]
-        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "glassesMode": self.glasses_mode, "batterySaverEnabled": self.battery_saver_enabled, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
+        return {"laptopOffEnabled": self.laptop_off_enabled, "bringWindowsEnabled": self.bring_windows_enabled, "glassesMode": self.glasses_mode, "batterySaverEnabled": self.battery_saver_enabled, "stabilization": self.stabilization, "laptopDisplay": laptop_status, "spectatorEnabled": self.spectator_enabled,
                 "spectatorSkipped": self.spectator_skipped, "performance": performance, "active": len(self.owned), "viewing": self.viewer is not None and self.viewer.poll() is None,
                 "direct": self.direct, "stereo": self.stereo_active, "viewerExit": self.viewer_exit, "controlsHint": self.controls_hint(),
                 "renderMode": self.render_mode, "canvasActive": self.canvas.active, "controlsVersion": self.controls_version(),
@@ -1512,6 +1567,14 @@ def action_glasses_mode(manager, request):
     return {"message": message}
 
 
+def action_stabilization(manager, request):
+    manager.set_stabilization(request.get("stabilization"))
+    level = manager.stabilization
+    message = ("Stabilization 1×: the image follows every head movement." if level == 1 else
+               f"Stabilization {level:g}×: head movements under {0.25 * (level - 1):g}° no longer move the image.")
+    return {"message": message}
+
+
 def action_battery_saver(manager, request):
     manager.set_battery_saver(request.get("enabled"))
     message = ("Battery saver on: on battery, XR captures at most 30 fps." if manager.battery_saver_enabled
@@ -1608,6 +1671,7 @@ def perform(manager, request):
         "present": action_present,
         "set_laptop_off": action_laptop_off,
         "set_battery_saver": action_battery_saver,
+        "set_stabilization": action_stabilization,
         "set_bring_windows": action_bring_windows,
         "set_glasses_mode": action_glasses_mode,
         "restore_laptop": action_restore_laptop,

@@ -109,6 +109,10 @@ class SDK:
     def verify_stereo(self):
         self.display_command("verify_stereo")
 
+    def verify_mono(self):
+        """Mono changes no SDK mode, but the glasses' readback shows whether they took the host's 120 Hz timing."""
+        self.display_command("verify_mono")
+
     def display_command(self, command):
         deadline = time.monotonic() + 20
         while self.pending and time.monotonic() < deadline:

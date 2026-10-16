@@ -364,7 +364,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(manager.canvas.load(), DEFAULTS)
             manager.canvas.publish()
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
-            self.assertEqual(lines, [GOLDEN, f"exclude {os.getpid()}", f"exclude {os.getppid()}"])
+            self.assertEqual(lines, [GOLDEN, f"exclude {os.getpid()}"])   # Studio's own window is adopted
             saved = manager.canvas.save({"refresh": 120, "outputScale": 1.25, "exclude": ["firefox"], "radius": 3})
             self.assertEqual(manager.canvas.load(), saved)
             lines = (manager.directory / "canvas.tsv").read_text().splitlines()
@@ -495,10 +495,10 @@ class CanvasTests(unittest.TestCase):
             self.xr_monitors(fake, manager)
             manager.set_bring_windows(False)
             manager.bring_windows_into_xr(["DP-1"])
-            # Spread over the virtual monitors' visible workspaces; the laptop, Studio, the recording window
-            # and special workspaces stay where they are.
+            # Spread over the virtual monitors' visible workspaces, Studio's window too; the laptop, the
+            # recording window and special workspaces stay where they are.
             self.assertEqual({c["address"]: c["workspace"]["id"] for c in fake.clients},
-                             {"0xa1": 1, "0xb2": 10, "0xc3": 11, "0xd4": 7, "0xe5": -98, "0xf6": 7})
+                             {"0xa1": 1, "0xb2": 10, "0xc3": 11, "0xd4": 7, "0xe5": -98, "0xf6": 12})
             manager.set_bring_windows(True)
             self.assertTrue(json.loads(manager.presentation_profile.read_text())["bringWindows"])
             fake.window("0xb2")["workspace"] = {"id": 7, "name": "7"}
@@ -518,6 +518,25 @@ class CanvasTests(unittest.TestCase):
         try: self.assertFalse(manager.status()["bringWindowsEnabled"])
         finally: manager.lock.close()
 
+    def test_stabilization_level_is_written_for_the_renderer_and_remembered(self):
+        manager = self.manager(CanvasHypr())
+        tsv = manager.directory / "stabilization.tsv"
+        try:
+            self.assertEqual(tsv.read_text(), "stabilization-v1 1\n")   # the base, written for a fresh install
+            self.assertEqual(manager.status()["stabilization"], 1)
+            response = perform(manager, {"action": "set_stabilization", "stabilization": 2.5})
+            self.assertIn("under 0.375°", response["message"])
+            self.assertEqual(tsv.read_text(), "stabilization-v1 2.5\n")
+            for bad in (5, 0.5, 1.25, True, "2", None):
+                with self.assertRaisesRegex(ValueError, "1× to 4×"): manager.set_stabilization(bad)
+            self.assertEqual(manager.stabilization, 2.5)
+        finally: manager.lock.close()
+        manager = self.manager(CanvasHypr())
+        try:
+            self.assertEqual(manager.status()["stabilization"], 2.5)
+            self.assertEqual(tsv.read_text(), "stabilization-v1 2.5\n")
+        finally: manager.lock.close()
+
     def test_stereo_start_moves_glasses_windows_before_switching_the_glasses(self):
         fake = CanvasHypr()
         self.glasses(fake)
@@ -530,7 +549,7 @@ class CanvasTests(unittest.TestCase):
             self.xr_monitors(fake, manager)
             manager.set_bring_windows(False)
             manager.start_dedicated()
-            self.assertEqual(order, ["move", "move", ("stereo", ("DP-1",))])
+            self.assertEqual(order, ["move", "move", "move", ("stereo", ("DP-1",))])
         finally: self.close(manager)
 
     def mono_manager(self, fake, refresh_hz):
@@ -560,6 +579,7 @@ class CanvasTests(unittest.TestCase):
                 manager.start_dedicated()
             offers.assert_called_with("DP-1", 1920, 1080, 119)
             manager.sdk.stereo.assert_not_called(); manager.sdk.verify_stereo.assert_not_called()
+            manager.sdk.verify_mono.assert_called_once()   # the glasses' own readback, not just the renderer's
             manager.dedicated.start.assert_called_once_with("DP-1")
             self.assertEqual(launched, [["--direct", "DP-1"]])
             self.assertTrue(manager.stereo_active)    # restored through the shared path at Stop
@@ -600,6 +620,73 @@ class CanvasTests(unittest.TestCase):
         finally:
             manager.viewer = None; manager.stereo_active = False
             self.close(manager)
+
+    def test_mono_rolls_back_when_the_glasses_stay_dark_at_120_hz(self):
+        # The renderer presented 120 Hz into DP-1 while the glasses stayed black at 0x31 and the laptop went off.
+        fake = CanvasHypr()
+        self.glasses(fake)
+        manager, _ = self.mono_manager(fake, 120)
+        manager.sdk.verify_mono.side_effect = RuntimeError("Display mode readback mismatch: expected 0x34, got 49")
+        manager.laptop_off_enabled = True
+        manager.disable_laptop_display = Mock()
+        try:
+            self.xr_monitors(fake, manager)
+            manager.set_glasses_mode("mono")
+            with patch("backend.edid_offers", return_value=True), \
+                    self.assertRaisesRegex(RuntimeError, "did not take the 120 Hz picture.*expected 0x34, got 49"):
+                manager.start_dedicated()
+            manager.stop_viewer.assert_called()       # rolled back
+            manager.disable_laptop_display.assert_not_called()
+            events = [json.loads(line)["stage"] for line in (manager.directory / "display-events.jsonl").read_text().splitlines()]
+            self.assertNotIn("stereo-running", events)
+        finally:
+            manager.viewer = None; manager.stereo_active = False
+            self.close(manager)
+
+    def unplug_manager(self, devices, port="connected"):
+        """A running glasses session whose USB scan returns each of devices in turn and whose port reads port."""
+        manager = self.manager(CanvasHypr())
+        manager.sdk = Mock(); manager.sdk.devices.side_effect = devices
+        manager.dedicated = Mock(); manager.dedicated.output = "DP-1"
+        manager.direct = True
+        manager.viewer = Mock(); manager.viewer.poll.return_value = None
+        manager.stop_viewer = Mock()
+        return manager, patch("backend.connector_state", return_value=port), patch("backend.time.sleep")
+
+    def test_a_glasses_session_stops_when_the_glasses_are_unplugged(self):
+        manager, port, sleep = self.unplug_manager([[], []])
+        try:
+            with port, sleep:
+                manager.note_unplugged_glasses()
+            manager.stop_viewer.assert_called_once_with()
+            self.assertIn("glasses were disconnected", manager.viewer_exit)
+            events = [json.loads(line)["stage"] for line in (manager.directory / "display-events.jsonl").read_text().splitlines()]
+            self.assertEqual(events, ["glasses-disconnected"])
+        finally:
+            manager.viewer = None; self.close(manager)
+
+    def test_a_glasses_session_stops_when_its_video_port_disconnects(self):
+        manager, port, sleep = self.unplug_manager([[0x1301], [0x1301]], port="disconnected")
+        try:
+            with port as state, sleep:
+                manager.note_unplugged_glasses()
+            state.assert_called_with("DP-1")
+            manager.stop_viewer.assert_called_once_with()
+        finally:
+            manager.viewer = None; self.close(manager)
+
+    def test_a_brief_usb_drop_or_an_ordinary_preview_keeps_the_session(self):
+        manager, port, sleep = self.unplug_manager([[], [0x1301]])
+        try:
+            with port, sleep:
+                manager.note_unplugged_glasses()       # the glasses came back within the re-check
+                manager.direct = False
+                manager.sdk.devices.side_effect = None; manager.sdk.devices.return_value = []
+                manager.note_unplugged_glasses()       # a desktop preview does not need the glasses
+            manager.stop_viewer.assert_not_called()
+            self.assertEqual(manager.viewer_exit, "")
+        finally:
+            manager.viewer = None; self.close(manager)
 
     def test_mono_stops_cleanly_after_the_glasses_disconnected(self):
         # The glasses dropped off USB and video mid-session: no SDK to talk to and no DP-1 output.
@@ -655,9 +742,9 @@ class CanvasTests(unittest.TestCase):
             manager.bring_windows_into_xr(["DP-1"])
             self.assertEqual({c["address"]: c["workspace"]["name"] for c in fake.clients},
                              {"0xa1": "1", "0xb2": "omxr-park", "0xc3": "omxr-park", "0xd4": "7", "0xe5": "special:scratch",
-                              "0xf6": "7"})
+                              "0xf6": "omxr-park"})   # Studio's window comes along so it stays reachable in XR
             # Journaled like the start migration, so Stop returns them to the glasses' workspace.
-            self.assertEqual(sorted(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xb2", "0xc3"])
+            self.assertEqual(sorted(json.loads(manager.canvas.journal.read_text())["windows"]), ["0xb2", "0xc3", "0xf6"])
             manager.canvas.save({"adoptPolicy": "all"})
             manager.bring_windows_into_xr(["DP-1"])
             self.assertEqual(fake.window("0xa1")["workspace"]["name"], "omxr-park")

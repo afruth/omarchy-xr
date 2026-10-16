@@ -138,8 +138,9 @@ class CanvasSession:
     def publish(self, settings=None):
         s = settings or self.settings()
         header = " ".join(format(s[key], "g") for key in TSV_FIELDS)
-        # Studio's backend and its Quickshell parent are never adopted.
-        rows = [*s["exclude"], str(os.getpid()), str(os.getppid())]
+        # Studio's backend is never adopted. Studio itself is an ordinary window of its Quickshell parent and
+        # is adopted like any other, so it stays reachable in XR with the laptop display off.
+        rows = [*s["exclude"], str(os.getpid())]
         # Field 9 was the optional window-key takeover; controls v7 bind the XR key layer instead and take
         # nothing over, so it is always 0 (kept so older readers still find field 10). takeoverKeys stays in
         # the profile only so older profiles load.
@@ -230,7 +231,7 @@ class CanvasSession:
                 and workspace.get("name") not in (CANVAS_WORKSPACE, PARK_WORKSPACE)
                 and isinstance(client.get("address"), str) and bool(ADDRESS.fullmatch(client["address"]))
                 and client.get("class") not in EXCLUDED_CLASSES
-                and client.get("pid") not in (os.getpid(), os.getppid())
+                and client.get("pid") != os.getpid()
                 and not str(client.get("title", "")).startswith("Omarchy XR")
                 and _pair(client.get("size")) and _pair(client.get("at")))
 

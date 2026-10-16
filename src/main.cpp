@@ -209,9 +209,9 @@ struct View {
     GpuTimers gpuTimers;
     MissPenalty missPenalty;
     idle::Gate idleGate;
-    std::filesystem::file_time_type layoutVersion{}, trackingVersion{}, gazeVersion{};
-    bool trackingLoaded=false, gazeLoaded=false;
-    std::string trackingPath, gazePath, powerPath;
+    std::filesystem::file_time_type layoutVersion{}, trackingVersion{}, gazeVersion{}, stabilizationVersion{};
+    bool trackingLoaded=false, gazeLoaded=false, stabilizationLoaded=false;
+    std::string trackingPath, gazePath, powerPath, stabilizationPath;
     double nextGazeCheck=0, nextPowerCheck=0;
     power::Saver power;
     std::filesystem::file_time_type powerVersion{};
@@ -852,6 +852,24 @@ struct View {
     void reloadTracking(double now) {
         if (trackingPath.empty() || now<nextTrackingCheck) return;
         nextTrackingCheck=now+.25;
+        reloadPrediction();
+        reloadStabilization();
+    }
+    // Studio's stabilization level (stabilization.tsv); the hold zone it sets is in tracking::Camera.
+    void reloadStabilization() {
+        std::error_code missing;
+        const auto version=std::filesystem::last_write_time(stabilizationPath, missing);
+        if (missing) { if (stabilizationLoaded) { tracking.camera.strength=1; stabilizationLoaded=false; describeStabilization("defaults"); } return; }
+        if (stabilizationLoaded && version==stabilizationVersion) return;
+        stabilizationLoaded=true; stabilizationVersion=version;
+        std::ifstream file(stabilizationPath); std::string line; std::getline(file, line);
+        if (const auto parsed=tracking::parseStabilization(line)) { tracking.camera.strength=*parsed; describeStabilization("stabilization.tsv"); }
+        else std::cerr << "Ignoring invalid stabilization.tsv; expected: stabilization-v1 <strength 1..4>" << std::endl;
+    }
+    void describeStabilization(const char* source) const {
+        std::cout << "Stabilization: " << tracking.camera.strength << "x, hold zone " << tracking.camera.holdDegrees() << " deg (" << source << ")" << std::endl;
+    }
+    void reloadPrediction() {
         std::error_code missing;
         const auto version=std::filesystem::last_write_time(trackingPath, missing);
         if (missing) { if (trackingLoaded) { tracking.camera.prediction={}; trackingLoaded=false; describePrediction("defaults"); } return; }
@@ -2062,7 +2080,7 @@ struct View {
             << ",\"geometryDistance\":" << distance
             << ",\"zoomDepth\":" << statsZoomDepth() << ",\"maxZoomDepth\":" << statsMaxZoomDepth() << ",\"panX\":" << focusX << ",\"panY\":" << focusY
             << ",\"spectator\":" << (spectator?"true":"false") << ",\"spectatorFrames\":" << (spectator?spectator->frames:0) << ",\"spectatorError\":" << std::quoted(spectatorError)
-            << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs
+            << ",\"workP95\":" << workP95 << ",\"workMax\":" << workMax << ",\"frameP95\":" << frameP95 << ",\"predictionMs\":" << lastPredictionMs << ",\"predictionCapMs\":" << tracking.camera.prediction.horizonMs << ",\"stabilization\":" << tracking.camera.strength
             << ",\"filterCutoffHz\":" << tracking.camera.cutoffHz << ",\"motionCoherence\":" << tracking.camera.coherence
             << ",\"headSpeed\":" << tracking.camera.headSpeed() << ",\"dwellFraction\":" << dwell.fraction(now) << ",\"pointerSerial\":" << pointerSerial
             << ",\"zoomLevel\":" << std::quoted(zoomLevelName())
@@ -2129,6 +2147,7 @@ struct View {
         std::cout << "Idle frames: " << (idleGate.enabled ? "skipped while the image is unchanged" : "off") << std::endl;
         // Optional, live-reloaded stabilisation settings; see tracking::Prediction.
         trackingPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"tracking.tsv").string();
+        stabilizationPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"stabilization.tsv").string();
         describePrediction("defaults");
         gazePath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"gaze.tsv").string();
         powerPath=layoutPath.empty() ? "" : (std::filesystem::path(layoutPath).parent_path()/"power.tsv").string();

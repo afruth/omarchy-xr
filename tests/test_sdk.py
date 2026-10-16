@@ -163,6 +163,16 @@ class SessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown SDK command"):
             sdk_command(session, "mono")
 
+    def test_mono_verification_reads_the_host_timing_back_without_setting_a_mode(self):
+        session, library, _ = self.make_session()
+        session.connect(0x1301)
+        library.xr_device_provider_set_display_mode.reset_mock()
+        library.xr_device_provider_get_display_mode.side_effect = [0x31, 0x34]
+        self.assertIn("120 Hz", sdk_command(session, "verify_mono"))
+        self.assertEqual(session.mode, 0x34)
+        library.xr_device_provider_set_display_mode.assert_not_called()
+        self.assertIsNone(session.original_mode)   # nothing to restore
+
     def test_stereo_ack_does_not_require_host_timing_to_change_immediately(self):
         session, library, _ = self.make_session()
         session.connect(0x1301)
