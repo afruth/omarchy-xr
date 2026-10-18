@@ -9,6 +9,7 @@ import os
 import re
 import select
 import signal
+import subprocess
 import sys
 import time
 
@@ -101,6 +102,35 @@ def reprobe_steps(connector, override, write_override):
     )
 
 
+LID_INHIBIT = ('/usr/bin/systemd-inhibit', '--what=handle-lid-switch', '--mode=block', '--who=Omarchy XR',
+               '--why=The glasses are briefly disconnected while they are handed over',
+               '/usr/bin/sh', '-c', 'echo held && exec cat >/dev/null')
+
+
+def hold_lid_switch():
+    """Keep logind from acting on a closed lid while the glasses are handed over or in use.
+
+    Forcing the connector off makes the glasses look unplugged. With the lid closed and no
+    other display, logind would suspend in that gap. The lock lives as long as this pipe:
+    closing it, or this helper dying, releases it.
+    """
+    holder = subprocess.Popen(LID_INHIBIT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    if not select.select([holder.stdout], [], [], 5)[0] or holder.stdout.readline().strip() != 'held':
+        release_lid_switch(holder)
+        raise RuntimeError('Could not keep the laptop awake while the glasses are handed over')
+    return holder
+
+
+def release_lid_switch(holder):
+    try:
+        holder.stdin.close()
+        holder.wait(timeout=5)
+    except Exception:
+        holder.kill()
+    finally:
+        holder.stdout.close()
+
+
 def hand_over(connector, edid, override):
     for _, action in reprobe_steps(connector, override, lambda: override.write_bytes(edid)):
         action()
@@ -137,6 +167,7 @@ def main():
     if select.select([sys.stdin], [], [], 0)[0]:
         lock.close()
         return
+    lid=hold_lid_switch()
     touched=False
     try:
         touched=True
@@ -148,6 +179,7 @@ def main():
     finally:
         if touched:
             restore_connector(connector, override)
+        release_lid_switch(lid)
         lock.close()
 
 if __name__=='__main__':
