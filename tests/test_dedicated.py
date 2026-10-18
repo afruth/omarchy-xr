@@ -85,7 +85,7 @@ class HandoffSequenceTests(unittest.TestCase):
 
 class LidSwitchTests(unittest.TestCase):
     # Forcing the connector off looks like an unplug; with the lid closed logind would suspend.
-    def test_lid_is_held_from_before_hand_over_until_after_restore(self):
+    def test_lid_is_held_from_before_hand_over_until_the_desktop_has_the_glasses_again(self):
         import io, dedicated_helper
         from unittest.mock import patch, MagicMock
         calls=MagicMock()
@@ -94,9 +94,10 @@ class LidSwitchTests(unittest.TestCase):
              patch('dedicated_helper.Path'), patch('dedicated_helper.fcntl.flock'), patch('dedicated_helper.select.select',return_value=([],[],[])), \
              patch('sys.stdin',io.StringIO('stop\n')), patch('sys.stdout',io.StringIO()), \
              patch('dedicated_helper.hold_lid_switch',calls.hold), patch('dedicated_helper.hand_over',calls.hand_over), \
-             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.release_lid_switch',calls.release):
+             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.wait_for_desktop',calls.wait), \
+             patch('dedicated_helper.release_lid_switch',calls.release):
             dedicated_helper.main()
-        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','release'])
+        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','wait','release'])
 
     def test_failed_hand_over_still_restores_before_releasing_the_lid(self):
         import io, dedicated_helper
@@ -106,9 +107,10 @@ class LidSwitchTests(unittest.TestCase):
              patch('dedicated_helper.claim_connector',return_value=('c','e','o')), patch('dedicated_helper.clear_own_override'), \
              patch('dedicated_helper.Path'), patch('dedicated_helper.fcntl.flock'), patch('dedicated_helper.select.select',return_value=([],[],[])), \
              patch('dedicated_helper.hold_lid_switch',calls.hold), patch('dedicated_helper.hand_over',calls.hand_over), \
-             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.release_lid_switch',calls.release):
+             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.wait_for_desktop',calls.wait), \
+             patch('dedicated_helper.release_lid_switch',calls.release):
             with self.assertRaises(OSError):dedicated_helper.main()
-        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','release'])
+        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','wait','release'])
 
     def test_holder_lives_until_its_pipe_closes(self):
         import dedicated_helper
@@ -124,3 +126,33 @@ class LidSwitchTests(unittest.TestCase):
         from unittest.mock import patch
         with patch('dedicated_helper.LID_INHIBIT',('/usr/bin/false',)):
             with self.assertRaisesRegex(RuntimeError,'keep the laptop awake'):dedicated_helper.hold_lid_switch()
+
+    def connector(self,root,status,enabled):
+        (root/'status').write_text(status);(root/'enabled').write_text(enabled);return root
+
+    def test_waits_for_the_compositor_to_enable_the_glasses_again(self):
+        import tempfile, dedicated_helper
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            connector=self.connector(Path(temp),'connected','disabled');polls=[]
+            def sleep(_):
+                polls.append(1)
+                if len(polls)==3:(connector/'enabled').write_text('enabled')
+            with patch('dedicated_helper.time.sleep',sleep):dedicated_helper.wait_for_desktop(connector)
+            self.assertEqual(len(polls),3)
+
+    def test_does_not_wait_for_unplugged_glasses(self):
+        import tempfile, dedicated_helper
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            connector=self.connector(Path(temp),'disconnected','disabled')
+            with patch('dedicated_helper.time.sleep') as sleep:dedicated_helper.wait_for_desktop(connector)
+            sleep.assert_not_called()
+
+    def test_gives_up_waiting_after_the_timeout(self):
+        import tempfile, dedicated_helper
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            connector=self.connector(Path(temp),'connected','disabled')
+            with patch('dedicated_helper.time.sleep'), patch('dedicated_helper.time.monotonic',side_effect=[0,0,5,11]):
+                dedicated_helper.wait_for_desktop(connector)

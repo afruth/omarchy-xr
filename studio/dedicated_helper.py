@@ -121,6 +121,26 @@ def hold_lid_switch():
     return holder
 
 
+def wait_for_desktop(connector, timeout=10):
+    """Wait until logind would count the glasses as an external display again.
+
+    logind needs the connector both connected and enabled. Restoring makes it connected at
+    once, but enabled only once the compositor has set a mode on it again. Releasing the lid
+    before that, with the lid closed and no other display, suspends the machine. Unplugged
+    glasses will not come back, so stop waiting for them.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if (connector / 'status').read_text().strip() == 'disconnected':
+                return
+            if (connector / 'enabled').read_text().strip() == 'enabled':
+                return
+        except OSError:
+            return
+        time.sleep(.1)
+
+
 def release_lid_switch(holder):
     try:
         holder.stdin.close()
@@ -179,6 +199,7 @@ def main():
     finally:
         if touched:
             restore_connector(connector, override)
+            wait_for_desktop(connector)
         release_lid_switch(lid)
         lock.close()
 

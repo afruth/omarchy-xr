@@ -100,8 +100,9 @@ class LaptopDisplay:
 
     def start(self,renderer_pid,glasses_output):
         self.stop()
+        # A closed lid (or a panel the user already disabled) leaves nothing to turn off.
         if not internal(json.loads(self.runner('-j','monitors'))):
-            raise RuntimeError('No active laptop display was found.')
+            return
         self.log=(self.directory/'laptop-display.log').open('w')
         self.process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'watch',str(self.directory),str(renderer_pid),glasses_output],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.log,text=True,start_new_session=True)
