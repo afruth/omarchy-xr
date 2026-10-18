@@ -20,3 +20,7 @@ omarchy-xr-setup --controls --notifications
 Marketplace users update the plugin and choose **Update XR runtime** inside Monitor Studio. Restart the Omarchy shell after updating an already-running copy so its QML is recreated.
 
 The bundled VITURE SDK runtime is unchanged. Application terms reserve rights; this is not an open-source release.
+
+## Validation
+
+Tested with VITURE glasses as the only display and the lid closed: starting in the glasses keeps running, and stopping returns the glasses to the desktop without suspending. Renderer unit tests and the Python suite (235 tests) pass, except the known environment-dependent USB recovery test that needs `/sys/bus/platform/drivers/ucsi_acpi`.
