@@ -11,19 +11,19 @@ from studio import install_runtime
 
 class RuntimeInstallTests(unittest.TestCase):
     def test_release_pin_matches_published_package(self):
-        self.assertEqual(install_runtime.PACKAGE, 'omarchy-xr-bin-0.5.2-1-x86_64.pkg.tar.zst')
+        self.assertEqual(install_runtime.PACKAGE, 'omarchy-xr-bin-0.7.0-1-x86_64.pkg.tar.zst')
         self.assertEqual(install_runtime.URL,
-                         'https://github.com/afruth/omarchy-xr/releases/download/v0.5.2/'
+                         'https://github.com/afruth/omarchy-xr/releases/download/v0.7.0/'
                          + install_runtime.PACKAGE)
-        self.assertEqual(install_runtime.PACKAGE_SIZE, 6_148_601)
+        self.assertEqual(install_runtime.PACKAGE_SIZE, 6_177_665)
         self.assertEqual(install_runtime.SHA256,
-                         '5278fec0278f9302927f13c66dcfb0b66a781c798adbe84cada4ff0d9134d824')
+                         '07a90328680e6e7afcbbe8653faa04f0a46d6961c50d75e8898edea5fbbc2186')
 
     def test_older_installed_package_is_outdated(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / 'manifest.json'
             self.assertFalse(install_runtime.installed_outdated(manifest))  # no package installed
-            for installed, outdated in (('0.3.1', True), ('0.3.10', True), ('0.4.0', True), ('0.5.0', True), ('0.5.1', True), ('0.5.2', False), ('0.10.0', False), ('bogus', False)):
+            for installed, outdated in (('0.3.1', True), ('0.3.10', True), ('0.4.0', True), ('0.5.0', True), ('0.5.1', True), ('0.5.2', True), ('0.6.0', True), ('0.7.0', False), ('0.10.0', False), ('bogus', False)):
                 manifest.write_text('{"version": "%s"}' % installed)
                 self.assertEqual(install_runtime.installed_outdated(manifest), outdated, installed)
             manifest.write_text('not json')
