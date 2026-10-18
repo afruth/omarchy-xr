@@ -82,3 +82,45 @@ class HandoffSequenceTests(unittest.TestCase):
                              [('status','off'),('edid_override',384),('status','detect')])
             self.assertEqual(self.run_sequence(lambda h,c,o:h.restore_connector(c,o),driver),
                              [('status','off'),('edid_override','reset'),('status','detect')])
+
+class LidSwitchTests(unittest.TestCase):
+    # Forcing the connector off looks like an unplug; with the lid closed logind would suspend.
+    def test_lid_is_held_from_before_hand_over_until_after_restore(self):
+        import io, dedicated_helper
+        from unittest.mock import patch, MagicMock
+        calls=MagicMock()
+        with patch('dedicated_helper.os.geteuid',return_value=0), patch('sys.argv',['helper','DP-2']), \
+             patch('dedicated_helper.claim_connector',return_value=('c','e','o')), patch('dedicated_helper.clear_own_override'), \
+             patch('dedicated_helper.Path'), patch('dedicated_helper.fcntl.flock'), patch('dedicated_helper.select.select',return_value=([],[],[])), \
+             patch('sys.stdin',io.StringIO('stop\n')), patch('sys.stdout',io.StringIO()), \
+             patch('dedicated_helper.hold_lid_switch',calls.hold), patch('dedicated_helper.hand_over',calls.hand_over), \
+             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.release_lid_switch',calls.release):
+            dedicated_helper.main()
+        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','release'])
+
+    def test_failed_hand_over_still_restores_before_releasing_the_lid(self):
+        import io, dedicated_helper
+        from unittest.mock import patch, MagicMock
+        calls=MagicMock();calls.hand_over.side_effect=OSError('busy')
+        with patch('dedicated_helper.os.geteuid',return_value=0), patch('sys.argv',['helper','DP-2']), \
+             patch('dedicated_helper.claim_connector',return_value=('c','e','o')), patch('dedicated_helper.clear_own_override'), \
+             patch('dedicated_helper.Path'), patch('dedicated_helper.fcntl.flock'), patch('dedicated_helper.select.select',return_value=([],[],[])), \
+             patch('dedicated_helper.hold_lid_switch',calls.hold), patch('dedicated_helper.hand_over',calls.hand_over), \
+             patch('dedicated_helper.restore_connector',calls.restore), patch('dedicated_helper.release_lid_switch',calls.release):
+            with self.assertRaises(OSError):dedicated_helper.main()
+        self.assertEqual([c[0] for c in calls.mock_calls],['hold','hand_over','restore','release'])
+
+    def test_holder_lives_until_its_pipe_closes(self):
+        import dedicated_helper
+        from unittest.mock import patch
+        with patch('dedicated_helper.LID_INHIBIT',('/usr/bin/sh','-c','echo held && exec cat >/dev/null')):
+            holder=dedicated_helper.hold_lid_switch()
+            self.assertIsNone(holder.poll())
+            dedicated_helper.release_lid_switch(holder)
+            self.assertIsNotNone(holder.poll())
+
+    def test_refuses_to_hand_over_when_the_lid_cannot_be_held(self):
+        import dedicated_helper
+        from unittest.mock import patch
+        with patch('dedicated_helper.LID_INHIBIT',('/usr/bin/false',)):
+            with self.assertRaisesRegex(RuntimeError,'keep the laptop awake'):dedicated_helper.hold_lid_switch()
