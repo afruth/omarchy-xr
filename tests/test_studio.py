@@ -127,6 +127,35 @@ class LayoutTests(unittest.TestCase):
             finally:
                 manager.viewer=None;manager.direct=False;manager.cleanup();manager.lock.close()
 
+    def test_reconcile_waits_for_hyprland_to_apply_the_repair(self):
+        # With the lid closed and the glasses just handed over, Hyprland applies the rules late.
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            manager.graphics_limits={"maxWidth":8192,"maxHeight":8192}
+            try:
+                manager.apply(default_layout())
+                for name in manager.owned:fake.outputs[name].update(width=1000,height=700)
+                drifted=copy.deepcopy(manager.monitors());live=manager.monitors
+                answers=iter([drifted,drifted])
+                with patch.object(manager,"monitors",side_effect=lambda:next(answers,None) or live()), patch("backend.time.sleep"):
+                    manager.reconcile_outputs(drifted)
+            finally:manager.cleanup();manager.lock.close()
+
+    def test_reconcile_reports_which_monitor_never_settled(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake=FakeHypr();manager=Manager(temp,"/unused",fake)
+            manager.graphics_limits={"maxWidth":8192,"maxHeight":8192}
+            try:
+                manager.apply(default_layout())
+                for name in manager.owned:fake.outputs[name].update(width=1000,height=700)
+                drifted=copy.deepcopy(manager.monitors())
+                with patch.object(manager,"monitors",return_value=drifted), patch("backend.time.sleep"):
+                    with self.assertRaisesRegex(RuntimeError,"still being restored"):manager.reconcile_outputs(drifted)
+                events=[json.loads(line) for line in (Path(temp)/"display-events.jsonl").read_text().splitlines()]
+                self.assertEqual(events[-1]["stage"],"virtual-monitor-drift")
+                self.assertEqual(json.loads(events[-1]["error"])[manager.prefix+"1"]["width"],1000)
+            finally:manager.cleanup();manager.lock.close()
+
     def test_laptop_windows_move_to_visible_xr_workspaces(self):
         with tempfile.TemporaryDirectory() as temp:
             manager=Manager(temp,"/unused",FakeHypr())
