@@ -31,6 +31,12 @@ class LaptopDisplayTests(unittest.TestCase):
         self.assertEqual(internal(choices),[PANEL])
         self.assertEqual(snapshot([PANEL]),[PANEL])
         with self.assertRaises(ValueError):validate_snapshot([{**PANEL,'name':'DP-1'}])
+    def test_start_with_lid_closed_leaves_glasses_running(self):
+        self.enabled=False;display=LaptopDisplay(self.root,self.runner)
+        display.start(123,'DP-2')
+        self.assertIsNone(display.process)
+        self.assertFalse(display.journal.exists())
+        self.assertEqual(display.status()['off'],False)
     def test_restore_preserves_mode_and_retains_failed_journal(self):
         self.journal();display=LaptopDisplay(self.root,self.runner)
         display.restore()

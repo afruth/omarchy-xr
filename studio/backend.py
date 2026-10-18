@@ -769,9 +769,17 @@ class Manager:
             self.runner("eval", f'hl.monitor({{output="{name}", mode="{m["width"]}x{m["height"]}@{rate}", position="{position["x"]}x{position["y"]}", scale={effective_scale(m)}}})')
         # Verify even when only an external reload, rather than Apply, caused drift.
         if not changed: return
-        verified = {m["name"]:m for m in self.monitors()}
-        if not all(self.output_matches(verified.get(self.prefix+m["id"],{}),m,rate) for m in self.applied["monitors"]):
-            raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
+        # Hyprland applies monitor rules asynchronously, e.g. while the glasses were just handed over
+        # and no physical display is left. Give it the same time as Apply does.
+        for _ in range(30):
+            verified = {m["name"]:m for m in self.monitors()}
+            pending = [self.prefix+m["id"] for m in self.applied["monitors"]
+                       if not self.output_matches(verified.get(self.prefix+m["id"],{}),m,rate)]
+            if not pending: return
+            time.sleep(.1)
+        self.display_event("virtual-monitor-drift", json.dumps({name:{k:verified.get(name,{}).get(k) for k in
+                           ("width","height","scale","refreshRate","x","y","disabled")} for name in pending}))
+        raise RuntimeError("A virtual monitor is still being restored. Wait a moment, then try again.")
 
     def redistribute_windows(self, workspace_ids, monitors):
         if self.canvas.active:
